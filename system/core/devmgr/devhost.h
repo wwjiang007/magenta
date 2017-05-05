@@ -29,6 +29,7 @@
 #define ID_HACPI 2
 #define ID_HLAUNCHER 3
 #define ID_HJOBROOT 4
+#define ID_HMDI 5
 
 // Nothing outside of devmgr/{devmgr,devhost,rpc-device}.c
 // should be calling devhost_*() APIs, as this could

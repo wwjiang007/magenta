@@ -103,7 +103,7 @@ MODULE_SRCS := \
 
 MODULE_STATIC_LIBS += system/ulib/acpisvc-client system/ulib/ddk system/ulib/sync
 
-MODULE_LIBS := system/ulib/driver system/ulib/mxio system/ulib/launchpad system/ulib/magenta system/ulib/c
+MODULE_LIBS += system/ulib/driver system/ulib/mxio system/ulib/launchpad system/ulib/magenta system/ulib/c
 
 include make/module.mk
 

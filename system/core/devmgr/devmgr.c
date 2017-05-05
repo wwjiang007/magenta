@@ -40,7 +40,16 @@ static mx_handle_t root_resource_handle;
 static mx_handle_t root_job_handle;
 static mx_handle_t svcs_job_handle;
 
-static mx_handle_t mdi_handle;
+static mx_handle_t mdi_handle = MX_HANDLE_INVALID;
+
+mx_handle_t devmgr_get_mdi(void) {
+    return mdi_handle;
+}
+
+void devmgr_set_mdi(mx_handle_t handle) {
+printf("devmgr_set_mdi\n");
+    mdi_handle = handle;
+}   
 
 static mx_handle_t application_launcher_child;
 mx_handle_t application_launcher;
@@ -356,11 +365,6 @@ int virtcon_starter(void* arg) {
     close(dirfd);
     return 0;
 }
-
-void devmgr_set_mdi(mx_handle_t handle) {
-printf("devmgr_set_mdi\n");
-    mdi_handle = handle;
-}   
 
 int main(int argc, char** argv) {
     // Close the loader-service channel so the service can go away.

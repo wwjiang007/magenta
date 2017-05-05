@@ -68,6 +68,7 @@ static mx_protocol_device_t root_ops;
 static mx_handle_t hdevice;
 static mx_handle_t hrpc;
 static mx_handle_t hacpi;
+static mx_handle_t hmdi;
 
 mx_handle_t devhost_get_hacpi(void) {
 #if ONLY_ONE_DEVHOST
@@ -75,6 +76,10 @@ mx_handle_t devhost_get_hacpi(void) {
 #else
     return hacpi;
 #endif
+}
+
+mx_handle_t devhost_get_hmdi(void) {
+    return hmdi;
 }
 
 // Give core builtin drivers some control over where they publish
@@ -99,6 +104,7 @@ static int devhost_init(void) {
     hdevice = mx_get_startup_handle(PA_HND(PA_USER0, ID_HDEVICE));
     hrpc = mx_get_startup_handle(PA_HND(PA_USER0, ID_HRPC));
     hacpi = mx_get_startup_handle(PA_HND(PA_USER0, ID_HACPI));
+    hmdi = mx_get_startup_handle(PA_HND(PA_USER0, ID_HMDI));
 
     //TODO: figure out why we need to do this
     mx_handle_t vmo = mx_get_startup_handle(PA_HND(PA_VMO_VDSO, 0));

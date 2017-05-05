@@ -67,6 +67,8 @@ void devmgr_launch_devhost(mx_handle_t job,
     if ((h = get_service_root()) != MX_HANDLE_INVALID) {
         launchpad_add_handle(lp, h, PA_SERVICE_ROOT);
     }
+    launchpad_add_handle(lp, devmgr_get_mdi(),
+                         PA_HND(PA_USER0, ID_HMDI));
 #else
     launchpad_clone(lp, LP_CLONE_ENVIRON | LP_CLONE_MXIO_ROOT);
     if ((h = devhost_acpi_clone()) > 0) {
@@ -77,6 +79,7 @@ void devmgr_launch_devhost(mx_handle_t job,
     //TODO: maybe migrate this to using the default job mechanism
     launchpad_add_handle(lp, get_sysinfo_job_root(),
                          PA_HND(PA_USER0, ID_HJOBROOT));
+
 
 
     printf("devmgr: launch: %s %s %s\n", name, argv[0], argv[1]);

@@ -35,6 +35,7 @@ int devmgr_start_system_init(void* arg);
 
 mx_handle_t get_service_root(void);
 
-void devmgr_set_mdi(mx_handle_t mdi_handle);   
+mx_handle_t devmgr_get_mdi(void);
+void devmgr_set_mdi(mx_handle_t mdi_handle);
 
 __END_CDECLS
