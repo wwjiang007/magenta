@@ -18,3 +18,11 @@ MODULE_DEPS += \
 
 include make/module.mk
 
+# build MDI
+MDI_SRCS := \
+    $(LOCAL_DIR)/pc.mdi \
+
+MDI_INCLUDES := \
+    kernel/include/mdi/kernel-defs.mdi \
+
+include make/mdi.mk

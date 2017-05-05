@@ -1,0 +1,4 @@
+include "kernel/include/mdi/kernel-defs.mdi"
+
+kernel-drivers = {
+}

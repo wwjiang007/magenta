@@ -200,6 +200,8 @@ static void setup_bootfs(void) {
                 break;
             }
             case BOOTDATA_MDI:
+                printf("BOOTDATA_MDI\n");
+                break;
             case BOOTDATA_CMDLINE:
             case BOOTDATA_ACPI_RSDP:
             case BOOTDATA_FRAMEBUFFER:
