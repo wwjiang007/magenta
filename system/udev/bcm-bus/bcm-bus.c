@@ -17,7 +17,7 @@ void devhost_launch_devhost(mx_device_t* parent, const char* name, uint32_t prot
                             const char* procname, int argc, char** argv);
 
 static mx_status_t bcm_root_init(mx_driver_t* driver) {
-
+/*
     char name[32];
     snprintf(name, sizeof(name), "soc");
 
@@ -35,6 +35,7 @@ static mx_status_t bcm_root_init(mx_driver_t* driver) {
 
     const char* args[4] = { "/boot/bin/devhost", arg1 , arg2, arg3};
     devhost_launch_devhost(driver_get_root_device(), name, MX_PROTOCOL_SOC, procname, 4, (char**)args);
+*/
 
     return NO_ERROR;
 }

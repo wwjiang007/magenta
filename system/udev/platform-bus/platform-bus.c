@@ -48,7 +48,7 @@ static void platform_bus_publish_devices(mdi_node_ref_t* bus_node, mx_driver_t* 
         mdi_node_ref_t  node;
         mdi_each_child(&driver_node, &node) {
             switch (mdi_id(&node)) {
-                case MDI_PLATFORM_BUS_DRIVER_VID:
+            case MDI_PLATFORM_BUS_DRIVER_VID:
                 mdi_node_uint32(&node, &vid);
                 break;
             case MDI_PLATFORM_BUS_DRIVER_PID:
@@ -60,43 +60,43 @@ static void platform_bus_publish_devices(mdi_node_ref_t* bus_node, mx_driver_t* 
             default:
                 break;
             }
+        }
 
-            if (!vid || !pid || !did) {
-                printf("missing vid pid or did\n");
-                continue;
-            }
+        if (!vid || !pid || !did) {
+            printf("missing vid pid or did %u %u %u\n", vid, pid, did);
+            continue;
+        }
 
-            platform_dev_t* dev = calloc(1, sizeof(platform_dev_t));
-            if (!dev) return;
+        platform_dev_t* dev = calloc(1, sizeof(platform_dev_t));
+        if (!dev) return;
 
-            mx_device_prop_t props[] = {
-                {BIND_SOC_VID, 0, vid},
-                {BIND_SOC_PID, 0, pid},
-                {BIND_SOC_DID, 0, did},
-            };
-            static_assert(countof(props) == countof(dev->props), "");
-            memcpy(dev->props, props, sizeof(dev->props));
+        mx_device_prop_t props[] = {
+            {BIND_SOC_VID, 0, vid},
+            {BIND_SOC_PID, 0, pid},
+            {BIND_SOC_DID, 0, did},
+        };
+        static_assert(countof(props) == countof(dev->props), "");
+        memcpy(dev->props, props, sizeof(dev->props));
 
-            char name[50];
-            snprintf(name, sizeof(name), "pdev-%u:%u:%u\n", vid, pid, did);
+        char name[50];
+        snprintf(name, sizeof(name), "pdev-%u:%u:%u\n", vid, pid, did);
 
-            device_add_args_t args = {
-                .version = DEVICE_ADD_ARGS_VERSION,
-                .name = name,
-                .ctx = dev,
-                .driver = driver,
-                .ops = &platform_dev_proto,
-                .proto_id = MX_PROTOCOL_SOC,
-                .props = dev->props,
-                .prop_count = countof(dev->props),
-            };
+        device_add_args_t args = {
+            .version = DEVICE_ADD_ARGS_VERSION,
+            .name = name,
+            .ctx = dev,
+            .driver = driver,
+            .ops = &platform_dev_proto,
+            .proto_id = MX_PROTOCOL_SOC,
+            .props = dev->props,
+            .prop_count = countof(dev->props),
+        };
 
-            mx_status_t status = device_add(driver_get_root_device(), &args, &dev->mxdev);
-            if (status != NO_ERROR) {
-                printf("platform-bus failed to create device for %u:%u:%u\n", vid, pid, did);
-            } else {
-                printf("platform-bus added device %s\n", name);
-            }
+        mx_status_t status = device_add(driver_get_root_device(), &args, &dev->mxdev);
+        if (status != NO_ERROR) {
+            printf("platform-bus failed to create device for %u:%u:%u\n", vid, pid, did);
+        } else {
+            printf("platform-bus added device %s\n", name);
         }
     }
 }

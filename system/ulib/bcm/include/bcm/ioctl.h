@@ -15,11 +15,12 @@ __BEGIN_CDECLS;
 #define SOC_VID_BROADCOMM 0x00BC
 
 // Broadcomm specific PIDs
-#define SOC_DID_BROADCOMM_VIDEOCORE_BUS 0x0000  // Videocore device (used as root bus)
-#define SOC_DID_BROADCOMM_MAILBOX       0x0001  // Videocore mailbox, used for comms between cpu/gpu
-#define SOC_DID_BROADCOMM_EMMC          0x0002  // Bcm28xx eMMC device.
-#define SOC_DID_BROADCOMM_I2C           0x0003  // Bcm28xx I2C device.
-#define SOC_DID_BROADCOMM_PCM           0x0004  // Bcm28xx PCM/I2S device.
+#define SOC_DID_BROADCOMM_VIDEOCORE_BUS 0x0001  // Videocore device (used as root bus)
+#define SOC_DID_BROADCOMM_MAILBOX       0x0002  // Videocore mailbox, used for comms between cpu/gpu
+#define SOC_DID_BROADCOMM_EMMC          0x0003  // Bcm28xx eMMC device.
+#define SOC_DID_BROADCOMM_I2C           0x0004  // Bcm28xx I2C device.
+#define SOC_DID_BROADCOMM_PCM           0x0005  // Bcm28xx PCM/I2S device.
+#define SOC_DID_BROADCOMM_USB           0x0006  // dwc2 USB
 
 typedef struct {
     uint32_t phys_width;    //request

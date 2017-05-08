@@ -288,6 +288,7 @@ static mx_status_t bootstrap_i2c(mx_driver_t* driver, mx_device_t* parent, uint3
 
 
 static mx_status_t i2c_bind(mx_driver_t* driver, mx_device_t* parent, void** cookie) {
+printf("bcm_i2c_bind\n");
 
     mx_status_t ret = NO_ERROR;
 

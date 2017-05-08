@@ -796,6 +796,7 @@ out:
 }
 
 static mx_status_t emmc_bind(mx_driver_t* drv, mx_device_t* dev, void** cookie) {
+printf("bcm_emmc_bind\n");
     // Create a context to pass bind variables to the bootstrap thread.
     emmc_setup_context_t* ctx = calloc(1, sizeof(*ctx));
     if (!ctx)

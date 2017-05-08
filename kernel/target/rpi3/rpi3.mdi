@@ -1,4 +1,5 @@
 include "kernel/include/mdi/kernel-defs.mdi"
+include "system/ulib/ddk/include/mdi/platform-defs.mdi"
 
 cpu-map = {
     clusters = {
@@ -13,5 +14,33 @@ kernel-drivers = {
     bcm28xx-interrupt = {}
     arm-generic-timer = {
         irq-virt = 99 // INTERRUPT_ARM_LOCAL_CNTVIRQ
+    }
+}
+
+platform-bus = {
+    driver = {
+        vid = 0x00BC    // SOC_VID_BROADCOMM
+        pid = 1         // dummy
+        did = 1         // SOC_DID_BROADCOMM_VIDEOCORE_BUS
+    }
+    driver = {
+        vid = 0x00BC    // SOC_VID_BROADCOMM
+        pid = 1         // dummy
+        did = 3         // SOC_DID_BROADCOMM_EMMC
+    }
+    driver = {
+        vid = 0x00BC    // SOC_VID_BROADCOMM
+        pid = 1         // dummy
+        did = 4         // SOC_DID_BROADCOMM_I2C
+    }
+    driver = {
+        vid = 0x00BC    // SOC_VID_BROADCOMM
+        pid = 1         // dummy
+        did = 5         // SOC_DID_BROADCOMM_PCM
+    }
+    driver = {
+        vid = 0x00BC    // SOC_VID_BROADCOMM
+        pid = 1         // dummy
+        did = 6         // SOC_DID_BROADCOMM_USB
     }
 }

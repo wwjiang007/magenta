@@ -404,21 +404,6 @@ static mx_device_prop_t mailbox_props[] = {
     {BIND_SOC_DID, 0, SOC_DID_BROADCOMM_MAILBOX},
 };
 
-static mx_device_prop_t emmc_props[] = {
-    {BIND_SOC_VID, 0, SOC_VID_BROADCOMM},
-    {BIND_SOC_DID, 0, SOC_DID_BROADCOMM_EMMC},
-};
-
-static mx_device_prop_t i2c_props[] = {
-    {BIND_SOC_VID, 0, SOC_VID_BROADCOMM},
-    {BIND_SOC_DID, 0, SOC_DID_BROADCOMM_I2C},
-};
-
-static mx_device_prop_t pcm_props[] = {
-    {BIND_SOC_VID, 0, SOC_VID_BROADCOMM},
-    {BIND_SOC_DID, 0, SOC_DID_BROADCOMM_PCM},
-};
-
 mx_status_t mailbox_bind(mx_driver_t* driver, mx_device_t* parent, void** cookie) {
     uintptr_t page_base;
 
@@ -491,63 +476,12 @@ mx_status_t mailbox_bind(mx_driver_t* driver, mx_device_t* parent, void** cookie
         return status;
     }
 
+    printf("bcm_vc_poweron(bcm_dev_sd);\n");
     bcm_vc_poweron(bcm_dev_sd);
-
-    // Publish this mock device to allow the eMMC device to bind to.
-    mx_device_t* sdmmc_mxdev;
-    device_add_args_t sdmmc_args = {
-        .version = DEVICE_ADD_ARGS_VERSION,
-        .name = "bcm-sdmmc",
-        .driver = driver,
-        .ops = &empty_device_proto,
-        .proto_id = MX_PROTOCOL_SOC,
-        .props = emmc_props,
-        .prop_count = countof(emmc_props),
-    };
-
-    status = device_add(parent, &sdmmc_args, &sdmmc_mxdev);
-    if (status != NO_ERROR) {
-        return status;
-    }
-
+    printf("bcm_vc_poweron(bcm_dev_usb);\n");
     bcm_vc_poweron(bcm_dev_usb);
-
-    // Publish this mock device to allow the i2c device to bind to.
-
+    printf("bcm_vc_poweron(bcm_dev_i2c1);\n");
     bcm_vc_poweron(bcm_dev_i2c1);
-    mx_device_t* i2c_mxdev;
-    device_add_args_t i2c_args = {
-        .version = DEVICE_ADD_ARGS_VERSION,
-        .name = "bcm-i2c",
-        .driver = driver,
-        .ops = &empty_device_proto,
-        .proto_id = MX_PROTOCOL_SOC,
-        .props = i2c_props,
-        .prop_count = countof(i2c_props),
-    };
-
-    status = device_add(parent, &i2c_args, &i2c_mxdev);
-    if (status != NO_ERROR) {
-        return status;
-    }
-
-    // Publish this mock device to allow the pcm device to bind to.
-
-    mx_device_t* pcm_mxdev;
-    device_add_args_t pcm_args = {
-        .version = DEVICE_ADD_ARGS_VERSION,
-        .name = "bcm-pcm",
-        .driver = driver,
-        .ops = &empty_device_proto,
-        .proto_id = MX_PROTOCOL_SOC,
-        .props = pcm_props,
-        .prop_count = countof(pcm_props),
-    };
-
-    status = device_add(parent, &pcm_args, &pcm_mxdev);
-    if (status != NO_ERROR) {
-        return status;
-    }
 
     return NO_ERROR;
 }

@@ -1698,7 +1698,7 @@ finish:
 
 // Bind is the entry point for this driver.
 static mx_status_t usb_dwc_bind(mx_driver_t* drv, mx_device_t* dev, void** cookie) {
-    xprintf("usb_dwc_bind drv = %p, dev = %p\n", drv, dev);
+    printf("usb_dwc_bind drv = %p, dev = %p\n", drv, dev);
 
     dwc_usb_t* usb_dwc = NULL;
     mx_handle_t irq_handle = MX_HANDLE_INVALID;
@@ -1817,6 +1817,6 @@ static mx_driver_ops_t usb_dwc_driver_ops = {
 // clang-format off
 MAGENTA_DRIVER_BEGIN(bcm_usb_dwc, usb_dwc_driver_ops, "magenta", "0.1", 3)
     BI_ABORT_IF(NE, BIND_SOC_VID, SOC_VID_BROADCOMM),
-    BI_MATCH_IF(EQ, BIND_SOC_DID, SOC_DID_BROADCOMM_MAILBOX),
+    BI_MATCH_IF(EQ, BIND_SOC_DID, SOC_DID_BROADCOMM_USB),
 MAGENTA_DRIVER_END(bcm_usb_dwc)
 // clang-format on

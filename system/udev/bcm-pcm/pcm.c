@@ -714,6 +714,7 @@ pcm_err:
 }
 
 static mx_status_t bcm_pcm_bind(mx_driver_t* driver, mx_device_t* parent, void** cookie) {
+printf("bcm_pcm_bind\n");
 
     bcm_pcm_t* pcm_ctx = calloc(1, sizeof(*pcm_ctx));
     if (!pcm_ctx)
