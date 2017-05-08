@@ -1,4 +1,9 @@
-include "kernel/include/mdi/kernel-defs.mdi"
+include "system/ulib/ddk/include/mdi/platform-defs.mdi"
 
-kernel-drivers = {
+platform-bus = {
+    driver = {
+        vid = 1
+        pid = 2
+        did = 3
+    }
 }

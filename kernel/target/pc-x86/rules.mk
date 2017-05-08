@@ -24,5 +24,6 @@ MDI_SRCS := \
 
 MDI_INCLUDES := \
     kernel/include/mdi/kernel-defs.mdi \
+    system/ulib/ddk/include/mdi/platform-defs.mdi \
 
 include make/mdi.mk
