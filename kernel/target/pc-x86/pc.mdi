@@ -2,8 +2,6 @@ include "system/ulib/ddk/include/mdi/platform-defs.mdi"
 
 platform-bus = {
     driver = {
-        vid = 1
-        pid = 2
-        did = 3
+        name = "i8042"
     }
 }
