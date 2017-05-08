@@ -135,6 +135,7 @@ void enumerate_drivers(void);
 
 bool dc_is_bindable(driver_ctx_t* drv, uint32_t protocol_id,
                     mx_device_prop_t* props, size_t prop_count,
+                    const char* dev_name,
                     bool autobind);
 #endif
 

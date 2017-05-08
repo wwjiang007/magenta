@@ -18,6 +18,7 @@ __BEGIN_CDECLS;
 #define OP_SET    0x3 // if (cond) flags |= paramA
 #define OP_CLEAR  0x4 // if (cond) flags &= (~paramA)
 #define OP_LABEL  0x5 // no-op, labels line with Value
+#define OP_MATCH_NAME  0x6 // return match if driver name equals device name
 
 #define COND_AL   0x0 // true
 #define COND_EQ   0x1 // bind(paramB) == Value
@@ -60,10 +61,13 @@ __BEGIN_CDECLS;
 // for drivers that only want to be bound on user request
 #define BI_ABORT_IF_AUTOBIND  BI_ABORT_IF(NE, BIND_AUTOBIND, 0)
 
+#define BI_MATCH_DRIVER_NAME() BINDINST(0,OP_MATCH_NAME,0,0,0)
+
 // global binding variables at 0x00XX
 #define BIND_FLAGS            0x0000 // value of the flags register
 #define BIND_PROTOCOL         0x0001 // primary protcol of the device
 #define BIND_AUTOBIND         0x0002 // if this is an automated bind/load
+#define BIND_NAME             0x0003 // driver name
 
 // pci binding variables at 0x01XX
 #define BIND_PCI_VID          0x0100

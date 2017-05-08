@@ -45,9 +45,14 @@ static void platform_bus_publish_devices(mdi_node_ref_t* bus_node, mx_driver_t* 
         uint32_t vid = 0;
         uint32_t pid = 0;
         uint32_t did = 0;
+        const char* name = NULL;
+
         mdi_node_ref_t  node;
         mdi_each_child(&driver_node, &node) {
             switch (mdi_id(&node)) {
+            case MDI_PLATFORM_BUS_DRIVER_NAME:
+                name = mdi_node_string(&node);
+                break;
             case MDI_PLATFORM_BUS_DRIVER_VID:
                 mdi_node_uint32(&node, &vid);
                 break;
@@ -62,8 +67,8 @@ static void platform_bus_publish_devices(mdi_node_ref_t* bus_node, mx_driver_t* 
             }
         }
 
-        if (!vid || !pid || !did) {
-            printf("missing vid pid or did %u %u %u\n", vid, pid, did);
+        if (!name && (!vid || !pid || !did)) {
+            printf("missing name and vid/pid/did\n");
             continue;
         }
 
@@ -78,8 +83,11 @@ static void platform_bus_publish_devices(mdi_node_ref_t* bus_node, mx_driver_t* 
         static_assert(countof(props) == countof(dev->props), "");
         memcpy(dev->props, props, sizeof(dev->props));
 
-        char name[50];
-        snprintf(name, sizeof(name), "pdev-%u:%u:%u\n", vid, pid, did);
+        char vid_pid_did[50];
+        snprintf(vid_pid_did, sizeof(vid_pid_did), "pdev-%u:%u:%u\n", vid, pid, did);
+        if (name == NULL) {
+            name = vid_pid_did;
+        }
 
         device_add_args_t args = {
             .version = DEVICE_ADD_ARGS_VERSION,

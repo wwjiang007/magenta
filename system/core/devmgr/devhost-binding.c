@@ -7,6 +7,7 @@
 #include <ddk/binding.h>
 
 #include <stdio.h>
+#include <string.h>
 
 #include "devcoordinator.h"
 
@@ -16,7 +17,8 @@ typedef struct {
     uint32_t protocol_id;
     uint32_t binding_size;
     const mx_bind_inst_t* binding;
-    const char* name;
+    const char* device_name;
+    const char* driver_name;
     uint32_t autobind;
 } bpctx_t;
 
@@ -51,6 +53,15 @@ static bool is_bindable(bpctx_t* ctx) {
     while (ip < end) {
         uint32_t inst = ip->op;
         bool cond;
+        uint32_t op = BINDINST_OP(inst);
+
+        if (op == OP_MATCH_NAME) {
+            if (strcmp(ctx->driver_name, ctx->device_name) == 0) {
+                return true;
+            } else {
+                goto next_instruction;
+            }
+        }
 
         if (BINDINST_CC(inst) != COND_AL) {
             uint32_t value = ip->arg;
@@ -90,7 +101,7 @@ static bool is_bindable(bpctx_t* ctx) {
                 break;
             default:
                 // illegal instruction: abort
-                printf("devmgr: driver '%s' illegal bindinst 0x%08x\n", ctx->name, inst);
+                printf("devmgr: driver '%s' illegal bindinst 0x%08x\n", ctx->driver_name, inst);
                 return false;
             }
         } else {
@@ -98,7 +109,7 @@ static bool is_bindable(bpctx_t* ctx) {
         }
 
         if (cond) {
-            switch (BINDINST_OP(inst)) {
+            switch (op) {
             case OP_ABORT:
                 return false;
             case OP_MATCH:
@@ -111,7 +122,7 @@ static bool is_bindable(bpctx_t* ctx) {
                         goto next_instruction;
                     }
                 }
-                printf("devmgr: driver '%s' illegal GOTO\n", ctx->name);
+                printf("devmgr: driver '%s' illegal GOTO\n", ctx->driver_name);
                 return false;
             }
             case OP_SET:
@@ -125,7 +136,7 @@ static bool is_bindable(bpctx_t* ctx) {
                 break;
             default:
                 // illegal instruction: abort
-                printf("devmgr: driver '%s' illegal bindinst 0x%08x\n", ctx->name, inst);
+                printf("devmgr: driver '%s' illegal bindinst 0x%08x\n", ctx->driver_name, inst);
                 return false;
             }
         }
@@ -141,6 +152,7 @@ next_instruction:
 #if DEVHOST_V2
 bool dc_is_bindable(driver_ctx_t* drv, uint32_t protocol_id,
                     mx_device_prop_t* props, size_t prop_count,
+                    const char* dev_name,
                     bool autobind) {
     bpctx_t ctx;
     ctx.props = props;
@@ -148,7 +160,8 @@ bool dc_is_bindable(driver_ctx_t* drv, uint32_t protocol_id,
     ctx.protocol_id = protocol_id;
     ctx.binding = drv->binding;
     ctx.binding_size = drv->binding_size;
-    ctx.name = drv->name;
+    ctx.driver_name = drv->name;
+    ctx.device_name = dev_name;
     ctx.autobind = autobind ? 1 : 0;
     return is_bindable(&ctx);
 }
@@ -160,7 +173,8 @@ bool devhost_is_bindable_drv(mx_driver_t* drv, mx_device_t* dev, bool autobind) 
     ctx.protocol_id = dev->protocol_id;
     ctx.binding = drv->binding;
     ctx.binding_size = drv->binding_size;
-    ctx.name = drv->name;
+    ctx.driver_name = drv->name;
+    ctx.device_name = dev->name;
     ctx.autobind = autobind ? 1 : 0;
     return is_bindable(&ctx);
 }
