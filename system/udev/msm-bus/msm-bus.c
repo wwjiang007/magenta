@@ -19,7 +19,7 @@ void devhost_launch_devhost(mx_device_t* parent, const char* name, uint32_t prot
                             const char* procname, int argc, char** argv);
 
 static mx_status_t msm_root_init(mx_driver_t* driver) {
-
+#if 0
     char* v = getenv("magenta.soc.msm8998");
 
     if (!v)
@@ -45,6 +45,7 @@ static mx_status_t msm_root_init(mx_driver_t* driver) {
 
     const char* args[4] = {"/boot/bin/devhost", arg1, arg2, arg3};
     devhost_launch_devhost(driver_get_root_device(), name, MX_PROTOCOL_SOC, procname, 4, (char**)args);
+#endif
     return NO_ERROR;
 }
 

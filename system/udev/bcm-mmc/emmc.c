@@ -826,8 +826,6 @@ static mx_driver_ops_t emmc_dwc_driver_ops = {
 // The formatter does not play nice with these macros.
 // clang-format off
 MAGENTA_DRIVER_BEGIN(bcm_emmc, emmc_dwc_driver_ops, "magenta", "0.1", 3)
-    BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_SOC),
-    BI_ABORT_IF(NE, BIND_SOC_VID, SOC_VID_BROADCOMM),
-    BI_MATCH_IF(EQ, BIND_SOC_DID, SOC_DID_BROADCOMM_EMMC),
+    BI_MATCH_DRIVER_NAME(),
 MAGENTA_DRIVER_END(bcm_emmc)
 // clang-format on

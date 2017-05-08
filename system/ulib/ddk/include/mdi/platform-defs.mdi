@@ -5,6 +5,3 @@ list platform-bus                              3
 
 list platform-bus.driver                       10
 string platform-bus.driver.name                11
-uint32 platform-bus.driver.vid                 12
-uint32 platform-bus.driver.pid                 13
-uint32 platform-bus.driver.did                 14

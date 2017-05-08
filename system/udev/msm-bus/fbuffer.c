@@ -149,7 +149,5 @@ static mx_driver_ops_t msm_fb_driver_ops = {
 
 // clang-format off
 MAGENTA_DRIVER_BEGIN(msm_fb, msm_fb_driver_ops, "magenta", "0.1", 3)
-    BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_SOC),
-    BI_ABORT_IF(NE, BIND_SOC_VID, SOC_VID_QCOM),
-    BI_MATCH_IF(EQ, BIND_SOC_PID, SOC_PID_TRAPPER),
+    BI_MATCH_DRIVER_NAME(),
 MAGENTA_DRIVER_END(msm_fb)

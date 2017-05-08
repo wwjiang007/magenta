@@ -19,28 +19,21 @@ kernel-drivers = {
 
 platform-bus = {
     driver = {
-        vid = 0x00BC    // SOC_VID_BROADCOMM
-        pid = 1         // dummy
-        did = 1         // SOC_DID_BROADCOMM_VIDEOCORE_BUS
+        name = "bcm_mailbox"
     }
     driver = {
-        vid = 0x00BC    // SOC_VID_BROADCOMM
-        pid = 1         // dummy
-        did = 3         // SOC_DID_BROADCOMM_EMMC
+        name = "bcm_emmc"
     }
     driver = {
-        vid = 0x00BC    // SOC_VID_BROADCOMM
-        pid = 1         // dummy
-        did = 4         // SOC_DID_BROADCOMM_I2C
+        name = "bcm_usb_dwc"
     }
     driver = {
-        vid = 0x00BC    // SOC_VID_BROADCOMM
-        pid = 1         // dummy
-        did = 5         // SOC_DID_BROADCOMM_PCM
+        name = "bcm_pcm"
     }
     driver = {
-        vid = 0x00BC    // SOC_VID_BROADCOMM
-        pid = 1         // dummy
-        did = 6         // SOC_DID_BROADCOMM_USB
+        name = "bcm_i2c"
+    }
+    driver = {
+        name = "bcm_mailbox"
     }
 }

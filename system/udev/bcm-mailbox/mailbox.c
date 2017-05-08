@@ -399,10 +399,12 @@ static mx_protocol_device_t empty_device_proto = {
     .version = DEVICE_OPS_VERSION,
 };
 
+/*
 static mx_device_prop_t mailbox_props[] = {
     {BIND_SOC_VID, 0, SOC_VID_BROADCOMM},
     {BIND_SOC_DID, 0, SOC_DID_BROADCOMM_MAILBOX},
 };
+*/
 
 mx_status_t mailbox_bind(mx_driver_t* driver, mx_device_t* parent, void** cookie) {
     uintptr_t page_base;
@@ -425,8 +427,8 @@ mx_status_t mailbox_bind(mx_driver_t* driver, mx_device_t* parent, void** cookie
         .name = "bcm-vc-rpc",
         .driver = driver,
         .ops = &mailbox_device_proto,
-        .props = mailbox_props,
-        .prop_count = countof(mailbox_props),
+//        .props = mailbox_props,
+//        .prop_count = countof(mailbox_props),
     };
 
     status = device_add(parent, &vc_rpc_args, &rpc_mxdev);
@@ -492,7 +494,5 @@ static mx_driver_ops_t bcm_mailbox_bind = {
 };
 
 MAGENTA_DRIVER_BEGIN(bcm_mailbox, bcm_mailbox_bind, "magenta", "0.1", 3)
-    BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_SOC),
-    BI_ABORT_IF(NE, BIND_SOC_VID, SOC_VID_BROADCOMM),
-    BI_MATCH_IF(EQ, BIND_SOC_DID, SOC_DID_BROADCOMM_VIDEOCORE_BUS),
+    BI_MATCH_DRIVER_NAME(),
 MAGENTA_DRIVER_END(bcm_mailbox)
