@@ -21,12 +21,12 @@
 
 #include <fs-management/mount.h>
 #include <fs-management/ramdisk.h>
-#include <magenta/device/vfs.h>
 #include <magenta/device/ramdisk.h>
-#include <magenta/new.h>
+#include <magenta/device/vfs.h>
 #include <magenta/syscalls.h>
 #include <merkle/digest.h>
 #include <merkle/tree.h>
+#include <mxalloc/new.h>
 #include <mxtl/algorithm.h>
 #include <mxtl/auto_lock.h>
 #include <mxtl/intrusive_double_list.h>
@@ -58,7 +58,7 @@ static int MountBlobstore(const char* ramdisk_path) {
     // ready to accept commands.
     mx_status_t status;
     if ((status = mount(fd, MOUNT_PATH, DISK_FORMAT_BLOBFS, &default_mount_options,
-                        launch_logs_async)) != NO_ERROR) {
+                        launch_stdio_async)) != NO_ERROR) {
         fprintf(stderr, "Could not mount blobstore: %d\n", status);
         destroy_ramdisk(ramdisk_path);
         return -1;
@@ -83,7 +83,8 @@ static int StartBlobstoreTest(uint64_t blk_size, uint64_t blk_count, char* ramdi
     }
 
     mx_status_t status;
-    if ((status = mkfs(ramdisk_path_out, DISK_FORMAT_BLOBFS, launch_stdio_sync)) != NO_ERROR) {
+    if ((status = mkfs(ramdisk_path_out, DISK_FORMAT_BLOBFS, launch_stdio_sync,
+                       &default_mkfs_options)) != NO_ERROR) {
         fprintf(stderr, "Could not mkfs blobstore: %d", status);
         destroy_ramdisk(ramdisk_path_out);
         return -1;
@@ -127,10 +128,7 @@ static bool MakeBlob(const char* path, const char* merkle, size_t size_merkle,
                      const char* data, size_t size_data, int* out_fd) {
     int fd = open(path, O_CREAT | O_RDWR);
     ASSERT_GT(fd, 0, "Failed to create blob");
-    blob_ioctl_config_t config;
-    config.size_data = size_data;
-    ASSERT_EQ(ioctl_blobstore_blob_init(fd, &config), 0, "");
-    ASSERT_EQ(StreamAll(write, fd, merkle, size_merkle), 0, "Failed to write Merkle Tree");
+    ASSERT_EQ(ftruncate(fd, size_data), 0, "");
     ASSERT_EQ(StreamAll(write, fd, data, size_data), 0, "Failed to write Data");
 
     *out_fd = fd;
@@ -155,12 +153,9 @@ static bool MakeBlobCompromised(const char* path, const char* merkle, size_t siz
                                 const char* data, size_t size_data) {
     int fd = open(path, O_CREAT | O_RDWR);
     ASSERT_GT(fd, 0, "Failed to create blob");
-    blob_ioctl_config_t config;
-    config.size_data = size_data;
-    ASSERT_EQ(ioctl_blobstore_blob_init(fd, &config), 0, "");
+    ASSERT_EQ(ftruncate(fd, size_data), 0, "");
 
     // If we're writing a blob with invalid sizes, it's possible that writing will fail.
-    StreamAll(write, fd, merkle, size_merkle);
     StreamAll(write, fd, data, size_data);
 
     ASSERT_TRUE(VerifyCompromised(fd, data, size_data), "");
@@ -426,75 +421,26 @@ static bool BadAllocation(void) {
 
     int fd = open(info->path, O_CREAT | O_RDWR);
     ASSERT_GT(fd, 0, "Failed to create blob");
-    blob_ioctl_config_t config;
-    config.size_data = 0;
-    ASSERT_EQ(ioctl_blobstore_blob_init(fd, &config), ERR_INVALID_ARGS, "Blob without data");
+    ASSERT_EQ(ftruncate(fd, 0), -1, "Blob without data");
     // This is the size of the entire disk; we won't have room.
-    config.size_data = (1 << 20) * 512;
-    ASSERT_EQ(ioctl_blobstore_blob_init(fd, &config), ERR_NO_SPACE, "Huge blob");
+    ASSERT_EQ(ftruncate(fd, (1 << 20) * 512), -1, "Huge blob");
 
     // Okay, finally, a valid blob!
-    config.size_data = info->size_data;
-    ASSERT_EQ(ioctl_blobstore_blob_init(fd, &config), 0,
-              "Failed to allocate blob");
+    ASSERT_EQ(ftruncate(fd, info->size_data), 0, "Failed to allocate blob");
 
     // Write nothing, but close the blob. Since the write was incomplete,
     // it will be inaccessible.
     ASSERT_EQ(close(fd), 0, "");
     ASSERT_LT(open(info->path, O_RDWR), 0, "Cannot access partial blob");
 
-    // Let's try creating that blob again -- but let's write the Merkle tree
-    // this time.
-    fd = open(info->path, O_CREAT | O_RDWR);
-    ASSERT_GT(fd, 0, "Failed to create blob");
-    ASSERT_EQ(ioctl_blobstore_blob_init(fd, &config), 0,
-              "Failed to allocate blob");
-    ASSERT_EQ(StreamAll(write, fd, info->merkle.get(), info->size_merkle), 0,
-              "Failed to write merkle");
-    ASSERT_EQ(close(fd), 0, "");
-    ASSERT_LT(open(info->path, O_RDWR), 0, "Cannot access partial blob");
-
     // And once more -- let's write everything but the last byte of a blob's data.
     fd = open(info->path, O_CREAT | O_RDWR);
     ASSERT_GT(fd, 0, "Failed to create blob");
-    ASSERT_EQ(ioctl_blobstore_blob_init(fd, &config), 0, "Failed to allocate blob");
-    ASSERT_EQ(StreamAll(write, fd, info->merkle.get(), info->size_merkle), 0,
-              "Failed to write merkle");
-    ASSERT_EQ(StreamAll(write, fd, info->data.get(), config.size_data - 1), 0,
+    ASSERT_EQ(ftruncate(fd, info->size_data), 0, "Failed to allocate blob");
+    ASSERT_EQ(StreamAll(write, fd, info->data.get(), info->size_data - 1), 0,
               "Failed to write data");
     ASSERT_EQ(close(fd), 0, "");
     ASSERT_LT(open(info->path, O_RDWR), 0, "Cannot access partial blob");
-
-    ASSERT_EQ(EndBlobstoreTest(ramdisk_path), 0, "unmounting blobstore");
-    END_TEST;
-}
-
-static bool CorruptedMerkleTree(void) {
-    BEGIN_TEST;
-    char ramdisk_path[PATH_MAX];
-    ASSERT_EQ(StartBlobstoreTest(512, 1 << 20, ramdisk_path), 0, "Mounting Blobstore");
-
-    mxtl::unique_ptr<blob_info_t> info;
-    for (size_t i = 14; i < 18; i++) {
-        ASSERT_TRUE(GenerateBlob(1 << i, &info), "");
-        ASSERT_NEQ(info->size_merkle, 0, "Cannot shrink empty merkle tree");
-        info->size_merkle -= (rand() % info->size_merkle) + 1;
-        ASSERT_TRUE(MakeBlobCompromised(info->path, info->merkle.get(),
-                                        info->size_merkle, info->data.get(),
-                                        info->size_data), "");
-    }
-
-    for (size_t i = 14; i < 18; i++) {
-        ASSERT_TRUE(GenerateBlob(1 << i, &info), "");
-        // Flip a random bit of the merkle tree
-        ASSERT_NEQ(info->size_merkle, 0, "Cannot modify empty merkle tree");
-        size_t rand_index = rand() % info->size_merkle;
-        char old_val = info->merkle.get()[rand_index];
-        while ((info->merkle.get()[rand_index] = static_cast<char>(rand())) == old_val) {}
-        ASSERT_TRUE(MakeBlobCompromised(info->path, info->merkle.get(),
-                                        info->size_merkle, info->data.get(),
-                                        info->size_data), "");
-    }
 
     ASSERT_EQ(EndBlobstoreTest(ramdisk_path), 0, "unmounting blobstore");
     END_TEST;
@@ -622,7 +568,6 @@ static bool CreateUmountRemountSmall(void) {
 enum TestState {
     empty,
     configured,
-    merklewritten,
     readable,
 };
 
@@ -640,10 +585,9 @@ typedef struct blob_list {
 } blob_list_t;
 
 // Generate and open a new blob
-bool blob_create_helper(blob_list_t* bl) {
+bool blob_create_helper(blob_list_t* bl, unsigned* seed) {
     mxtl::unique_ptr<blob_info_t> info;
-    unsigned int seed = static_cast<unsigned int>(mx_ticks_get());
-    ASSERT_TRUE(GenerateBlob(1 + (rand_r(&seed) % (1 << 16)), &info), "");
+    ASSERT_TRUE(GenerateBlob(1 + (rand_r(seed) % (1 << 16)), &info), "");
 
     AllocChecker ac;
     mxtl::unique_ptr<blob_state_t> state(new (&ac) blob_state(mxtl::move(info)));
@@ -670,31 +614,8 @@ bool blob_config_helper(blob_list_t* bl) {
     if (state == nullptr) {
         return true;
     } else if (state->state == empty) {
-        blob_ioctl_config_t config;
-        config.size_data = state->info->size_data;
-        ASSERT_EQ(ioctl_blobstore_blob_init(state->fd, &config), 0, "");
+        ASSERT_EQ(ftruncate(state->fd, state->info->size_data), 0, "");
         state->state = configured;
-    }
-    {
-        mxtl::AutoLock al(&bl->list_lock);
-        bl->list.push_front(mxtl::move(state));
-    }
-    return true;
-}
-
-// Write the merkle tree for an open, empty blob
-bool blob_write_merkle_helper(blob_list_t* bl) {
-    mxtl::unique_ptr<blob_state> state;
-    {
-        mxtl::AutoLock al(&bl->list_lock);
-        state = bl->list.pop_back();
-    }
-    if (state == nullptr) {
-        return true;
-    } else if (state->state == configured) {
-        ASSERT_EQ(StreamAll(write, state->fd, state->info->merkle.get(),
-                            state->info->size_merkle), 0, "Failed to write Merkle Tree");
-        state->state = merklewritten;
     }
     {
         mxtl::AutoLock al(&bl->list_lock);
@@ -712,7 +633,7 @@ bool blob_write_data_helper(blob_list_t* bl) {
     }
     if (state == nullptr) {
         return true;
-    } else if (state->state == merklewritten) {
+    } else if (state->state == configured) {
         ASSERT_EQ(StreamAll(write, state->fd, state->info->data.get(),
                             state->info->size_data), 0, "Failed to write Data");
         state->state = readable;
@@ -765,17 +686,21 @@ static bool CreateUmountRemountLarge(void) {
     ASSERT_EQ(StartBlobstoreTest(512, 1 << 20, ramdisk_path), 0, "Mounting Blobstore");
 
     blob_list_t bl;
+    // TODO(smklein): Here, and elsewhere in this file, remove this source
+    // of randomness to make the unit test deterministic -- fuzzing should
+    // be the tool responsible for introducing randomness into the system.
+    unsigned int seed = static_cast<unsigned int>(mx_ticks_get());
+    unittest_printf("unmount_remount test using seed: %u\n", seed);
 
     // Do some operations...
     size_t num_ops = 5000;
     for (size_t i = 0; i < num_ops; ++i) {
-        switch (rand() % 6) {
-        case 0: ASSERT_TRUE(blob_create_helper(&bl), "");       break;
+        switch (rand_r(&seed) % 5) {
+        case 0: ASSERT_TRUE(blob_create_helper(&bl, &seed), "");       break;
         case 1: ASSERT_TRUE(blob_config_helper(&bl), "");       break;
-        case 2: ASSERT_TRUE(blob_write_merkle_helper(&bl), ""); break;
-        case 3: ASSERT_TRUE(blob_write_data_helper(&bl), "");   break;
-        case 4: ASSERT_TRUE(blob_read_data_helper(&bl), "");    break;
-        case 5: ASSERT_TRUE(blob_unlink_helper(&bl), "");       break;
+        case 2: ASSERT_TRUE(blob_write_data_helper(&bl), "");   break;
+        case 3: ASSERT_TRUE(blob_read_data_helper(&bl), "");    break;
+        case 4: ASSERT_TRUE(blob_unlink_helper(&bl), "");       break;
         }
     }
 
@@ -809,19 +734,18 @@ static bool CreateUmountRemountLarge(void) {
 
 int unmount_remount_thread(void* arg) {
     blob_list_t* bl = static_cast<blob_list_t*>(arg);
-
     unsigned int seed = static_cast<unsigned int>(mx_ticks_get());
+    unittest_printf("unmount_remount thread using seed: %u\n", seed);
 
     // Do some operations...
     size_t num_ops = 1000;
     for (size_t i = 0; i < num_ops; ++i) {
-        switch (rand_r(&seed) % 6) {
-        case 0: ASSERT_TRUE(blob_create_helper(bl), "");       break;
+        switch (rand_r(&seed) % 5) {
+        case 0: ASSERT_TRUE(blob_create_helper(bl, &seed), "");       break;
         case 1: ASSERT_TRUE(blob_config_helper(bl), "");       break;
-        case 2: ASSERT_TRUE(blob_write_merkle_helper(bl), ""); break;
-        case 3: ASSERT_TRUE(blob_write_data_helper(bl), "");   break;
-        case 4: ASSERT_TRUE(blob_read_data_helper(bl), "");    break;
-        case 5: ASSERT_TRUE(blob_unlink_helper(bl), "");       break;
+        case 2: ASSERT_TRUE(blob_write_data_helper(bl), "");   break;
+        case 3: ASSERT_TRUE(blob_read_data_helper(bl), "");    break;
+        case 4: ASSERT_TRUE(blob_unlink_helper(bl), "");       break;
         }
     }
 
@@ -896,22 +820,18 @@ static bool NoSpace(void) {
 
         int fd = open(info->path, O_CREAT | O_RDWR);
         ASSERT_GT(fd, 0, "Failed to create blob");
-        blob_ioctl_config_t config;
-        config.size_data = info->size_data;
-        mx_status_t status = static_cast<mx_status_t>(ioctl_blobstore_blob_init(fd, &config));
-        if (status != NO_ERROR) {
-            ASSERT_EQ(status, ERR_NO_SPACE, "Blobstore expected to run out of space");
+        int r = ftruncate(fd, info->size_data);
+        if (r < 0) {
+            ASSERT_EQ(errno, ENOSPC, "Blobstore expected to run out of space");
             // We ran out of space, as expected. Can we allocate if we
             // unlink a previously allocated blob of the desired size?
             ASSERT_EQ(unlink(last_info->path), 0, "Unlinking old blob");
-            ASSERT_EQ(ioctl_blobstore_blob_init(fd, &config), 0, "Re-init after unlink");
+            ASSERT_EQ(ftruncate(fd, info->size_data), 0, "Re-init after unlink");
 
             // Yay! allocated successfully.
             ASSERT_EQ(close(fd), 0, "");
             break;
         }
-        ASSERT_EQ(StreamAll(write, fd, info->merkle.get(), info->size_merkle), 0,
-                  "Failed to write Merkle Tree");
         ASSERT_EQ(StreamAll(write, fd, info->data.get(), info->size_data), 0,
                   "Failed to write Data");
         ASSERT_EQ(close(fd), 0, "");
@@ -982,15 +902,9 @@ static bool EarlyRead(void) {
 
     ASSERT_TRUE(check_not_readable(fd), "Should not be readable after open");
     ASSERT_TRUE(check_not_readable(fd2), "Should not be readable after open");
-    blob_ioctl_config_t config;
-    config.size_data = info->size_data;
-    ASSERT_EQ(ioctl_blobstore_blob_init(fd, &config), 0, "");
+    ASSERT_EQ(ftruncate(fd, info->size_data), 0, "");
     ASSERT_TRUE(check_not_readable(fd), "Should not be readable after alloc");
     ASSERT_TRUE(check_not_readable(fd2), "Should not be readable after alloc");
-    ASSERT_EQ(StreamAll(write, fd, info->merkle.get(), info->size_merkle), 0,
-              "Failed to write Merkle Tree");
-    ASSERT_TRUE(check_not_readable(fd), "Should not be readable after merkle");
-    ASSERT_TRUE(check_not_readable(fd2), "Should not be readable after merkle");
     ASSERT_EQ(StreamAll(write, fd, info->data.get(), info->size_data), 0,
               "Failed to write Data");
 
@@ -1039,13 +953,8 @@ static bool WaitForRead(void) {
     thrd_create(&waiter_thread, wait_until_readable, &dupfd);
 
     ASSERT_TRUE(check_not_readable(fd), "Should not be readable after open");
-    blob_ioctl_config_t config;
-    config.size_data = info->size_data;
-    ASSERT_EQ(ioctl_blobstore_blob_init(fd, &config), 0, "");
+    ASSERT_EQ(ftruncate(fd, info->size_data), 0, "");
     ASSERT_TRUE(check_not_readable(fd), "Should not be readable after alloc");
-    ASSERT_EQ(StreamAll(write, fd, info->merkle.get(), info->size_merkle), 0,
-              "Failed to write Merkle Tree");
-    ASSERT_TRUE(check_not_readable(fd), "Should not be readable after merkle");
     ASSERT_EQ(StreamAll(write, fd, info->data.get(), info->size_data), 0,
               "Failed to write Data");
 
@@ -1076,20 +985,9 @@ static bool WriteSeekIgnored(void) {
     ASSERT_TRUE(GenerateBlob(1 << 17, &info), "");
     int fd = open(info->path, O_CREAT | O_RDWR);
     ASSERT_GT(fd, 0, "Failed to create blob");
-    blob_ioctl_config_t config;
-    config.size_data = info->size_data;
-    ASSERT_EQ(ioctl_blobstore_blob_init(fd, &config), 0, "");
+    ASSERT_EQ(ftruncate(fd, info->size_data), 0, "");
 
     size_t n = 0;
-    while (n != info->size_merkle) {
-        off_t seek_pos = (rand() % info->size_merkle);
-        ASSERT_EQ(lseek(fd, seek_pos, SEEK_SET), seek_pos, "");
-        ssize_t d = write(fd, info->merkle.get(), info->size_merkle - n);
-        ASSERT_GT(d, 0, "Merkle Write error");
-        n += d;
-    }
-
-    n = 0;
     while (n != info->size_data) {
         off_t seek_pos = (rand() % info->size_data);
         ASSERT_EQ(lseek(fd, seek_pos, SEEK_SET), seek_pos, "");
@@ -1124,8 +1022,6 @@ static bool UnlinkTiming(void) {
 
     mxtl::unique_ptr<blob_info_t> info;
     ASSERT_TRUE(GenerateBlob(1 << 17, &info), "");
-    blob_ioctl_config_t config;
-    config.size_data = info->size_data;
 
     int fd = open(info->path, O_CREAT | O_RDWR);
     ASSERT_GT(fd, 0, "Failed to create blob");
@@ -1133,19 +1029,11 @@ static bool UnlinkTiming(void) {
     ASSERT_TRUE(full_unlink_reopen(fd, info->path), "");
 
     // Unlink after init
-    ASSERT_EQ(ioctl_blobstore_blob_init(fd, &config), 0, "");
+    ASSERT_EQ(ftruncate(fd, info->size_data), 0, "");
     ASSERT_TRUE(full_unlink_reopen(fd, info->path), "");
 
     // Unlink after first write
-    ASSERT_EQ(ioctl_blobstore_blob_init(fd, &config), 0, "");
-    ASSERT_EQ(StreamAll(write, fd, info->merkle.get(), info->size_merkle), 0,
-              "Failed to write Merkle Tree");
-    ASSERT_TRUE(full_unlink_reopen(fd, info->path), "");
-
-    // Unlink after second write
-    ASSERT_EQ(ioctl_blobstore_blob_init(fd, &config), 0, "");
-    ASSERT_EQ(StreamAll(write, fd, info->merkle.get(), info->size_merkle), 0,
-              "Failed to write Merkle Tree");
+    ASSERT_EQ(ftruncate(fd, info->size_data), 0, "");
     ASSERT_EQ(StreamAll(write, fd, info->data.get(), info->size_data), 0,
               "Failed to write Data");
     ASSERT_TRUE(full_unlink_reopen(fd, info->path), "");
@@ -1198,11 +1086,8 @@ static bool RootDirectory(void) {
     mxtl::unique_ptr<blob_info_t> info;
     ASSERT_TRUE(GenerateBlob(1 << 12, &info), "");
 
-    blob_ioctl_config_t config;
-    config.size_data = info->size_data;
-
     // Test ioctls which should ONLY operate on Blobs
-    ASSERT_LT(ioctl_blobstore_blob_init(dirfd, &config), 0, "");
+    ASSERT_LT(ftruncate(dirfd, info->size_data), 0, "");
 
     // Should NOT be able to unlink root dir
     ASSERT_EQ(close(dirfd), 0, "");
@@ -1223,7 +1108,6 @@ RUN_TEST_MEDIUM(TestReaddir)
 RUN_TEST_MEDIUM(UseAfterUnlink)
 RUN_TEST_MEDIUM(WriteAfterRead)
 RUN_TEST_MEDIUM(BadAllocation)
-RUN_TEST_MEDIUM(CorruptedMerkleTree)
 RUN_TEST_MEDIUM(CorruptedBlob)
 RUN_TEST_MEDIUM(CorruptedDigest)
 RUN_TEST_MEDIUM(EdgeAllocation)

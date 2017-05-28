@@ -7,7 +7,6 @@
 #include <assert.h>
 #include <err.h>
 #include <inttypes.h>
-#include <new.h>
 #include <platform.h>
 #include <trace.h>
 
@@ -51,7 +50,7 @@ extern "C" const char userboot_image[];
 
 class UserbootImage : private RoDso {
 public:
-    explicit UserbootImage(VDso* vdso)
+    explicit UserbootImage(const VDso* vdso)
         : RoDso("userboot", userboot_image,
                 USERBOOT_CODE_END, USERBOOT_CODE_START),
           vdso_(vdso) {}
@@ -98,7 +97,7 @@ public:
     }
 
 private:
-    VDso* vdso_;
+    const VDso* vdso_;
 };
 
 }; // anonymous namespace
@@ -175,6 +174,7 @@ static mx_handle_t make_bootstrap_channel(
 
 enum bootstrap_handle_index {
     BOOTSTRAP_VDSO,
+    BOOTSTRAP_VDSO_LAST_VARIANT = BOOTSTRAP_VDSO + VDso::variants() - 1,
     BOOTSTRAP_RAMDISK,
     BOOTSTRAP_RESOURCE_ROOT,
     BOOTSTRAP_STACK,
@@ -212,8 +212,8 @@ static mxtl::unique_ptr<MessagePacket> prepare_bootstrap_message() {
     for (int i = 0; i < BOOTSTRAP_HANDLES; ++i) {
         uint32_t info = 0;
         switch (static_cast<bootstrap_handle_index>(i)) {
-        case BOOTSTRAP_VDSO:
-            info = PA_HND(PA_VMO_VDSO, 0);
+        case BOOTSTRAP_VDSO ... BOOTSTRAP_VDSO_LAST_VARIANT:
+            info = PA_HND(PA_VMO_VDSO, i - BOOTSTRAP_VDSO);
             break;
         case BOOTSTRAP_RAMDISK:
             info = PA_HND(PA_VMO_BOOTDATA, 0);
@@ -250,7 +250,7 @@ static int attempt_userboot() {
     size_t rsize;
     void* rbase = platform_get_ramdisk(&rsize);
     if (rbase)
-        dprintf(INFO, "userboot: ramdisk %15zu @ %p\n", rsize, rbase);
+        dprintf(INFO, "userboot: ramdisk %#15zx @ %p\n", rsize, rbase);
 
     auto stack_vmo = VmObjectPaged::Create(PMM_ALLOC_FLAG_ANY, stack_size);
     auto rootfs_vmo = VmObjectPaged::CreateFromROData(rbase, rsize);
@@ -295,10 +295,14 @@ static int attempt_userboot() {
 
     handles[BOOTSTRAP_VMAR_ROOT] = MakeHandle(vmar, vmar_rights);
 
-    VDso vdso;
-    handles[BOOTSTRAP_VDSO] = vdso.vmo_handle().release();
+    const VDso* vdso = VDso::Create();
+    for (size_t i = BOOTSTRAP_VDSO; i <= BOOTSTRAP_VDSO_LAST_VARIANT; ++i) {
+        HandleOwner vmo_handle =
+            vdso->vmo_handle(static_cast<VDso::Variant>(i - BOOTSTRAP_VDSO));
+        handles[i] = vmo_handle.release();
+    }
 
-    UserbootImage userboot(&vdso);
+    UserbootImage userboot(vdso);
     uintptr_t vdso_base = 0;
     uintptr_t entry = 0;
     status = userboot.Map(vmar, &vdso_base, &entry);

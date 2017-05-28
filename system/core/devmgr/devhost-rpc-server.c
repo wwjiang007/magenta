@@ -41,19 +41,8 @@ devhost_iostate_t* create_devhost_iostate(mx_device_t* dev) {
         return NULL;
     }
     ios->dev = dev;
-#if !DEVHOST_V2
-    mtx_init(&ios->lock, mtx_plain);
-#endif
     return ios;
 }
-
-#if !DEVHOST_V2
-mx_status_t devhost_start_iostate(devhost_iostate_t* ios, mx_handle_t h) {
-    return mxio_dispatcher_add(devhost_rio_dispatcher, h, devhost_rio_handler, ios);
-}
-#endif
-
-mx_status_t __mxrio_clone(mx_handle_t h, mx_handle_t* handles, uint32_t* types);
 
 static mx_status_t devhost_get_handles(mx_handle_t rh, mx_device_t* dev,
                                        const char* path, uint32_t flags) {
@@ -133,7 +122,6 @@ done:
         printf("devhost_get_handles: failed to start iostate\n");
         goto fail;
     }
-
     return NO_ERROR;
 
 fail:
@@ -142,13 +130,6 @@ fail_openat_pipelined:
     free(newios);
     mx_handle_close(rh);
     return r;
-}
-
-void txn_handoff_clone(mx_handle_t srv, mx_handle_t rh) {
-    mxrio_msg_t msg;
-    memset(&msg, 0, MXRIO_HDR_SZ);
-    msg.op = MXRIO_CLONE;
-    mxrio_txn_handoff(srv, rh, &msg);
 }
 
 static void sync_io_complete(iotxn_t* txn, void* cookie) {
@@ -200,8 +181,13 @@ static ssize_t do_ioctl(mx_device_t* dev, uint32_t op, const void* in_buf, size_
     mx_status_t r;
     switch (op) {
     case IOCTL_DEVICE_BIND: {
-        const char* drv = in_len > 0 ? (const char*)in_buf : NULL;
-        r = device_bind(dev, drv);
+        char* drv_libname = in_len > 0 ? (char*)in_buf : NULL;
+        if (in_len > PATH_MAX) {
+            r = ERR_BAD_PATH;
+        } else {
+            drv_libname[in_len] = 0;
+            r = device_bind(dev, drv_libname);
+        }
         break;
     }
     case IOCTL_DEVICE_GET_EVENT_HANDLE: {
@@ -222,11 +208,15 @@ static ssize_t do_ioctl(mx_device_t* dev, uint32_t op, const void* in_buf, size_
         } else if (!out_buf) {
             r = ERR_INVALID_ARGS;
         } else {
-            r = strlen(dev->driver->name);
+            const char* name = dev->driver->name;
+            if (name == NULL) {
+                name = "unknown";
+            }
+            r = strlen(name);
             if (out_len < (size_t)r) {
                 r = ERR_BUFFER_TOO_SMALL;
             } else {
-                strncpy(out_buf, dev->driver->name, r);
+                strncpy(out_buf, name, r);
             }
         }
         break;
@@ -263,20 +253,15 @@ static ssize_t do_ioctl(mx_device_t* dev, uint32_t op, const void* in_buf, size_
     return r;
 }
 
-mx_status_t _devhost_rio_handler(mxrio_msg_t* msg, mx_handle_t rh_unused,
-                                 devhost_iostate_t* ios, bool* should_free_ios) {
+mx_status_t devhost_rio_handler(mxrio_msg_t* msg, void* cookie) {
+    devhost_iostate_t* ios = cookie;
     mx_device_t* dev = ios->dev;
     uint32_t len = msg->datalen;
     int32_t arg = msg->arg;
     msg->datalen = 0;
 
-    *should_free_ios = false;
-
     // ensure handle count specified by opcode matches reality
     if (msg->hcount != MXRIO_HC(msg->op)) {
-        for (unsigned i = 0; i < msg->hcount; i++) {
-            mx_handle_close(msg->handle[i]);
-        }
         return ERR_IO;
     }
     msg->hcount = 0;
@@ -284,11 +269,15 @@ mx_status_t _devhost_rio_handler(mxrio_msg_t* msg, mx_handle_t rh_unused,
     switch (MXRIO_OP(msg->op)) {
     case MXRIO_CLOSE:
         device_close(dev, ios->flags);
-        *should_free_ios = true;
+        // The ios released its reference to this device by calling device_close()
+        // Put an invalid pointer in its dev field to ensure any use-after-release
+        // attempts explode.
+        ios->dev = (void*) 0xdead;
         return NO_ERROR;
     case MXRIO_OPEN:
         if ((len < 1) || (len > 1024)) {
-            return ERR_INVALID_ARGS;
+            mx_handle_close(msg->handle[0]);
+            return ERR_DISPATCHER_INDIRECT;
         }
         msg->data[len] = 0;
         // fallthrough
@@ -408,6 +397,7 @@ mx_status_t _devhost_rio_handler(mxrio_msg_t* msg, mx_handle_t rh_unused,
         memset(attr, 0, sizeof(vnattr_t));
         attr->mode = V_TYPE_CDEV | V_IRUSR | V_IWUSR;
         attr->size = device_op_get_size(dev);
+        attr->nlink = 1;
         return msg->datalen;
     }
     case MXRIO_SYNC: {
@@ -480,31 +470,4 @@ mx_status_t _devhost_rio_handler(mxrio_msg_t* msg, mx_handle_t rh_unused,
         }
         return ERR_NOT_SUPPORTED;
     }
-}
-
-mx_status_t devhost_rio_handler(mxrio_msg_t* msg, mx_handle_t rh, void* cookie) {
-    devhost_iostate_t* ios = cookie;
-    mx_status_t status;
-    bool should_free_ios = false;
-#if DEVHOST_V2
-    return _devhost_rio_handler(msg, rh, ios, &should_free_ios);
-#else
-    mtx_lock(&ios->lock);
-    // if ios->dev is NULL, this is the "root" iostate of the
-    // device (where OPEN transactions are passed from devfs)
-    // and devhost_remove() has been called as part of device
-    // removal
-    if (ios->dev != NULL) {
-        status = _devhost_rio_handler(msg, rh, ios, &should_free_ios);
-    } else {
-        printf("rpc-device: stale ios %p\n", ios);
-        status = ERR_PEER_CLOSED;
-    }
-    mtx_unlock(&ios->lock);
-    // TODO(swetland): pretty sure we sometimes leak these.
-    if (should_free_ios) {
-        free(ios);
-    }
-#endif
-    return status;
 }

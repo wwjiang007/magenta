@@ -60,6 +60,7 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/faults.cpp \
 	$(LOCAL_DIR)/feature.cpp \
 	$(LOCAL_DIR)/gdt.S \
+	$(LOCAL_DIR)/mexec.S \
 	$(LOCAL_DIR)/header.S \
 	$(LOCAL_DIR)/hypervisor.cpp \
 	$(LOCAL_DIR)/idt.cpp \
@@ -76,7 +77,6 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/tsc.cpp \
 	$(LOCAL_DIR)/user_copy.cpp \
 	$(LOCAL_DIR)/vmexit.cpp \
-	$(LOCAL_DIR)/vmexit_tests.cpp \
 
 MODULE_DEPS += \
 	kernel/lib/bitmap \

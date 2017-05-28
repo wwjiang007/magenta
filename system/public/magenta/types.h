@@ -75,7 +75,7 @@ typedef uint32_t mx_signals_t;
 #define __MX_OBJECT_SIGNAL_19       ((mx_signals_t)1u << 19)
 #define __MX_OBJECT_SIGNAL_20       ((mx_signals_t)1u << 20)
 #define __MX_OBJECT_SIGNAL_21       ((mx_signals_t)1u << 21)
-#define __MX_OBJECT_SIGNAL_22       ((mx_signals_t)1u << 22)
+#define __MX_OBJECT_LAST_HANDLE     ((mx_signals_t)1u << 22)
 #define __MX_OBJECT_HANDLE_CLOSED   ((mx_signals_t)1u << 23)
 
 
@@ -92,6 +92,9 @@ typedef uint32_t mx_signals_t;
 
 // Cancelation (handle was closed while waiting with it)
 #define MX_SIGNAL_HANDLE_CLOSED     __MX_OBJECT_HANDLE_CLOSED
+
+// Only one user-more reference (handle) to the object exists.
+#define MX_SIGNAL_LAST_HANDLE       __MX_OBJECT_LAST_HANDLE
 
 // Event
 #define MX_EVENT_SIGNALED           __MX_OBJECT_SIGNALED
@@ -147,9 +150,8 @@ typedef uint32_t mx_signals_t;
 #define MX_LOG_READABLE             __MX_OBJECT_READABLE
 #define MX_LOG_WRITABLE             __MX_OBJECT_WRITABLE
 
-
 // Compatibility Definitions
-// TODO: remove when safe
+// TODO: remove when safe. Magenta should not be using them.
 #define MX_PROCESS_SIGNALED         MX_PROCESS_TERMINATED
 #define MX_THREAD_SIGNALED          MX_THREAD_TERMINATED
 
@@ -267,6 +269,8 @@ typedef enum {
     MX_CACHE_POLICY_UNCACHED        = 1,
     MX_CACHE_POLICY_UNCACHED_DEVICE = 2,
     MX_CACHE_POLICY_WRITE_COMBINING = 3,
+
+    MX_CACHE_POLICY_MASK            = 0x3,
 } mx_cache_policy_t;
 
 // Fifo state

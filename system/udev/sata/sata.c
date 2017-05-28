@@ -7,8 +7,8 @@
 #include <ddk/binding.h>
 #include <ddk/protocol/block.h>
 
-#include <hexdump/hexdump.h>
 #include <magenta/types.h>
+#include <pretty/hexdump.h>
 #include <sync/completion.h>
 #include <sys/param.h>
 #include <assert.h>
@@ -36,8 +36,6 @@
 
 #define SATA_FLAG_DMA   (1 << 0)
 #define SATA_FLAG_LBA48 (1 << 1)
-
-extern mx_driver_t _driver_ahci;
 
 typedef struct sata_device {
     mx_device_t* mxdev;
@@ -339,7 +337,6 @@ mx_status_t sata_bind(mx_device_t* dev, int port) {
         .version = DEVICE_ADD_ARGS_VERSION,
         .name = name,
         .ctx = device,
-        .driver = &_driver_ahci,
         .ops = &sata_device_proto,
         .proto_id = MX_PROTOCOL_BLOCK_CORE,
         .proto_ops = &sata_block_ops,

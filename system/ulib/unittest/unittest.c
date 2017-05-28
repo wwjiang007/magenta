@@ -10,7 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include <hexdump/hexdump.h>
+#include <pretty/hexdump.h>
 
 /**
  * \brief Default function to dump unit test results
@@ -88,4 +88,23 @@ int unittest_set_verbosity_level(int new_level) {
     int out = utest_verbosity_level;
     utest_verbosity_level = new_level;
     return out;
+}
+
+void unittest_run_named_test(const char* name, bool (*test)(void),
+                             test_type_t test_type,
+                             struct test_info** current_test_info,
+                             bool* all_success) {
+    if (utest_test_type & test_type) {
+        unittest_printf_critical("    %-51s [RUNNING]", name);
+        struct test_info test_info;
+        *current_test_info = &test_info;
+        if (!test()) {
+            *all_success = false;
+        } else {
+            unittest_printf_critical(" [PASSED] \n");
+        }
+        current_test_info = NULL;
+    } else {
+        unittest_printf_critical("    %-51s [IGNORED]\n", name);
+    }
 }

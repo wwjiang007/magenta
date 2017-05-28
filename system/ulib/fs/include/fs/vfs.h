@@ -29,6 +29,7 @@
 // VFS Helpers (vfs.c)
 #define V_FLAG_DEVICE                 1
 #define V_FLAG_MOUNT_READY            2
+#define V_FLAG_DEVICE_DETACHED        4
 #define V_FLAG_RESERVED_MASK 0x0000FFFF
 
 __BEGIN_CDECLS
@@ -43,11 +44,13 @@ __END_CDECLS
 
 #ifdef __cplusplus
 
-#include <mxtl/intrusive_double_list.h>
-#include <mxtl/macros.h>
 #ifdef __Fuchsia__
+#include <fs/dispatcher.h>
 #include <mxtl/mutex.h>
 #endif  // __Fuchsia__
+
+#include <mxtl/intrusive_double_list.h>
+#include <mxtl/macros.h>
 #include <mxtl/ref_counted.h>
 #include <mxtl/ref_ptr.h>
 #include <mxtl/unique_ptr.h>
@@ -89,6 +92,27 @@ private:
 
 #endif // __Fuchsia__
 
+// Helper class used to fill direntries during calls to Readdir.
+class DirentFiller {
+public:
+    DISALLOW_COPY_ASSIGN_AND_MOVE(DirentFiller);
+
+    DirentFiller(void* ptr, size_t len);
+
+    // Attempts to add the name to the end of the dirent buffer
+    // which is returned by readdir.
+    mx_status_t Next(const char* name, size_t len, uint32_t type);
+
+    mx_status_t BytesFilled() const {
+        return static_cast<mx_status_t>(pos_);
+    }
+
+private:
+    char* ptr_;
+    size_t pos_;
+    const size_t len_;
+};
+
 // The VFS interface declares a default abtract Vnode class with
 // common operations that may be overwritten.
 //
@@ -124,7 +148,7 @@ public:
     virtual mx_status_t Open(uint32_t flags) = 0;
 
     // Closes vn. Typically, most Vnodes simply return "NO_ERROR".
-    virtual mx_status_t Close() = 0;
+    virtual mx_status_t Close();
 
     // Read data from vn at offset.
     virtual ssize_t Read(void* data, size_t len, size_t off) {
@@ -218,7 +242,7 @@ public:
     virtual ~Vnode() {};
 
 #ifdef __Fuchsia__
-    virtual mx_status_t AddDispatcher(mx_handle_t h, vfs_iostate_t* cookie);
+    virtual Dispatcher* GetDispatcher() = 0;
 #endif
 
     // Attaches a handle to the vnode, if possible. Otherwise, returns an error.
@@ -240,7 +264,12 @@ public:
     // or endpoints, depending on context. For the purposes of our VFS layer,
     // during path traversal, devices are NOT treated as mount points, even though
     // they contain remote handles.
-    bool IsDevice() { return (flags_ & V_FLAG_DEVICE) && IsRemote(); }
+    bool IsDevice() const { return (flags_ & V_FLAG_DEVICE) && IsRemote(); }
+    void DetachDevice() {
+        MX_DEBUG_ASSERT(flags_ & V_FLAG_DEVICE);
+        flags_ |= V_FLAG_DEVICE_DETACHED;
+    }
+    bool IsDetachedDevice() const { return (flags_ & V_FLAG_DEVICE_DETACHED); }
 protected:
     DISALLOW_COPY_ASSIGN_AND_MOVE(Vnode);
     Vnode() : flags_(0) {};
@@ -263,7 +292,6 @@ struct Vfs {
                             const char* oldname, const char* newname);
     static mx_status_t Rename(mxtl::RefPtr<Vnode> oldparent, mxtl::RefPtr<Vnode> newparent,
                               const char* oldname, const char* newname);
-    static mx_status_t Close(mxtl::RefPtr<Vnode> vn); // TODO(smklein): This has questionable utility
     static ssize_t Ioctl(mxtl::RefPtr<Vnode> vn, uint32_t op, const void* in_buf, size_t in_len,
                          void* out_buf, size_t out_len);
 
@@ -275,9 +303,6 @@ struct Vfs {
     static mx_status_t UninstallRemote(mxtl::RefPtr<Vnode> vn, mx_handle_t* h);
 #endif  // ifdef __Fuchsia__
 };
-
-mx_status_t vfs_fill_dirent(vdirent_t* de, size_t delen,
-                            const char* name, size_t len, uint32_t type);
 
 } // namespace fs
 
@@ -302,10 +327,8 @@ typedef struct vdircookie {
     void* p;
 } vdircookie_t;
 
-extern mxio_dispatcher_t* vfs_dispatcher;
-
 // Handle incoming mxrio messages, dispatching them to vnode operations.
-mx_status_t vfs_handler(mxrio_msg_t* msg, mx_handle_t rh, void* cookie);
+mx_status_t vfs_handler(mxrio_msg_t* msg, void* cookie);
 
 // Send an unmount signal on a handle to a filesystem and await a response.
 mx_status_t vfs_unmount_handle(mx_handle_t h, mx_time_t deadline);

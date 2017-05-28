@@ -5,9 +5,11 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-#include <reg.h>
-#include <err.h>
 #include <debug.h>
+#include <err.h>
+#include <mxtl/auto_lock.h>
+#include <mxtl/ref_ptr.h>
+#include <reg.h>
 #include <trace.h>
 
 #include <dev/uart.h>
@@ -30,7 +32,10 @@
 #include <arch/arm64.h>
 #include <arch/arm64/mmu.h>
 
+#include <kernel/vm/vm_aspace.h>
+
 #include <lib/console.h>
+#include <lib/memory_limit.h>
 #if WITH_LIB_DEBUGLOG
 #include <lib/debuglog.h>
 #endif
@@ -148,7 +153,7 @@ static void read_device_tree(void** ramdisk_base, size_t* ramdisk_size, size_t* 
         static_cast<const char*>(fdt_getprop(fdt, offset, "bootargs", &length));
     if (bootargs) {
         printf("kernel command line: %s\n", bootargs);
-        cmdline_init(bootargs);
+        cmdline_append(bootargs);
     }
 
     if (ramdisk_base && ramdisk_size) {
@@ -255,6 +260,117 @@ static void platform_cpu_early_init(mdi_node_ref_t* cpu_map) {
     arch_init_cpu_map(cpu_cluster_count, cpu_cluster_cpus);
 }
 
+
+#if BCM2837
+
+#define BCM2837_CPU_SPIN_TABLE_ADDR   0xd8
+
+// Make sure that the KERNEL_SPIN_OFFSET is completely clear of the Spin table
+// since we don't want to overwrite the spin vectors.
+#define KERNEL_SPIN_OFFSET (ROUNDUP(BCM2837_CPU_SPIN_TABLE_ADDR +              \
+                            (sizeof(uintptr_t) * SMP_MAX_CPUS), CACHE_LINE))
+
+// Prototype of assembly function where the CPU will be parked.
+typedef void (*park_cpu)(uint32_t cpuid, uintptr_t spin_table_addr);
+
+// Implemented in Assembly.
+__BEGIN_CDECLS
+extern void bcm28xx_park_cpu(void);
+extern void bcm28xx_park_cpu_end(void);
+__END_CDECLS
+
+// The first CPU to halt will setup the halt_aspace and map a WFE spin loop into
+// the halt aspace.
+// Subsequent CPUs will reuse this aspace and mapping.
+static mxtl::Mutex cpu_halt_lock;
+static mxtl::RefPtr<VmAspace> halt_aspace = nullptr;
+static bool mapped_boot_pages = false;
+
+void platform_halt_cpu(void) {
+    status_t result;
+    park_cpu park = (park_cpu)KERNEL_SPIN_OFFSET;
+    thread_t *self = get_current_thread();
+    const uint cpuid = thread_last_cpu(self);
+
+    mxtl::AutoLock lock(&cpu_halt_lock);
+    // If we're the first CPU to halt then we need to create an address space to
+    // park the CPUs in. Any subsequent calls to platform_halt_cpu will also
+    // share this address space.
+    if (!halt_aspace) {
+        halt_aspace = VmAspace::Create(VmAspace::TYPE_LOW_KERNEL, "halt_cpu");
+        if (!halt_aspace) {
+            printf("failed to create halt_cpu vm aspace\n");
+            return;
+        }
+    }
+
+    // Create an identity mapped page at the base of RAM. This is where the
+    // BCM28xx puts its bootcode.
+    if (!mapped_boot_pages) {
+        paddr_t pa = 0;
+        void* base_of_ram = nullptr;
+        const uint perm_flags_rwx = ARCH_MMU_FLAG_PERM_READ  |
+                                    ARCH_MMU_FLAG_PERM_WRITE |
+                                    ARCH_MMU_FLAG_PERM_EXECUTE;
+
+        // Map a page in this ASpace at address 0, where we'll be parking
+        // the core after it halts.
+        result = halt_aspace->AllocPhysical("halt_mapping", PAGE_SIZE,
+                                            &base_of_ram, 0, pa,
+                                            VMM_FLAG_VALLOC_SPECIFIC,
+                                            perm_flags_rwx);
+
+        if (result != NO_ERROR) {
+            printf("Unable to allocate physical at vaddr = %p, paddr = %p\n",
+                   base_of_ram, (void*)pa);
+            return;
+        }
+
+        // Copy the spin loop into the base of RAM. This is where we will park
+        // the CPU.
+        size_t bcm28xx_park_cpu_length = (uintptr_t)bcm28xx_park_cpu_end -
+                                         (uintptr_t)bcm28xx_park_cpu;
+
+        // Make sure the assembly for the CPU spin loop fits within the
+        // page that we allocated.
+        DEBUG_ASSERT((bcm28xx_park_cpu_length + KERNEL_SPIN_OFFSET) < PAGE_SIZE);
+
+        memcpy((void*)(KERNEL_ASPACE_BASE + KERNEL_SPIN_OFFSET),
+               reinterpret_cast<const void*>(bcm28xx_park_cpu),
+               bcm28xx_park_cpu_length);
+
+        CF;
+        arch_clean_cache_range(KERNEL_ASPACE_BASE, 4096);     // clean out all the VC bootstrap area
+        arch_sync_cache_range(KERNEL_ASPACE_BASE, 4096);     // clean out all the VC bootstrap area
+
+
+        // Only the first core that calls this method needs to setup the address
+        // space and load the bootcode into the base of RAM so once this call
+        // succeeds all subsequent cores can simply use what was provided by
+        // the first core.
+        mapped_boot_pages = true;
+    }
+
+    vmm_set_active_aspace(reinterpret_cast<vmm_aspace_t*>(halt_aspace.get()));
+
+    lock.release();
+
+    mp_set_curr_cpu_active(false);
+    mp_set_curr_cpu_online(false);
+
+    park(cpuid, 0xd8);
+
+    panic("control should never reach here");
+}
+
+#else
+
+void platform_halt_cpu(void) {
+    PANIC_UNIMPLEMENTED;
+}
+
+#endif
+
 static void platform_start_cpu(uint cluster, uint cpu) {
 #if BCM2837
     uintptr_t sec_entry = reinterpret_cast<uintptr_t>(&arm_reset) - KERNEL_ASPACE_BASE;
@@ -313,35 +429,16 @@ static void ramdisk_from_bootdata_container(void* bootdata,
     *ramdisk_size = ROUNDUP(header->length + sizeof(*header), PAGE_SIZE);
 }
 
-static void platform_mdi_init(void) {
+static void platform_mdi_init(const bootdata_t* section) {
     mdi_node_ref_t  root;
     mdi_node_ref_t  cpu_map;
     mdi_node_ref_t  kernel_drivers;
 
-    // Look for MDI data in ramdisk bootdata
-    size_t offset = 0;
-    uintptr_t ramdisk_base_ptr = reinterpret_cast<uintptr_t>(ramdisk_base);
-    bootdata_t* header = reinterpret_cast<bootdata_t*>(ramdisk_base_ptr);
-    if (header->type != BOOTDATA_CONTAINER) {
-        panic("invalid bootdata container header\n");
-    }
-    offset += sizeof(*header);
+    const void* ramdisk_end = reinterpret_cast<uint8_t*>(ramdisk_base) + ramdisk_size;
+    const void* section_ptr = reinterpret_cast<const void *>(section);
+    const size_t length = reinterpret_cast<uintptr_t>(ramdisk_end) - reinterpret_cast<uintptr_t>(section_ptr);
 
-    while (offset < ramdisk_size) {
-        header = reinterpret_cast<bootdata_t*>(ramdisk_base_ptr + offset);
-
-        if (header->type == BOOTDATA_MDI) {
-            break;
-        } else {
-            offset += BOOTDATA_ALIGN(sizeof(*header) + header->length);
-        }
-    }
-    if (offset >= ramdisk_size) {
-        panic("No MDI found in ramdisk\n");
-    }
-
-    if (mdi_init(reinterpret_cast<void *>(ramdisk_base_ptr + offset),
-                 ramdisk_size - offset, &root) != NO_ERROR) {
+    if (mdi_init(section_ptr, length, &root) != NO_ERROR) {
         panic("mdi_init failed\n");
     }
 
@@ -360,6 +457,60 @@ static void platform_mdi_init(void) {
     pdev_init(&kernel_drivers);
 }
 
+static uint32_t process_bootsection(bootdata_t* section) {
+    switch(section->type) {
+    case BOOTDATA_MDI:
+        platform_mdi_init(section);
+        break;
+    case BOOTDATA_CMDLINE:
+        if (section->length < 1) {
+            break;
+        }
+        char* contents = reinterpret_cast<char*>(section + 1);
+        contents[section->length - 1] = '\0';
+        cmdline_append(contents);
+        break;
+    }
+
+    return section->type;
+}
+
+static void process_bootdata(bootdata_t* root) {
+    DEBUG_ASSERT(root);
+
+    if (root->type != BOOTDATA_CONTAINER) {
+        printf("bootdata: invalid type = %08x\n", root->type);
+        return;
+    }
+
+    if (root->extra != BOOTDATA_MAGIC) {
+        printf("bootdata: invalid magic = %08x\n", root->extra);
+        return;
+    }
+
+    bool mdi_found = false;
+    size_t offset = sizeof(bootdata_t);
+    const size_t length = (root->length);
+
+    while (offset < length) {
+        uintptr_t ptr = reinterpret_cast<const uintptr_t>(root);
+        bootdata_t* section = reinterpret_cast<bootdata_t*>(ptr + offset);
+
+        const uint32_t type = process_bootsection(section);
+        if (BOOTDATA_MDI == type) {
+            mdi_found = true;
+        }
+
+        offset += BOOTDATA_ALIGN(sizeof(*section) + section->length);
+    }
+
+    if (!mdi_found) {
+        panic("No MDI found in ramdisk\n");
+    }
+
+}
+
+extern int _end;
 void platform_early_init(void)
 {
     // QEMU does not put device tree pointer in the boot-time x2 register,
@@ -390,13 +541,33 @@ void platform_early_init(void)
         panic("no ramdisk!\n");
     }
 
-    platform_mdi_init();
+    process_bootdata(reinterpret_cast<bootdata_t*>(ramdisk_base));
 
     /* add the main memory arena */
     if (arena_size) {
         arena.size = arena_size;
     }
-    pmm_add_arena(&arena);
+
+    // check if a memory limit was passed in via kernel.memory-limit-mb and
+    // find memory ranges to use if one is found.
+    mem_limit_ctx_t ctx;
+    status_t status = mem_limit_init(&ctx);
+    if (status == NO_ERROR) {
+        // For these ranges we're using the base physical values
+        ctx.kernel_base = MEMBASE + KERNEL_LOAD_OFFSET;
+        ctx.kernel_size = (uintptr_t)&_end - ctx.kernel_base;
+        ctx.ramdisk_base = ramdisk_start_phys;
+        ctx.ramdisk_size = ramdisk_end_phys - ramdisk_start_phys;
+
+        // Figure out and add arenas based on the memory limit and our range of DRAM
+        status = mem_limit_add_arenas_from_range(&ctx, arena.base, arena.size, arena);
+    }
+
+    // If no memory limit was found, or adding arenas from the range failed, then add
+    // the existing global arena.
+    if (status != NO_ERROR) {
+        pmm_add_arena(&arena);
+    }
 
 #ifdef BOOTLOADER_RESERVE_START
     /* Allocate memory regions reserved by bootloaders for other functions */
@@ -508,4 +679,8 @@ void platform_halt(platform_halt_action suggested_action, platform_halt_reason r
     // catch all fallthrough cases
     arch_disable_ints();
     for (;;);
+}
+
+size_t platform_stow_crashlog(void* log, size_t len) {
+    return 0;
 }

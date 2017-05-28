@@ -41,36 +41,34 @@ static void dump_iframe(const struct arm64_iframe_long *iframe)
     printf("spsr %#18" PRIx64 "\n", iframe->spsr);
 }
 
-__WEAK void arm64_syscall(struct arm64_iframe_long *iframe, bool is_64bit, uint32_t syscall_imm, uint64_t pc)
+__WEAK void arm64_syscall(struct arm64_iframe_long *iframe, bool is_64bit, uint64_t pc)
 {
     panic("unhandled syscall vector\n");
 }
 
 #if WITH_LIB_MAGENTA
 
-static status_t try_magenta_exception_handler (mx_excp_type_t type, struct arm64_iframe_long *iframe, uint32_t esr)
+static status_t call_magenta_data_fault_exception_handler(mx_excp_type_t type, struct arm64_iframe_long *iframe, uint32_t esr, uint64_t far)
 {
+    thread_t *thread = get_current_thread();
     arch_exception_context_t context = {};
-    context.frame = iframe;
-    context.esr = esr;
-
-    arch_enable_ints();
-    status_t status = magenta_exception_handler(type, &context, iframe->elr);
-    arch_disable_ints();
-    return status;
-}
-
-static status_t try_magenta_data_fault_exception_handler (mx_excp_type_t type, struct arm64_iframe_long *iframe, uint32_t esr, uint64_t far)
-{
-    arch_exception_context_t context = {};
+    DEBUG_ASSERT(iframe != nullptr);
     context.frame = iframe;
     context.esr = esr;
     context.far = far;
 
     arch_enable_ints();
+    DEBUG_ASSERT(thread->arch.suspended_general_regs == nullptr);
+    thread->arch.suspended_general_regs = iframe;
     status_t status = magenta_exception_handler(type, &context, iframe->elr);
+    thread->arch.suspended_general_regs = nullptr;
     arch_disable_ints();
     return status;
+}
+
+static status_t call_magenta_exception_handler(mx_excp_type_t type, struct arm64_iframe_long *iframe, uint32_t esr)
+{
+    return call_magenta_data_fault_exception_handler(type, iframe, esr, 0);
 }
 
 #endif
@@ -100,7 +98,7 @@ static void arm64_unknown_handler(struct arm64_iframe_long *iframe, uint excepti
         exception_die(iframe, esr);
     }
 #if WITH_LIB_MAGENTA
-    try_magenta_exception_handler (MX_EXCP_UNDEFINED_INSTRUCTION, iframe, esr);
+    call_magenta_exception_handler (MX_EXCP_UNDEFINED_INSTRUCTION, iframe, esr);
 #endif
 }
 
@@ -113,7 +111,7 @@ static void arm64_brk_handler(struct arm64_iframe_long *iframe, uint exception_f
         exception_die(iframe, esr);
     }
 #if WITH_LIB_MAGENTA
-    try_magenta_exception_handler (MX_EXCP_SW_BREAKPOINT, iframe, esr);
+    call_magenta_exception_handler (MX_EXCP_SW_BREAKPOINT, iframe, esr);
 #endif
 }
 
@@ -133,14 +131,13 @@ static void arm64_syscall_handler(struct arm64_iframe_long *iframe, uint excepti
                                   uint32_t esr)
 {
     uint32_t ec = BITS_SHIFT(esr, 31, 26);
-    uint32_t iss = BITS(esr, 24, 0);
 
     if (unlikely((exception_flags & ARM64_EXCEPTION_FLAG_LOWER_EL) == 0)) {
         /* trapped inside the kernel, this is bad */
         printf("syscall from in kernel: PC at %#" PRIx64 "\n", iframe->elr);
         exception_die(iframe, esr);
     }
-    arm64_syscall(iframe, (ec == 0x15) ? true : false, iss & 0xffff, iframe->elr);
+    arm64_syscall(iframe, (ec == 0x15) ? true : false, iframe->elr);
 }
 
 static void arm64_instruction_abort_handler(struct arm64_iframe_long *iframe, uint exception_flags,
@@ -172,7 +169,7 @@ static void arm64_instruction_abort_handler(struct arm64_iframe_long *iframe, ui
 #if WITH_LIB_MAGENTA
     /* if this is from user space, let magenta get a shot at it */
     if (is_user) {
-        if (try_magenta_data_fault_exception_handler (MX_EXCP_FATAL_PAGE_FAULT, iframe, esr, far) == NO_ERROR)
+        if (call_magenta_data_fault_exception_handler (MX_EXCP_FATAL_PAGE_FAULT, iframe, esr, far) == NO_ERROR)
             return;
     }
 #endif
@@ -228,7 +225,7 @@ static void arm64_data_abort_handler(struct arm64_iframe_long *iframe, uint exce
         if (unlikely(dfsc == DFSC_ALIGNMENT_FAULT)) {
             excp_type = MX_EXCP_UNALIGNED_ACCESS;
         }
-        if (try_magenta_data_fault_exception_handler (excp_type, iframe, esr, far) == NO_ERROR)
+        if (call_magenta_data_fault_exception_handler (excp_type, iframe, esr, far) == NO_ERROR)
             return;
     }
 #endif
@@ -291,7 +288,7 @@ extern "C" void arm64_sync_exception(struct arm64_iframe_long *iframe, uint exce
             }
 #if WITH_LIB_MAGENTA
             /* let magenta get a shot at it */
-            if (try_magenta_exception_handler (MX_EXCP_GENERAL, iframe, esr) == NO_ERROR)
+            if (call_magenta_exception_handler (MX_EXCP_GENERAL, iframe, esr) == NO_ERROR)
                 break;
 #endif
             printf("unhandled synchronous exception\n");
@@ -299,13 +296,12 @@ extern "C" void arm64_sync_exception(struct arm64_iframe_long *iframe, uint exce
         }
     }
 
-    bool is_user = !BIT(ec, 0);
     /* if we came from user space, check to see if we have any signals to handle */
-    if (unlikely(is_user)) {
+    if (unlikely(exception_flags & ARM64_EXCEPTION_FLAG_LOWER_EL)) {
         /* in the case of receiving a kill signal, this function may not return,
          * but the scheduler would have been invoked so it's fine.
          */
-        thread_process_pending_signals();
+        arm64_thread_process_pending_signals(iframe);
     }
 }
 
@@ -341,6 +337,16 @@ extern "C" void arm64_invalid_exception(struct arm64_iframe_long *iframe, unsign
     dump_iframe(iframe);
 
     platform_halt(HALT_ACTION_HALT, HALT_REASON_SW_PANIC);
+}
+
+void arm64_thread_process_pending_signals(struct arm64_iframe_long *iframe)
+{
+    thread_t *thread = get_current_thread();
+    DEBUG_ASSERT(iframe != nullptr);
+    DEBUG_ASSERT(thread->arch.suspended_general_regs == nullptr);
+    thread->arch.suspended_general_regs = iframe;
+    thread_process_pending_signals();
+    thread->arch.suspended_general_regs = nullptr;
 }
 
 #if WITH_LIB_MAGENTA

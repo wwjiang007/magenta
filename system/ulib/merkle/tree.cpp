@@ -7,11 +7,26 @@
 #include <string.h>
 
 #include <magenta/errors.h>
-#include <magenta/new.h>
+#include <mxalloc/new.h>
 #include <mxtl/algorithm.h>
 #include <mxtl/unique_ptr.h>
 
 namespace merkle {
+
+namespace {
+
+uint32_t GetNodeLength(uint64_t offset, uint64_t data_len) {
+    MX_DEBUG_ASSERT(offset + Tree::kNodeSize > offset);
+    if (offset + Tree::kNodeSize <= data_len) {
+        return Tree::kNodeSize;
+    }
+    if (offset != data_len) {
+        return static_cast<uint32_t>(data_len - offset);
+    }
+    return 0;
+}
+
+} // namespace
 
 constexpr size_t Tree::kNodeSize;
 const size_t kDigestsPerNode = Tree::kNodeSize / Digest::kLength;
@@ -77,6 +92,8 @@ mx_status_t Tree::CreateFinal(void* tree, Digest* digest) {
         digest_.Init();
         uint64_t locality = static_cast<uint64_t>(offset_ | level_);
         digest_.Update(&locality, sizeof(locality));
+        uint32_t length = 0;
+        digest_.Update(&length, sizeof(length));
         digest_.Final();
     }
     if (data_len_ <= kNodeSize) {
@@ -98,6 +115,7 @@ mx_status_t Tree::CreateFinal(void* tree, Digest* digest) {
             return rc;
         }
         hash += Digest::kLength;
+
         if (offset_ == offsets_[level_]) {
             ++level_;
         }
@@ -250,16 +268,22 @@ mx_status_t Tree::SetLengths(size_t data_len, size_t tree_len) {
 
 void Tree::HashNode(const void* data) {
     const uint8_t* bytes = static_cast<const uint8_t*>(data) + offset_;
-    digest_.Init();
-    uint64_t locality = static_cast<uint64_t>(offset_ | level_);
-    digest_.Update(&locality, sizeof(locality));
-    if (level_ == 0 && (data_len_ - offset_) < kNodeSize) {
-        digest_.Update(bytes, data_len_ - offset_);
-        offset_ = data_len_;
-    } else {
-        digest_.Update(bytes, kNodeSize);
-        offset_ += kNodeSize;
+    uint64_t offset = offset_;
+    if (offsets_.size() > 0 && level_ != 0) {
+        offset -= offsets_[level_ - 1];
     }
+    digest_.Init();
+    uint64_t locality = offset | level_;
+    digest_.Update(&locality, sizeof(locality));
+    uint32_t length = GetNodeLength(offset_, data_len_);
+    digest_.Update(&length, sizeof(length));
+    digest_.Update(bytes, length);
+    if (level_ == 0 && length != 0 && length < kNodeSize) {
+        uint8_t pad[kNodeSize - length];
+        memset(pad, 0, kNodeSize - length);
+        digest_.Update(pad, kNodeSize - length);
+    }
+    offset_ += length;
     digest_.Final();
 }
 
@@ -272,8 +296,10 @@ mx_status_t Tree::HashData(const void* data, size_t length, void* tree) {
     while (length > 0) {
         if (offset_ % kNodeSize == 0) {
             digest_.Init();
-            uint64_t locality = static_cast<uint64_t>(offset_ | level_);
+            uint64_t locality = offset_ | level_;
             digest_.Update(&locality, sizeof(locality));
+            uint32_t len = GetNodeLength(offset_, data_len_);
+            digest_.Update(&len, sizeof(len));
         }
         size_t left = static_cast<size_t>(kNodeSize - (offset_ % kNodeSize));
         left = mxtl::min(left, length);
@@ -283,6 +309,12 @@ mx_status_t Tree::HashData(const void* data, size_t length, void* tree) {
         length -= left;
         if (offset_ != data_len_ && offset_ % kNodeSize != 0) {
             break;
+        }
+        size_t pad_len = kNodeSize - (offset_ % kNodeSize);
+        if (pad_len != kNodeSize) {
+            uint8_t pad[pad_len];
+            memset(pad, 0, pad_len);
+            digest_.Update(pad, pad_len);
         }
         digest_.Final();
         if (!hashes) {

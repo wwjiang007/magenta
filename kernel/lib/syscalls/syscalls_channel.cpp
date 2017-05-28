@@ -141,6 +141,8 @@ mx_status_t sys_channel_read(mx_handle_t handle_value, uint32_t options,
             return ERR_INVALID_ARGS;
     }
 
+    // The documented public API states that that writing to the handles buffer
+    // must happen after writing to the data buffer.
     if (num_handles > 0u) {
         msg_get_handles(up, msg.get(), _handles, num_handles);
     }
@@ -255,7 +257,6 @@ mx_status_t sys_channel_call(mx_handle_t handle_value, uint32_t options,
                              user_ptr<mx_status_t> read_status) {
     mx_channel_call_args_t args;
 
-    magenta_check_deadline("channel_call", deadline);
 
     if (_args.copy_from_user(&args) != NO_ERROR)
         return ERR_INVALID_ARGS;

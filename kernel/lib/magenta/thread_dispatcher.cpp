@@ -6,11 +6,11 @@
 
 #include <magenta/thread_dispatcher.h>
 
-#include <new.h>
 #include <trace.h>
 
 #include <magenta/handle.h>
 #include <magenta/process_dispatcher.h>
+#include <mxalloc/new.h>
 
 #define LOCAL_TRACE 0
 
@@ -50,6 +50,13 @@ status_t ThreadDispatcher::GetInfo(mx_info_thread_t* info) {
     canary_.Assert();
 
     thread_->GetInfoForUserspace(info);
+    return NO_ERROR;
+}
+
+status_t ThreadDispatcher::GetStats(mx_info_thread_stats_t* info) {
+    canary_.Assert();
+
+    thread_->GetStatsForUserspace(info);
     return NO_ERROR;
 }
 

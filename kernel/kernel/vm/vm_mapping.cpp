@@ -13,9 +13,9 @@
 #include <kernel/vm.h>
 #include <kernel/vm/vm_aspace.h>
 #include <kernel/vm/vm_object.h>
+#include <mxalloc/new.h>
 #include <mxtl/auto_call.h>
 #include <mxtl/auto_lock.h>
-#include <new.h>
 #include <safeint/safe_math.h>
 #include <trace.h>
 
@@ -457,6 +457,16 @@ status_t VmMapping::DestroyLocked() {
     // dropping our last reference in this method (e.g. when calling
     // subregions_.erase below).
     mxtl::RefPtr<VmMapping> self(this);
+
+#if WITH_LIB_VDSO
+    // The vDSO code mapping can never be unmapped, not even
+    // by VMAR destruction (except for process exit, of course).
+    // TODO(mcgrathr): Turn this into a policy-driven process-fatal case
+    // at some point.  teisenbe@ wants to eventually make mx_vmar_destroy
+    // never fail.
+    if (aspace_->vdso_code_mapping_ == self)
+        return ERR_ACCESS_DENIED;
+#endif
 
     // unmap our entire range
     status_t status = UnmapLocked(base_, size_);

@@ -16,7 +16,6 @@
 #include <kernel/vm/vm_address_region.h>
 #include <lib/console.h>
 #include <mxtl/ref_ptr.h>
-#include <new.h>
 #include <safeint/safe_math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,28 +52,136 @@ VmObject::~VmObject() {
     DEBUG_ASSERT(children_list_.is_empty());
 }
 
+void VmObject::get_name(char out_name[MX_MAX_NAME_LEN]) const {
+    canary_.Assert();
+    name_.get(MX_MAX_NAME_LEN, out_name);
+}
+
+status_t VmObject::set_name(const char* name, size_t len) {
+    canary_.Assert();
+    return name_.set(name, len);
+}
+
+void VmObject::set_user_id(uint64_t user_id) {
+    canary_.Assert();
+    AutoLock a(&lock_);
+    DEBUG_ASSERT(user_id_ == 0);
+    user_id_ = user_id;
+}
+
+uint64_t VmObject::user_id() const {
+    canary_.Assert();
+    AutoLock a(&lock_);
+    return user_id_;
+}
+
+uint64_t VmObject::parent_user_id() const {
+    canary_.Assert();
+    // Don't hold both our lock and our parent's lock at the same time, because
+    // it's probably the same lock.
+    mxtl::RefPtr<VmObject> parent;
+    {
+        AutoLock a(&lock_);
+        if (parent_ == nullptr) {
+            return 0u;
+        }
+        parent = parent_;
+    }
+    return parent->user_id();
+}
+
+bool VmObject::is_cow_clone() const {
+    canary_.Assert();
+    AutoLock a(&lock_);
+    return parent_ != nullptr;
+}
+
 void VmObject::AddMappingLocked(VmMapping* r) {
     canary_.Assert();
     DEBUG_ASSERT(lock_.IsHeld());
     mapping_list_.push_front(r);
+    mapping_list_len_++;
 }
 
 void VmObject::RemoveMappingLocked(VmMapping* r) {
     canary_.Assert();
     DEBUG_ASSERT(lock_.IsHeld());
     mapping_list_.erase(*r);
+    DEBUG_ASSERT(mapping_list_len_ > 0);
+    mapping_list_len_--;
+}
+
+uint32_t VmObject::num_mappings() const {
+    canary_.Assert();
+    AutoLock a(&lock_);
+    return mapping_list_len_;
+}
+
+uint32_t VmObject::share_count() const {
+    canary_.Assert();
+
+    AutoLock a(&lock_);
+    if (mapping_list_len_ < 2) {
+        return 1;
+    }
+
+    // Find the number of unique VmAspaces that we're mapped into.
+    // Use this buffer to hold VmAspace pointers.
+    static constexpr int kAspaceBuckets = 64;
+    uintptr_t aspaces[kAspaceBuckets];
+    unsigned int num_mappings = 0; // Number of mappings we've visited
+    unsigned int num_aspaces = 0;  // Unique aspaces we've seen
+    for (const auto& m : mapping_list_) {
+        uintptr_t as = reinterpret_cast<uintptr_t>(m.aspace().get());
+        // Simple O(n^2) should be fine.
+        for (unsigned int i = 0; i < num_aspaces; i++) {
+            if (aspaces[i] == as) {
+                goto found;
+            }
+        }
+        if (num_aspaces < kAspaceBuckets) {
+            aspaces[num_aspaces++] = as;
+        } else {
+            // Maxed out the buffer. Estimate the remaining number of aspaces.
+            num_aspaces +=
+                // The number of mappings we haven't visited yet
+                (mapping_list_len_ - num_mappings)
+                // Scaled down by the ratio of unique aspaces we've seen so far.
+                * num_aspaces / num_mappings;
+            break;
+        }
+    found:
+        num_mappings++;
+    }
+    DEBUG_ASSERT_MSG(num_aspaces <= mapping_list_len_,
+                     "num_aspaces %u should be <= mapping_list_len_ %" PRIu32,
+                     num_aspaces, mapping_list_len_);
+
+    // TODO: Cache this value as long as the set of mappings doesn't change.
+    // Or calculate it when adding/removing a new mapping under an aspace
+    // not in the list.
+    return num_aspaces;
 }
 
 void VmObject::AddChildLocked(VmObject* o) {
     canary_.Assert();
     DEBUG_ASSERT(lock_.IsHeld());
     children_list_.push_front(o);
+    children_list_len_++;
 }
 
 void VmObject::RemoveChildLocked(VmObject* o) {
     canary_.Assert();
     DEBUG_ASSERT(lock_.IsHeld());
     children_list_.erase(*o);
+    DEBUG_ASSERT(children_list_len_ > 0);
+    children_list_len_--;
+}
+
+uint32_t VmObject::num_children() const {
+    canary_.Assert();
+    AutoLock a(&lock_);
+    return children_list_len_;
 }
 
 void VmObject::RangeChangeUpdateLocked(uint64_t offset, uint64_t len) {

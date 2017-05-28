@@ -11,6 +11,7 @@ MODULE := $(LOCAL_DIR)
 
 MODULE_DEPS := \
 	kernel/lib/debug \
+	kernel/lib/dpc \
 	kernel/lib/heap \
 	kernel/lib/libc \
 	kernel/lib/mxtl \
@@ -28,5 +29,7 @@ MODULE_SRCS := \
 	$(LOCAL_DIR)/cmdline.c \
 
 MODULE_DEPS += kernel/kernel/vm
+
+MDI_INCLUDES += kernel/include/mdi/kernel-defs.mdi
 
 include make/module.mk

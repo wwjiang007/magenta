@@ -20,8 +20,16 @@
 #include "filesystems.h"
 
 const char* test_root_path;
+bool use_real_disk = false;
 char test_disk_path[PATH_MAX];
 fs_info_t* test_info;
+
+const fsck_options_t test_fsck_options = {
+    .verbose = false,
+    .never_modify = true,
+    .always_modify = false,
+    .force = true,
+};
 
 int setup_fs_test(void) {
     test_root_path = MOUNT_PATH;
@@ -31,9 +39,11 @@ int setup_fs_test(void) {
         return -1;
     }
 
-    if (create_ramdisk("fs-test", test_disk_path, 512, (1 << 23))) {
-        fprintf(stderr, "[FAILED]: Could not create ramdisk for test\n");
-        exit(-1);
+    if (!use_real_disk) {
+        if (create_ramdisk("fs-test", test_disk_path, 512, (1 << 23))) {
+            fprintf(stderr, "[FAILED]: Could not create ramdisk for test\n");
+            exit(-1);
+        }
     }
     if (test_info->mkfs(test_disk_path)) {
         fprintf(stderr, "[FAILED]: Could not format ramdisk for test\n");
@@ -53,9 +63,16 @@ int teardown_fs_test(void) {
         exit(-1);
     }
 
-    if (destroy_ramdisk(test_disk_path)) {
-        fprintf(stderr, "[FAILED]: Error destroying ramdisk\n");
+    if (test_info->fsck(test_disk_path)) {
+        fprintf(stderr, "[FAILED]: Filesystem fsck failed\n");
         exit(-1);
+    }
+
+    if (!use_real_disk) {
+        if (destroy_ramdisk(test_disk_path)) {
+            fprintf(stderr, "[FAILED]: Error destroying ramdisk\n");
+            exit(-1);
+        }
     }
 
     return 0;
@@ -66,6 +83,10 @@ int teardown_fs_test(void) {
 bool always_exists(void) { return true; }
 
 int mkfs_memfs(const char* disk_path) {
+    return 0;
+}
+
+int fsck_memfs(const char* disk_path) {
     return 0;
 }
 
@@ -131,8 +152,18 @@ int unmount_memfs(const char* mount_path) {
 
 int mkfs_minfs(const char* disk_path) {
     mx_status_t status;
-    if ((status = mkfs(disk_path, DISK_FORMAT_MINFS, launch_stdio_sync)) != NO_ERROR) {
+    if ((status = mkfs(disk_path, DISK_FORMAT_MINFS, launch_stdio_sync,
+                       &default_mkfs_options)) != NO_ERROR) {
         fprintf(stderr, "Could not mkfs filesystem");
+        return -1;
+    }
+    return 0;
+}
+
+int fsck_minfs(const char* disk_path) {
+    mx_status_t status;
+    if ((status = fsck(disk_path, DISK_FORMAT_MINFS, &test_fsck_options, launch_stdio_sync)) != NO_ERROR) {
+        fprintf(stderr, "fsck on MinFS failed");
         return -1;
     }
     return 0;
@@ -173,8 +204,18 @@ bool thinfs_exists(void) {
 
 int mkfs_thinfs(const char* disk_path) {
     mx_status_t status;
-    if ((status = mkfs(disk_path, DISK_FORMAT_FAT, launch_stdio_sync)) != NO_ERROR) {
+    if ((status = mkfs(disk_path, DISK_FORMAT_FAT, launch_stdio_sync,
+                       &default_mkfs_options)) != NO_ERROR) {
         fprintf(stderr, "Could not mkfs filesystem");
+        return -1;
+    }
+    return 0;
+}
+
+int fsck_thinfs(const char* disk_path) {
+    mx_status_t status;
+    if ((status = fsck(disk_path, DISK_FORMAT_FAT, &test_fsck_options, launch_stdio_sync)) != NO_ERROR) {
+        fprintf(stderr, "fsck on FAT failed");
         return -1;
     }
     return 0;
@@ -210,7 +251,7 @@ int unmount_thinfs(const char* mount_path) {
 
 fs_info_t FILESYSTEMS[NUM_FILESYSTEMS] = {
     {"memfs",
-        always_exists, mkfs_memfs, mount_memfs, unmount_memfs,
+        always_exists, mkfs_memfs, mount_memfs, unmount_memfs, fsck_memfs,
         .can_be_mounted = false,
         .can_mount_sub_filesystems = true,
         .supports_hardlinks = true,
@@ -218,7 +259,7 @@ fs_info_t FILESYSTEMS[NUM_FILESYSTEMS] = {
         .nsec_granularity = 1,
     },
     {"minfs",
-        always_exists, mkfs_minfs, mount_minfs, unmount_minfs,
+        always_exists, mkfs_minfs, mount_minfs, unmount_minfs, fsck_minfs,
         .can_be_mounted = true,
         .can_mount_sub_filesystems = true,
         .supports_hardlinks = true,
@@ -226,7 +267,7 @@ fs_info_t FILESYSTEMS[NUM_FILESYSTEMS] = {
         .nsec_granularity = 1,
     },
     {"thinfs",
-        thinfs_exists, mkfs_thinfs, mount_thinfs, unmount_thinfs,
+        thinfs_exists, mkfs_thinfs, mount_thinfs, unmount_thinfs, fsck_thinfs,
         .can_be_mounted = true,
         .can_mount_sub_filesystems = false,
         .supports_hardlinks = false,

@@ -136,7 +136,7 @@ mx_status_t Vnode::Serve(mx_handle_t h, uint32_t flags) {
     ios->vn = mxtl::RefPtr<Vnode>(this);
     ios->io_flags = flags;
 
-    if ((r = AddDispatcher(h, ios)) < 0) {
+    if ((r = GetDispatcher()->AddVFSHandler(h, reinterpret_cast<void*>(vfs_handler), ios)) < 0) {
         mx_handle_close(h);
         free(ios);
         return r;
@@ -173,7 +173,7 @@ static mx_status_t iostate_get_token(uint64_t vnode_cookie, vfs_iostate* ios, mx
     return sizeof(mx_handle_t);
 }
 
-mx_status_t vfs_handler_vn(mxrio_msg_t* msg, mx_handle_t rh, mxtl::RefPtr<Vnode> vn, vfs_iostate* ios) {
+mx_status_t vfs_handler_vn(mxrio_msg_t* msg, mxtl::RefPtr<Vnode> vn, vfs_iostate* ios) {
     uint32_t len = msg->datalen;
     int32_t arg = msg->arg;
     msg->datalen = 0;
@@ -199,7 +199,7 @@ mx_status_t vfs_handler_vn(mxrio_msg_t* msg, mx_handle_t rh, mxtl::RefPtr<Vnode>
         }
         return ERR_DISPATCHER_INDIRECT;
     }
-    case MXRIO_CLOSE:
+    case MXRIO_CLOSE: {
         {
             mxtl::AutoLock lock(&vfs_lock);
             if (ios->token != MX_HANDLE_INVALID) {
@@ -219,10 +219,11 @@ mx_status_t vfs_handler_vn(mxrio_msg_t* msg, mx_handle_t rh, mxtl::RefPtr<Vnode>
         }
 
         // this will drop the ref on the vn
-        fs::Vfs::Close(vn);
+        mx_status_t status = vn->Close();
         ios->vn = nullptr;
         free(ios);
-        return NO_ERROR;
+        return status;
+    }
     case MXRIO_CLONE: {
         if (!(arg & MXRIO_OFLAG_PIPELINE)) {
             mxrio_object_t obj;
@@ -512,12 +513,12 @@ mx_status_t vfs_handler_vn(mxrio_msg_t* msg, mx_handle_t rh, mxtl::RefPtr<Vnode>
 // make locking more fine grained
 static mtx_t vfs_big_lock = MTX_INIT;
 
-mx_status_t vfs_handler(mxrio_msg_t* msg, mx_handle_t rh, void* cookie) {
+mx_status_t vfs_handler(mxrio_msg_t* msg, void* cookie) {
     vfs_iostate_t* ios = static_cast<vfs_iostate_t*>(cookie);
 
     mxtl::AutoLock lock(&vfs_big_lock);
     mxtl::RefPtr<Vnode> vn = ios->vn;
-    mx_status_t status = vfs_handler_vn(msg, rh, mxtl::move(vn), ios);
+    mx_status_t status = vfs_handler_vn(msg, mxtl::move(vn), ios);
     return status;
 }
 
@@ -530,6 +531,7 @@ mx_handle_t vfs_rpc_server(mx_handle_t h, mxtl::RefPtr<Vnode> vn) {
     ios->vn = mxtl::move(vn);  // reference passed in by caller
     ios->io_flags = 0;
 
+    mxio_dispatcher_t* vfs_dispatcher;
     if ((r = mxio_dispatcher_create(&vfs_dispatcher, mxrio_handler)) < 0) {
         free(ios);
         return r;

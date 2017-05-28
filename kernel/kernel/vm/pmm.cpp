@@ -17,7 +17,6 @@
 #include <lib/console.h>
 #include <list.h>
 #include <lk/init.h>
-#include <new.h>
 #include <pow2.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +25,7 @@
 #include "pmm_arena.h"
 
 #include <magenta/thread_annotations.h>
+#include <mxcpp/new.h>
 #include <mxtl/intrusive_double_list.h>
 
 #define LOCAL_TRACE MAX(VM_GLOBAL_TRACE, 0)
@@ -324,26 +324,31 @@ size_t pmm_free_page(vm_page_t* page) {
     return pmm_free(&list);
 }
 
-void pmm_dump_free() TA_REQ(arena_lock) {
+static size_t pmm_count_free_pages_locked() TA_REQ(arena_lock) {
     size_t free = 0u;
-    for (const auto& a : arena_list) {
-        free += a.free_count();
-    }
-    auto megabytes_free = free / 256u;
-    printf(" %zu free MBs\n", megabytes_free);
-}
-
-size_t pmm_count_free_pages() {
-    size_t free = 0u;
-    AutoLock al(&arena_lock);
     for (const auto& a : arena_list) {
         free += a.free_count();
     }
     return free;
 }
 
-size_t pmm_count_total_bytes() TA_REQ(arena_lock) {
+size_t pmm_count_free_pages() {
+    AutoLock al(&arena_lock);
+    return pmm_count_free_pages_locked();
+}
+
+static void pmm_dump_free() TA_REQ(arena_lock) {
+    auto megabytes_free = pmm_count_free_pages_locked() / 256u;
+    printf(" %zu free MBs\n", megabytes_free);
+}
+
+static size_t pmm_count_total_bytes_locked() TA_REQ(arena_lock) {
     return arena_cumulative_size;
+}
+
+size_t pmm_count_total_bytes() {
+    AutoLock al(&arena_lock);
+    return pmm_count_total_bytes_locked();
 }
 
 extern "C" enum handler_return pmm_dump_timer(struct timer* t, lk_time_t, void*) TA_REQ(arena_lock) {

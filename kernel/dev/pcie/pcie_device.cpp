@@ -16,14 +16,17 @@
 #include <kernel/mutex.h>
 #include <kernel/spinlock.h>
 #include <kernel/vm.h>
+#include <kernel/vm/vm_object.h>
+#include <kernel/vm/vm_object_physical.h>
 #include <list.h>
 #include <lk/init.h>
 #include <mxtl/limits.h>
-#include <new.h>
 #include <dev/interrupt.h>
 #include <string.h>
 #include <trace.h>
 #include <platform.h>
+
+#include <mxalloc/new.h>
 
 #define LOCAL_TRACE 0
 
@@ -150,6 +153,18 @@ status_t PcieDevice::InitLocked(PcieUpstreamNode& upstream) {
     if (res != NO_ERROR)
         return res;
 
+    // Map a VMO to the config if it's mappable via MMIO.
+    if (cfg_->addr_space() == PciAddrSpace::MMIO) {
+        cfg_vmo_ = VmObjectPhysical::Create(cfg_phys_, PAGE_SIZE);
+        if (cfg_vmo_ == nullptr) {
+            TRACEF("Failed to allocate VMO for config of device %02x:%02x:%01x!\n", bus_id_, dev_id_, func_id_);
+            return ERR_NO_MEMORY;
+        }
+
+        // Unlike BARs, this should always be treated like device memory
+        cfg_vmo_->SetMappingCachePolicy(ARCH_MMU_FLAG_UNCACHED_DEVICE);
+    }
+
     return NO_ERROR;
 }
 
@@ -266,94 +281,113 @@ status_t PcieDevice::DoFunctionLevelReset() {
     if (!(pcie_ && pcie_->has_flr()) && !(pci_af_ && pci_af_->has_flr()))
         return ERR_NOT_SUPPORTED;
 
+    // Pick the functions we need for testing whether or not transactions are
+    // pending for this device, and for initiating the FLR
+    bool (*check_trans_pending)(void* ctx);
+    void (*initiate_flr)(void* ctx);
+
     if (pcie_ && pcie_->has_flr()) {
-        // TODO: perform function level reset using PCIe Capability Structure.
-        TRACEF("TODO(johngro): Implement PCIe Capability FLR\n");
-        return ERR_NOT_SUPPORTED;
+        check_trans_pending = [](void* ctx) -> bool {
+            auto thiz = reinterpret_cast<PcieDevice*>(ctx);
+            return thiz->cfg_->Read(thiz->pcie_->device.status()) &
+                                    PCS_DEV_STS_TRANSACTIONS_PENDING;
+        };
+        initiate_flr = [](void* ctx) {
+            auto thiz = reinterpret_cast<PcieDevice*>(ctx);
+            auto val = static_cast<uint16_t>(thiz->cfg_->Read(thiz->pcie_->device.ctrl()) |
+                                                              PCS_DEV_CTRL_INITIATE_FLR);
+            thiz->cfg_->Write(thiz->pcie_->device.ctrl(), val);
+        };
+    } else {
+        check_trans_pending = [](void* ctx) -> bool {
+            auto thiz = reinterpret_cast<PcieDevice*>(ctx);
+            return thiz->cfg_->Read(thiz->pci_af_->af_status()) & PCS_ADVCAPS_STATUS_TRANS_PENDING;
+        };
+        initiate_flr = [](void* ctx) {
+            auto thiz = reinterpret_cast<PcieDevice*>(ctx);
+            thiz->cfg_->Write(thiz->pci_af_->af_ctrl(), PCS_ADVCAPS_CTRL_INITIATE_FLR);
+        };
     }
 
-    if (pci_af_ && pci_af_->has_flr()) {
-        // Following the procedure outlined in the Implementation notes
-        uint32_t bar_backup[PCIE_MAX_BAR_REGS];
-        uint16_t cmd_backup;
+    // Following the procedure outlined in the Implementation notes
+    uint32_t bar_backup[PCIE_MAX_BAR_REGS];
+    uint16_t cmd_backup;
 
-        // 1) Make sure driver code is not creating new transactions (not much I
-        //    can do about this, just have to hope).
-        // 2) Clear out the command register so that no new transactions may be
-        //    initiated.  Also back up the BARs in the process.
-        {
-            DEBUG_ASSERT(irq_.legacy.shared_handler != nullptr);
-            AutoSpinLockIrqSave cmd_reg_lock(cmd_reg_lock_);
+    // 1) Make sure driver code is not creating new transactions (not much I
+    //    can do about this, just have to hope).
+    // 2) Clear out the command register so that no new transactions may be
+    //    initiated.  Also back up the BARs in the process.
+    {
+        DEBUG_ASSERT(irq_.legacy.shared_handler != nullptr);
+        AutoSpinLockIrqSave cmd_reg_lock(cmd_reg_lock_);
 
-            cmd_backup = cfg_->Read(PciConfig::kCommand);
-            cfg_->Write(PciConfig::kCommand, PCIE_CFG_COMMAND_INT_DISABLE);
-            for (uint i = 0; i < bar_count_; ++i)
-                bar_backup[i] = cfg_->Read(PciConfig::kBAR(i));
+        cmd_backup = cfg_->Read(PciConfig::kCommand);
+        cfg_->Write(PciConfig::kCommand, PCIE_CFG_COMMAND_INT_DISABLE);
+        for (uint i = 0; i < bar_count_; ++i)
+            bar_backup[i] = cfg_->Read(PciConfig::kBAR(i));
+    }
+
+    // 3) Poll the transaction pending bit until it clears.  This may take
+    //    "several seconds"
+    lk_time_t start = current_time();
+    ret = ERR_TIMED_OUT;
+    do {
+        if (!check_trans_pending(this)) {
+            ret = NO_ERROR;
+            break;
         }
+        thread_sleep_relative(LK_MSEC(1));
+    } while ((current_time() - start) < LK_SEC(5));
 
-        // 3) Poll the transaction pending bit until it clears.  This may take
-        //    "several seconds"
-        lk_time_t start = current_time();
-        ret = ERR_TIMED_OUT;
-        do {
-            if (!(cfg_->Read(pci_af_->af_status()) &
-                  PCS_ADVCAPS_STATUS_TRANS_PENDING)) {
-                ret = NO_ERROR;
-                break;
-            }
-            thread_sleep_relative(LK_MSEC(1));
-        } while ((current_time() - start) < LK_SEC(5));
+    if (ret != NO_ERROR) {
+        TRACEF("Timeout waiting for pending transactions to clear the bus "
+               "for %02x:%02x.%01x\n",
+               bus_id_, dev_id_, func_id_);
 
-        if (ret != NO_ERROR) {
-            TRACEF("Timeout waiting for pending transactions to clear the bus "
-                   "for %02x:%02x.%01x\n",
-                   bus_id_, dev_id_, func_id_);
+        // Restore the command register
+        AutoSpinLockIrqSave cmd_reg_lock(cmd_reg_lock_);
+        cfg_->Write(PciConfig::kCommand, cmd_backup);
 
-            // Restore the command register
-            AutoSpinLockIrqSave cmd_reg_lock(cmd_reg_lock_);
-            cfg_->Write(PciConfig::kCommand, cmd_backup);
+        return ret;
+    } else {
+        // 4) Software initiates the FLR
+        initiate_flr(this);
 
-            return ret;
-        } else {
-            // 4) Software initiates the FLR
-            cfg_->Write(pci_af_->af_ctrl(), PCS_ADVCAPS_CTRL_INITIATE_FLR);
+        // 5) Software waits 100mSec
+        thread_sleep_relative(LK_MSEC(100));
+    }
 
-            // 5) Software waits 100mSec
-            thread_sleep_relative(LK_MSEC(100));
+    // NOTE: Even though the spec says that the reset operation is supposed
+    // to always take less than 100mSec, no one really follows this rule.
+    // Generally speaking, when a device resets, config read cycles will
+    // return all 0xFFs until the device finally resets and comes back.
+    // Poll the Vendor ID field until the device finally completes it's
+    // reset.
+    start = current_time();
+    ret   = ERR_TIMED_OUT;
+    do {
+        if (cfg_->Read(PciConfig::kVendorId) != PCIE_INVALID_VENDOR_ID) {
+            ret = NO_ERROR;
+            break;
         }
+        thread_sleep_relative(LK_MSEC(1));
+    } while ((current_time() - start) < LK_SEC(5));
 
-        // NOTE: Even though the spec says that the reset operation is supposed
-        // to always take less than 100mSec, no one really follows this rule.
-        // Generally speaking, when a device resets, config read cycles will
-        // return all 0xFFs until the device finally resets and comes back.
-        // Poll the Vendor ID field until the device finally completes it's
-        // reset.
-        start = current_time();
-        ret   = ERR_TIMED_OUT;
-        do {
-            if (cfg_->Read(PciConfig::kVendorId) != PCIE_INVALID_VENDOR_ID) {
-                ret = NO_ERROR;
-                break;
-            }
-            thread_sleep_relative(LK_MSEC(1));
-        } while ((current_time() - start) < LK_SEC(5));
+    if (ret == NO_ERROR) {
+        // 6) Software reconfigures the function and enables it for normal operation
+        AutoSpinLockIrqSave cmd_reg_lock(cmd_reg_lock_);
 
-        if (ret == NO_ERROR) {
-            // 6) Software reconfigures the function and enables it for normal operation
-            AutoSpinLockIrqSave cmd_reg_lock(cmd_reg_lock_);
-
-            for (uint i = 0; i < bar_count_; ++i)
-                cfg_->Write(PciConfig::kBAR(i), bar_backup[i]);
-            cfg_->Write(PciConfig::kCommand, cmd_backup);
-        } else {
-            // TODO(johngro) : What do we do if this fails?  If we trigger a
-            // device reset, and the device fails to re-appear after 5 seconds,
-            // it is probably gone for good.  We probably need to force unload
-            // any device drivers which had previously owned the device.
-            TRACEF("Timeout waiting for %02x:%02x.%01x to complete function "
-                   "level reset.  This is Very Bad.\n",
-                   bus_id_, dev_id_, func_id_);
-        }
+        for (uint i = 0; i < bar_count_; ++i)
+            cfg_->Write(PciConfig::kBAR(i), bar_backup[i]);
+        cfg_->Write(PciConfig::kCommand, cmd_backup);
+    } else {
+        // TODO(johngro) : What do we do if this fails?  If we trigger a
+        // device reset, and the device fails to re-appear after 5 seconds,
+        // it is probably gone for good.  We probably need to force unload
+        // any device drivers which had previously owned the device.
+        TRACEF("Timeout waiting for %02x:%02x.%01x to complete function "
+               "level reset.  This is Very Bad.\n",
+               bus_id_, dev_id_, func_id_);
     }
 
     return ret;
@@ -511,6 +545,21 @@ status_t PcieDevice::ProbeBarLocked(uint bar_id) {
     /* Restore the command register to its previous value */
     cfg_->Write(PciConfig::kCommand, backup);
 
+    // Create a VMO mapping for this MMIO bar to hand out to clients. In
+    // the event of PIO bars, the mx_pci_get_bar syscall will sort out
+    // the PIO details from the info structure.
+    if (bar_info.size > 0 && bar_info.is_mmio) {
+        auto vmo = VmObjectPhysical::Create(bar_info.bus_addr,
+                mxtl::max<uint64_t>(bar_info.size, PAGE_SIZE));
+        if (vmo == nullptr) {
+            TRACEF("Failed to allocate VMO for bar %u of device %02x:%02x:%01x!\n",
+                    bar_id, bus_id_, dev_id_, func_id_);
+            return ERR_NO_MEMORY;
+        }
+
+        // No cache policy is configured here so drivers may set it themselves
+        bar_info.vmo = mxtl::move(vmo);
+    }
     /* Success */
     return NO_ERROR;
 }

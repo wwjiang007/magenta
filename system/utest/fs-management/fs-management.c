@@ -23,7 +23,7 @@
 #include <fs-management/ramdisk.h>
 
 static bool check_mounted_fs(const char* path, const char* fs_name, size_t len) {
-    int fd = open(path, O_RDWR);
+    int fd = open(path, O_RDONLY | O_DIRECTORY);
     ASSERT_GT(fd, 0, "");
     char out[128];
     ASSERT_EQ(ioctl_vfs_query_fs(fd, out, sizeof(out)), (ssize_t)len,
@@ -40,7 +40,7 @@ static bool mount_unmount(void) {
 
     BEGIN_TEST;
     ASSERT_EQ(create_ramdisk(ramdisk_name, ramdisk_path, 512, 1 << 16), 0, "");
-    ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync), NO_ERROR, "");
+    ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync, &default_mkfs_options), NO_ERROR, "");
     ASSERT_EQ(mkdir(mount_path, 0666), 0, "");
     ASSERT_TRUE(check_mounted_fs(mount_path, "memfs", strlen("memfs")), "");
     int fd = open(ramdisk_path, O_RDWR);
@@ -63,11 +63,10 @@ static bool mount_mkdir_unmount(void) {
 
     BEGIN_TEST;
     ASSERT_EQ(create_ramdisk(ramdisk_name, ramdisk_path, 512, 1 << 16), 0, "");
-    ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync), NO_ERROR, "");
+    ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync, &default_mkfs_options), NO_ERROR, "");
     int fd = open(ramdisk_path, O_RDWR);
     ASSERT_GT(fd, 0, "");
-    mount_options_t options;
-    memcpy(&options, &default_mount_options, sizeof(mount_options_t));
+    mount_options_t options = default_mount_options;
     options.create_mountpoint = true;
     ASSERT_EQ(mount(fd, mount_path, DISK_FORMAT_MINFS, &options,
                     launch_stdio_async),
@@ -87,13 +86,13 @@ static bool fmount_funmount(void) {
 
     BEGIN_TEST;
     ASSERT_EQ(create_ramdisk(ramdisk_name, ramdisk_path, 512, 1 << 16), 0, "");
-    ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync), NO_ERROR, "");
+    ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync, &default_mkfs_options), NO_ERROR, "");
     ASSERT_EQ(mkdir(mount_path, 0666), 0, "");
     ASSERT_TRUE(check_mounted_fs(mount_path, "memfs", strlen("memfs")), "");
     int fd = open(ramdisk_path, O_RDWR);
     ASSERT_GT(fd, 0, "");
 
-    int mountfd = open(mount_path, O_DIRECTORY | O_RDWR);
+    int mountfd = open(mount_path, O_RDONLY | O_DIRECTORY);
     ASSERT_GT(mountfd, 0, "Couldn't open mount point");
     ASSERT_EQ(fmount(fd, mountfd, DISK_FORMAT_MINFS, &default_mount_options,
                     launch_stdio_async),
@@ -113,13 +112,13 @@ bool do_mount_evil(const char* parentfs_name, const char* mount_path) {
     const char* ramdisk_name = "mount_evil";
     char ramdisk_path[PATH_MAX];
     ASSERT_EQ(create_ramdisk(ramdisk_name, ramdisk_path, 512, 1 << 16), 0, "");
-    ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync), NO_ERROR, "");
+    ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync, &default_mkfs_options), NO_ERROR, "");
     ASSERT_EQ(mkdir(mount_path, 0666), 0, "");
 
     int fd = open(ramdisk_path, O_RDWR);
     ASSERT_GT(fd, 0, "");
 
-    int mountfd = open(mount_path, O_DIRECTORY | O_RDWR);
+    int mountfd = open(mount_path, O_RDONLY | O_DIRECTORY);
     ASSERT_GT(mountfd, 0, "Couldn't open mount point");
 
     // Everything *would* be perfect to call fmount, when suddenly...
@@ -150,7 +149,7 @@ bool do_mount_evil(const char* parentfs_name, const char* mount_path) {
     fd = open(ramdisk_path, O_RDWR);
     ASSERT_GT(fd, 0, "");
     ASSERT_EQ(mkdir(mount_path, 0666), 0, "");
-    mountfd = open(mount_path, O_DIRECTORY | O_RDWR);
+    mountfd = open(mount_path, O_RDONLY | O_DIRECTORY);
     ASSERT_GT(mountfd, 0, "Couldn't open mount point");
     ASSERT_EQ(fmount(fd, mountfd, DISK_FORMAT_MINFS, &default_mount_options,
                     launch_stdio_async),
@@ -183,10 +182,10 @@ static bool mount_evil_minfs(void) {
 
     BEGIN_TEST;
     ASSERT_EQ(create_ramdisk(ramdisk_name, ramdisk_path, 512, 1 << 16), 0, "");
-    ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync), NO_ERROR, "");
+    ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync, &default_mkfs_options), NO_ERROR, "");
     const char* parent_path = "/tmp/parent";
     ASSERT_EQ(mkdir(parent_path, 0666), 0, "");
-    int mountfd = open(parent_path, O_DIRECTORY | O_RDWR);
+    int mountfd = open(parent_path, O_RDONLY | O_DIRECTORY);
     ASSERT_GT(mountfd, 0, "Couldn't open mount point");
     int ramdiskfd = open(ramdisk_path, O_RDWR);
     ASSERT_GT(ramdiskfd, 0, "");
@@ -211,7 +210,7 @@ static bool mount_remount(void) {
 
     BEGIN_TEST;
     ASSERT_EQ(create_ramdisk(ramdisk_name, ramdisk_path, 512, 1 << 16), 0, "");
-    ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync), NO_ERROR, "");
+    ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync, &default_mkfs_options), NO_ERROR, "");
     ASSERT_EQ(mkdir(mount_path, 0666), 0, "");
 
     // We should still be able to mount and unmount the filesystem multiple times
@@ -235,7 +234,7 @@ static bool mount_fsck(void) {
 
     BEGIN_TEST;
     ASSERT_EQ(create_ramdisk(ramdisk_name, ramdisk_path, 512, 1 << 16), 0, "");
-    ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync), NO_ERROR, "");
+    ASSERT_EQ(mkfs(ramdisk_path, DISK_FORMAT_MINFS, launch_stdio_sync, &default_mkfs_options), NO_ERROR, "");
     ASSERT_EQ(mkdir(mount_path, 0666), 0, "");
     int fd = open(ramdisk_path, O_RDWR);
     ASSERT_GE(fd, 0, "Could not open ramdisk device");

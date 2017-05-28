@@ -34,7 +34,7 @@ static noreturn void do_shutdown(mx_handle_t log, mx_handle_t rroot) {
         __builtin_trap();
 }
 
-static void load_child_process(mx_handle_t log, mx_handle_t vmar_self,
+static void load_child_process(mx_handle_t log,
                                const struct options* o, struct bootfs* bootfs,
                                mx_handle_t vdso_vmo, mx_handle_t proc,
                                mx_handle_t vmar, mx_handle_t thread,
@@ -43,12 +43,12 @@ static void load_child_process(mx_handle_t log, mx_handle_t vmar_self,
                                size_t* stack_size, mx_handle_t* loader_svc) {
     // Examine the bootfs image and find the requested file in it.
     // This will handle a PT_INTERP by doing a second lookup in bootfs.
-    *entry = elf_load_bootfs(log, vmar_self, bootfs, proc, vmar, thread,
+    *entry = elf_load_bootfs(log, bootfs, proc, vmar, thread,
                              o->value[OPTION_FILENAME], to_child, stack_size,
                              loader_svc);
 
     // Now load the vDSO into the child, so it has access to system calls.
-    *vdso_base = elf_load_vmo(log, vmar_self, vmar, vdso_vmo);
+    *vdso_base = elf_load_vmo(log, vmar, vdso_vmo);
 }
 
 // Reserve roughly the low half of the address space, so the initial
@@ -150,29 +150,29 @@ static noreturn void bootstrap(mx_handle_t log, mx_handle_t bootstrap_pipe) {
     mx_handle_t* thread_handle_loc = NULL;
     mx_handle_t* stack_vmo_handle_loc = NULL;
     for (uint32_t i = 0; i < nhandles; ++i) {
-        switch (PA_HND_TYPE(handle_info[i])) {
-        case PA_VMO_VDSO:
+        switch (handle_info[i]) {
+        case PA_HND(PA_VMO_VDSO, 0):
             vdso_vmo = handles[i];
             break;
-        case PA_PROC_SELF:
+        case PA_HND(PA_PROC_SELF, 0):
             proc_handle_loc = &handles[i];
             break;
-        case PA_VMAR_ROOT:
+        case PA_HND(PA_VMAR_ROOT, 0):
             vmar_root_handle_loc = &handles[i];
             break;
-        case PA_THREAD_SELF:
+        case PA_HND(PA_THREAD_SELF, 0):
             thread_handle_loc = &handles[i];
             break;
-        case PA_VMO_STACK:
+        case PA_HND(PA_VMO_STACK, 0):
             stack_vmo_handle_loc = &handles[i];
             break;
-        case PA_RESOURCE:
+        case PA_HND(PA_RESOURCE, 0):
             resource_root = handles[i];
             break;
-        case PA_JOB_DEFAULT:
+        case PA_HND(PA_JOB_DEFAULT, 0):
             job = handles[i];
             break;
-        case PA_VMO_BOOTDATA:
+        case PA_HND(PA_VMO_BOOTDATA, 0):
             if (bootdata_vmo == MX_HANDLE_INVALID)
                 bootdata_vmo = handles[i];
             break;
@@ -242,7 +242,7 @@ static noreturn void bootstrap(mx_handle_t log, mx_handle_t bootstrap_pipe) {
     mx_vaddr_t entry, vdso_base;
     size_t stack_size = MAGENTA_DEFAULT_STACK_SIZE;
     mx_handle_t loader_service_channel = MX_HANDLE_INVALID;
-    load_child_process(log, vmar_self, &o, &bootfs, vdso_vmo, proc, vmar,
+    load_child_process(log, &o, &bootfs, vdso_vmo, proc, vmar,
                        thread, to_child, &entry, &vdso_base, &stack_size,
                        &loader_service_channel);
 
@@ -322,7 +322,7 @@ static noreturn void bootstrap(mx_handle_t log, mx_handle_t bootstrap_pipe) {
         print(log, "Waiting for ", o.value[OPTION_FILENAME], " to exit...\n",
               NULL);
         status = mx_object_wait_one(
-            proc, MX_PROCESS_SIGNALED, MX_TIME_INFINITE, NULL);
+            proc, MX_PROCESS_TERMINATED, MX_TIME_INFINITE, NULL);
         check(log, status, "mx_object_wait_one on process failed\n");
         do_shutdown(log, root_resource_handle);
     }

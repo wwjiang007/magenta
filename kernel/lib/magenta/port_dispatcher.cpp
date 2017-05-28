@@ -8,7 +8,6 @@
 
 #include <assert.h>
 #include <err.h>
-#include <new.h>
 
 #include <arch/ops.h>
 #include <arch/user_copy.h>
@@ -20,6 +19,9 @@
 #include <magenta/excp_port.h>
 #include <magenta/state_tracker.h>
 #include <magenta/user_copy.h>
+
+#include <mxalloc/new.h>
+#include <mxcpp/new.h>
 
 constexpr mx_rights_t kDefaultIOPortRights =
     MX_RIGHT_DUPLICATE | MX_RIGHT_TRANSFER | MX_RIGHT_READ | MX_RIGHT_WRITE;
@@ -90,7 +92,7 @@ mx_status_t PortDispatcher::Create(uint32_t options,
 
 PortDispatcher::PortDispatcher(uint32_t /*options*/)
     : no_clients_(false) {
-    event_init(&event_, false, EVENT_FLAG_AUTOUNSIGNAL);
+    event_init(&event_, false, 0);
 }
 
 PortDispatcher::~PortDispatcher() {
@@ -227,9 +229,12 @@ mx_status_t PortDispatcher::Wait(mx_time_t deadline, IOP_Packet** packet) {
                         packets_.push_back(signal);
                     *packet = signal;
                 }
-                return NO_ERROR;
-            }
 
+                return NO_ERROR;
+            } else {
+                // it's empty, unsignal the event
+                event_unsignal(&event_);
+            }
         }
 
         status_t st = event_wait_deadline(&event_, deadline, true);

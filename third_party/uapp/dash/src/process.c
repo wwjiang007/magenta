@@ -19,59 +19,6 @@
 #include "options.h"
 #include "var.h"
 
-static mx_handle_t get_application_environment(void) {
-    static mx_handle_t application_environment;
-    if (!application_environment) {
-        application_environment =
-            mx_get_startup_handle(PA_HND(PA_APP_ENVIRONMENT, 0));
-    }
-    return application_environment;
-}
-
-typedef struct {
-    uint32_t header_size;
-    uint32_t header_version;
-    uint32_t message_ordinal;
-    uint32_t message_flags;
-    uint32_t message_size;
-    uint32_t message_version;
-    uint32_t handle;
-    uint32_t padding;
-} dup_message_t;
-
-static mx_status_t duplicate_application_environment(mx_handle_t application_environment, mx_handle_t* dup_handle) {
-    dup_message_t dm;
-    dm.header_size = 16;
-    dm.header_version = 0;
-    dm.message_ordinal = 0; // must match application_environment.fidl
-    dm.message_flags = 0;
-    dm.message_size = 16;
-    dm.message_version = 0;
-    dm.handle = 0;
-    dm.padding = 0;
-
-    mx_handle_t request_handle;
-    mx_status_t status;
-    if ((status = mx_channel_create(0, &request_handle, dup_handle)))
-        return status;
-
-    if ((status = mx_channel_write(application_environment, 0, &dm, sizeof(dm), &request_handle, 1))) {
-        mx_handle_close(request_handle);
-        mx_handle_close(*dup_handle);
-        *dup_handle = MX_HANDLE_INVALID;
-    }
-    return status;
-}
-
-static mx_status_t clone_application_environment(mx_handle_t* application_environment_for_child) {
-    mx_handle_t application_environment = get_application_environment();
-    if (application_environment == MX_HANDLE_INVALID) {
-        *application_environment_for_child = MX_HANDLE_INVALID;
-        return NO_ERROR;
-    }
-    return duplicate_application_environment(application_environment, application_environment_for_child);
-}
-
 static void prepare_launch(launchpad_t* lp, const char* filename, int argc,
                            const char* const* argv, const char* const* envp,
                            int *fds) {
@@ -90,26 +37,14 @@ static void prepare_launch(launchpad_t* lp, const char* filename, int argc,
         launchpad_clone_fd(lp, STDOUT_FILENO, STDOUT_FILENO);
         launchpad_clone_fd(lp, STDERR_FILENO, STDERR_FILENO);
     }
-
-    mx_handle_t application_environment = MX_HANDLE_INVALID;
-    mx_status_t status = clone_application_environment(&application_environment);
-    if ((status == NO_ERROR) && (application_environment != MX_HANDLE_INVALID)) {
-        launchpad_add_handle(lp, application_environment,
-            PA_HND(PA_APP_ENVIRONMENT, 0));
-    }
 }
 
 static mx_status_t launch(const char* filename, int argc, const char* const* argv,
-                          const char* const* envp, mx_handle_t* process) {
+                          const char* const* envp, mx_handle_t* process, const char** errmsg) {
     launchpad_t* lp = NULL;
     launchpad_create(0, filename, &lp);
     prepare_launch(lp, filename, argc, argv, envp, NULL);
-    const char* errmsg;
-    mx_status_t status;
-    if ((status = launchpad_go(lp, process, &errmsg)) < 0) {
-        //fprintf(stderr, "launch() failed: %d: %s\n", status, errmsg);
-    }
-    return status;
+    return launchpad_go(lp, process, errmsg);
 }
 
 // Add all function definitions to our nodelist, so we can package them up for a
@@ -126,7 +61,8 @@ addfuncdef(struct cmdentry *entry, void *token)
     }
 }
 
-mx_status_t process_subshell(union node* n, const char* const* envp, mx_handle_t* process, int *fds)
+mx_status_t process_subshell(union node* n, const char* const* envp, mx_handle_t* process, int *fds,
+                             const char** errmsg)
 {
     if (!orig_arg0)
         return ERR_NOT_FOUND;
@@ -171,21 +107,18 @@ mx_status_t process_subshell(union node* n, const char* const* envp, mx_handle_t
 
     prepare_launch(lp, orig_arg0, argc, (const char* const*)argv, envp, fds);
     launchpad_add_handle(lp, ast_vmo, PA_HND(PA_USER0, 0));
-    const char* errmsg;
-    if ((status = launchpad_go(lp, process, &errmsg)) < 0) {
-        //fprintf(stderr, "launch() failed: %d: %s\n", status, errmsg);
-    }
-    return status;
+    return launchpad_go(lp, process, errmsg);
 }
 
-int process_launch(int argc, const char* const* argv, const char* path, int index, mx_handle_t* process) {
+int process_launch(int argc, const char* const* argv, const char* path, int index, mx_handle_t* process,
+                   const char** errmsg) {
     mx_status_t status = NO_ERROR;
 
     // All exported variables
     const char* const* envp = (const char* const*)environment();
 
     if (strchr(argv[0], '/') != NULL) {
-        status = launch(argv[0], argc, argv, envp, process);
+        status = launch(argv[0], argc, argv, envp, process, errmsg);
         if (status == NO_ERROR)
             return 0;
     } else {
@@ -193,7 +126,7 @@ int process_launch(int argc, const char* const* argv, const char* path, int inde
         const char* filename = NULL;
         while (status != NO_ERROR && (filename = padvance(&path, argv[0])) != NULL) {
             if (--index < 0 && pathopt == NULL)
-                status = launch(filename, argc, argv, envp, process);
+                status = launch(filename, argc, argv, envp, process, errmsg);
             stunalloc(filename);
         }
     }

@@ -5,6 +5,7 @@
 #include "osboot.h"
 
 #include <efi/protocol/graphics-output.h>
+#include <efi/runtime-services.h>
 
 #include <cmdline.h>
 #include <inttypes.h>
@@ -14,6 +15,25 @@
 
 #include <magenta/boot/bootdata.h>
 #include <magenta/pixelformat.h>
+
+
+static efi_guid magenta_guid = MAGENTA_VENDOR_GUID;
+static char16_t crashlog_name[] = MAGENTA_CRASHLOG_EFIVAR;
+
+static size_t get_last_crashlog(efi_system_table* sys, void* ptr, size_t max) {
+    efi_runtime_services* rs = sys->RuntimeServices;
+
+    uint32_t attr = MAGENTA_CRASHLOG_EFIATTR;
+    size_t sz = max;
+    efi_status r = rs->GetVariable(crashlog_name, &magenta_guid, &attr, &sz, ptr);
+    if (r == EFI_SUCCESS) {
+        // Erase it
+        rs->SetVariable(crashlog_name, &magenta_guid, MAGENTA_CRASHLOG_EFIATTR, 0, NULL);
+    } else {
+        sz = 0;
+    }
+    return sz;
+}
 
 static unsigned char scratch[32768];
 
@@ -44,12 +64,6 @@ static int add_bootdata(void** ptr, size_t* avail,
     (*avail) -= len;
     return 0;
 }
-
-typedef struct {
-    bootdata_t hdr_file;
-    bootdata_t hdr_kernel;
-    bootdata_kernel_t data_kernel;
-} magenta_kernel_t;
 
 int boot_magenta(efi_handle img, efi_system_table* sys,
                  void* image, size_t isz, void* ramdisk, size_t rsz,
@@ -192,6 +206,14 @@ int boot_magenta(efi_handle img, efi_system_table* sys,
         goto fail;
     }
 
+    // obtain the last crashlog if we can
+    size_t sz = get_last_crashlog(sys, scratch, 4096);
+    if (sz > 0) {
+        hdr.type = BOOTDATA_LAST_CRASHLOG;
+        hdr.length = sz;
+        add_bootdata(&bptr, &blen, &hdr, scratch);
+    }
+
     // fill the remaining gap between pre-data and ramdisk image
     if ((blen < sizeof(bootdata_t)) || (blen & 7)) {
         goto fail;
@@ -217,7 +239,7 @@ int boot_kernel(efi_handle img, efi_system_table* sys,
     size_t csz = cmdline_to_string(cmdline, sizeof(cmdline));
 
     bootdata_t* bd = image;
-    if ((bd->type = BOOTDATA_CONTAINER) &&
+    if ((bd->type == BOOTDATA_CONTAINER) &&
         (bd->extra == BOOTDATA_MAGIC) &&
         (bd->flags == 0)) {
         return boot_magenta(img, sys, image, sz, ramdisk, rsz, cmdline, csz);

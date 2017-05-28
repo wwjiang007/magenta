@@ -76,10 +76,28 @@ public:
         // A count of pages covered by VmMapping ranges.
         size_t mapped_pages;
 
-        // A count of committed pages. A page is considered committed if a
-        // VmMapping covers a range of a VmObject that contains that page, and
-        // that page has physical memory allocated to it.
-        size_t committed_pages;
+        // For the fields below, a page is considered committed if a VmMapping
+        // covers a range of a VmObject that contains that page, and that page
+        // has physical memory allocated to it.
+
+        // A count of committed pages that are only mapped into this address
+        // space.
+        size_t private_pages;
+
+        // A count of committed pages that are mapped into this and at least
+        // one other address spaces.
+        size_t shared_pages;
+
+        // A number that estimates the fraction of shared_pages that this
+        // address space is responsible for keeping alive.
+        //
+        // An estimate of:
+        //   For each shared, committed page:
+        //   scaled_shared_bytes +=
+        //       PAGE_SIZE / (number of address spaces mapping this page)
+        //
+        // This number is strictly smaller than shared_pages * PAGE_SIZE.
+        size_t scaled_shared_bytes;
     };
 
     // Counts memory usage under the VmAspace.
@@ -110,6 +128,11 @@ public:
     status_t MapObjectInternal(mxtl::RefPtr<VmObject> vmo, const char* name, uint64_t offset,
                                size_t size, void** ptr, uint8_t align_pow2, uint vmm_flags,
                                uint arch_mmu_flags);
+
+#if WITH_LIB_VDSO
+    uintptr_t vdso_base_address() const;
+    uintptr_t vdso_code_address() const;
+#endif
 
 protected:
     // Share the aspace lock with VmAddressRegion/VmMapping so they can serialize
@@ -165,6 +188,10 @@ private:
 
     // architecturally specific part of the aspace
     arch_aspace_t arch_aspace_ = {};
+
+#if WITH_LIB_VDSO
+    mxtl::RefPtr<VmMapping> vdso_code_mapping_;
+#endif
 
     // initialization routines need to construct the singleton kernel address space
     // at a particular points in the bootup process

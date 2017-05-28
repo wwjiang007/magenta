@@ -25,7 +25,6 @@
 namespace blobstore {
 
 VnodeBlob::~VnodeBlob() {
-    BlobCloseHandles();
     blobstore_->ReleaseBlob(this);
 }
 
@@ -33,10 +32,6 @@ mx_status_t VnodeBlob::Open(uint32_t flags) {
     if ((flags & O_DIRECTORY) && !IsDirectory()) {
         return ERR_NOT_DIR;
     }
-    return NO_ERROR;
-}
-
-mx_status_t VnodeBlob::Close() {
     return NO_ERROR;
 }
 
@@ -146,21 +141,18 @@ ssize_t VnodeBlob::Ioctl(uint32_t op, const void* in_buf, size_t in_len, void* o
             }
             return blobstore_->Unmount();
         }
-        case IOCTL_BLOBSTORE_BLOB_INIT: {
-            if (IsDirectory()) {
-                return ERR_NOT_SUPPORTED;
-            }
-
-            if ((in_len != sizeof(blob_ioctl_config_t)) || (out_len != 0)) {
-                return ERR_INVALID_ARGS;
-            }
-            const blob_ioctl_config_t* config = static_cast<const blob_ioctl_config_t*>(in_buf);
-            return SpaceAllocate(config->size_data);
-        }
         default: {
             return ERR_NOT_SUPPORTED;
         }
     }
+}
+
+mx_status_t VnodeBlob::Truncate(size_t len) {
+    if (IsDirectory()) {
+        return ERR_NOT_SUPPORTED;
+    }
+
+    return SpaceAllocate(len);
 }
 
 mx_status_t VnodeBlob::Unlink(const char* name, size_t len, bool must_be_dir) {

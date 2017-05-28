@@ -48,9 +48,6 @@ static const uint8_t sys_guid[GPT_GUID_LEN] = GUID_SYSTEM_VALUE;
 #define PARTITION_TYPE_DATA 0xE9
 #define PARTITION_TYPE_SYS 0xEA
 
-// created by the MAGENTA_DRIVER_BEGIN macro
-extern mx_driver_t _driver_mbr;
-
 typedef struct __PACKED mbr_partition_entry {
     uint8_t status;
     uint8_t chs_addr_start[3];
@@ -139,7 +136,8 @@ static mx_status_t mbr_ioctl(void* ctx, uint32_t op, const void* cmd,
 }
 
 static mx_off_t to_parent_offset(mbrpart_device_t* dev, mx_off_t offset) {
-    return offset + dev->partition.start_sector_lba * dev->info.block_size;
+    return offset + (uint64_t)(dev->partition.start_sector_lba) *
+           (uint64_t)dev->info.block_size;
 }
 
 static void mbr_iotxn_queue(void* ctx, iotxn_t* txn) {
@@ -358,13 +356,12 @@ static int mbr_bind_thread(void* arg) {
         memcpy(&pdev->info, &block_info, sizeof(block_info));
 
         char name[128];
-        snprintf(name, sizeof(name), "%sp%u", dev->name, partition_count);
+        snprintf(name, sizeof(name), "%sp%u", device_get_name(dev), partition_count);
 
         device_add_args_t args = {
             .version = DEVICE_ADD_ARGS_VERSION,
             .name = name,
             .ctx = pdev,
-            .driver = &_driver_mbr,
             .ops = &mbr_proto,
             .proto_id = MX_PROTOCOL_BLOCK_CORE,
             .proto_ops = &mbr_block_ops,
@@ -387,13 +384,13 @@ unbind:
     // If we weren't able to bind any subdevices (for partitions), then unbind
     // the MBR driver as well.
     if (partition_count == 0) {
-        driver_unbind(&_driver_mbr, dev);
+        device_unbind(dev);
     }
 
     return -1;
 }
 
-static mx_status_t mbr_bind(mx_driver_t* drv, mx_device_t* dev, void** cookie) {
+static mx_status_t mbr_bind(void* ctx, mx_device_t* dev, void** cookie) {
     // Make sure the MBR structs are the right size.
     static_assert(sizeof(mbr_t) == MBR_SIZE, "mbr_t is the wrong size");
     static_assert(sizeof(mbr_partition_entry_t) == MBR_PARTITION_ENTRY_SIZE,

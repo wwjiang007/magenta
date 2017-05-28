@@ -90,7 +90,7 @@ void tu_channel_read(mx_handle_t handle, uint32_t flags, void* bytes, uint32_t* 
 // The call fails and the process terminates if the call times out within TU_WATCHDOG_DURATION_NANOSECONDS.
 bool tu_channel_wait_readable(mx_handle_t channel);
 
-// Wait for |process| to be signaled (MX_PROCESS_SIGNALED).
+// Wait for |process| to be signaled (MX_PROCESS_TERMINATED).
 // The call fails and the calling process terminates if the call times out within TU_WATCHDOG_DURATION_NANOSECONDS.
 
 void tu_process_wait_signaled(mx_handle_t process);
@@ -134,6 +134,10 @@ mx_koid_t tu_get_related_koid(mx_handle_t handle);
 // Return a handle of thread |tid|.
 
 mx_handle_t tu_get_thread(mx_handle_t proc, mx_koid_t tid);
+
+// Return mx_info_thread_t of |thread|.
+
+mx_info_thread_t tu_thread_get_info(mx_handle_t thread);
 
 // Run a program and wait for it to exit.
 // Any error in trying to run the program is fatal.

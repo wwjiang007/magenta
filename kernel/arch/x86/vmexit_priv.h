@@ -8,6 +8,7 @@
 
 #include <stdint.h>
 
+class AutoVmcsLoad;
 class FifoDispatcher;
 class GuestPhysicalAddressSpace;
 struct GuestState;
@@ -18,8 +19,10 @@ struct VmxState;
 /* VM exit reasons. */
 enum class ExitReason : uint32_t {
     EXTERNAL_INTERRUPT          = 1u,
+    INTERRUPT_WINDOW            = 7u,
     CPUID                       = 10u,
     HLT                         = 12u,
+    VMCALL                      = 18u,
     IO_INSTRUCTION              = 30u,
     RDMSR                       = 31u,
     WRMSR                       = 32u,
@@ -43,7 +46,7 @@ struct ExitInfo {
 
 /* Stores IO instruction info from the VMCS exit qualification field. */
 struct IoInfo {
-    uint8_t bytes;
+    uint8_t access_size;
     bool input;
     bool string;
     bool repeat;
@@ -52,34 +55,20 @@ struct IoInfo {
     IoInfo(uint64_t qualification);
 };
 
-enum class ApicRegister : uint16_t {
-    LOCAL_APIC_ID   = 0x0020,
-    EOI             = 0x00b0,
-    SVR             = 0x00f0,
-    ESR             = 0x0280,
-    LVT_TIMER       = 0x0320,
-    LVT_ERROR       = 0x0370,
-};
-
 /* Stores local APIC access info from the VMCS exit qualification field. */
 struct ApicAccessInfo {
-    ApicRegister reg;
-    uint8_t type;
+    uint16_t offset;
 
     ApicAccessInfo(uint64_t qualification);
 };
 
-/* Stores info from a decoded instruction. */
-struct Instruction {
-    bool read;
-    bool rex;
-    uint32_t imm;
-    uint64_t* reg;
+/* VM entry interruption type. */
+enum class InterruptionType : uint32_t {
+    EXTERNAL_INTERRUPT  = 0u,
+    HARDWARE_EXCEPTION  = 3u,
 };
 
-status_t decode_instruction(const uint8_t* inst_buf, uint32_t inst_len, GuestState* guest_state,
-                            Instruction* inst);
-
-status_t vmexit_handler(GuestState* guest_state, LocalApicState* local_apic_state,
-                        IoApicState* io_apic_state, GuestPhysicalAddressSpace* gpas,
-                        FifoDispatcher* serial_fifo);
+void interrupt_window_exiting(bool enable);
+status_t vmexit_handler(AutoVmcsLoad* vmcs_load, GuestState* guest_state,
+                        LocalApicState* local_apic_state, GuestPhysicalAddressSpace* gpas,
+                        FifoDispatcher* ctl_fifo);

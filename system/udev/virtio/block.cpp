@@ -5,10 +5,10 @@
 #include "block.h"
 
 #include <ddk/protocol/block.h>
-#include <hexdump/hexdump.h>
 #include <inttypes.h>
 #include <magenta/compiler.h>
 #include <mxtl/auto_lock.h>
+#include <pretty/hexdump.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -102,8 +102,8 @@ mx_status_t BlockDevice::virtio_block_ioctl(void* ctx, uint32_t op, const void* 
     }
 }
 
-BlockDevice::BlockDevice(mx_driver_t* driver, mx_device_t* bus_device)
-    : Device(driver, bus_device) {
+BlockDevice::BlockDevice(mx_device_t* bus_device)
+    : Device(bus_device) {
     // so that Bind() knows how much io space to allocate
     bar0_size_ = 0x40;
 }
@@ -171,7 +171,6 @@ mx_status_t BlockDevice::Init() {
     args.version = DEVICE_ADD_ARGS_VERSION;
     args.name = "virtio-block";
     args.ctx = this;
-    args.driver = driver_;
     args.ops = &device_ops_;
     args.proto_id = MX_PROTOCOL_BLOCK;
 

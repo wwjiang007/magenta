@@ -13,18 +13,19 @@
 #include <magenta/pci_io_mapping_dispatcher.h>
 #include <magenta/process_dispatcher.h>
 
+#include <mxalloc/new.h>
+
 #include <assert.h>
 #include <err.h>
-#include <new.h>
 #include <trace.h>
 
 constexpr mx_rights_t kDefaultPciDeviceRights =
     MX_RIGHT_READ | MX_RIGHT_WRITE | MX_RIGHT_DUPLICATE | MX_RIGHT_TRANSFER;
 
-status_t PciDeviceDispatcher::Create(uint32_t                   index,
-                                     mx_pcie_get_nth_info_t*    out_info,
+status_t PciDeviceDispatcher::Create(uint32_t                  index,
+                                     mx_pcie_device_info_t*    out_info,
                                      mxtl::RefPtr<Dispatcher>* out_dispatcher,
-                                     mx_rights_t*               out_rights) {
+                                     mx_rights_t*              out_rights) {
     status_t status;
     mxtl::RefPtr<PciDeviceWrapper> device_wrapper;
 
@@ -45,7 +46,7 @@ status_t PciDeviceDispatcher::Create(uint32_t                   index,
 }
 
 PciDeviceDispatcher::PciDeviceDispatcher(mxtl::RefPtr<PciDeviceWrapper> device,
-                                         mx_pcie_get_nth_info_t* out_info)
+                                         mx_pcie_device_info_t* out_info)
     : device_(device) {
     const PcieDevice& dev = *device_->device();
 
@@ -108,6 +109,53 @@ status_t PciDeviceDispatcher::EnablePio(bool enable) {
     if (!device_->claimed()) return ERR_BAD_STATE;  // Are we not claimed yet?
 
     device_->device()->EnablePio(enable);
+
+    return NO_ERROR;
+}
+
+status_t PciDeviceDispatcher::EnableMmio(bool enable) {
+    canary_.Assert();
+
+    AutoLock lock(&lock_);
+    DEBUG_ASSERT(device_ && device_->device());
+
+    if (!device_->claimed()) return ERR_BAD_STATE;  // Are we not claimed yet?
+
+    device_->device()->EnableMmio(enable);
+
+    return NO_ERROR;
+}
+
+const pcie_bar_info_t* PciDeviceDispatcher::GetBar(uint32_t bar_num) {
+    AutoLock lock(&lock_);
+    DEBUG_ASSERT(device_ && device_->device());
+
+    if (!device_->claimed()) return nullptr;  // Are we not claimed yet?
+
+    return device_->device()->GetBarInfo(bar_num);
+}
+
+status_t PciDeviceDispatcher::GetConfig(pci_config_info_t* out) {
+    AutoLock lock(&lock_);
+    DEBUG_ASSERT(device_ && device_->device());
+
+    if (!device_->claimed()) {
+        return ERR_BAD_STATE;
+    }
+
+    if (!out) {
+        return ERR_INVALID_ARGS;
+    }
+
+    auto dev = device_->device();
+    auto cfg = dev->config();
+    out->size = (dev->is_pcie()) ? PCIE_EXTENDED_CONFIG_SIZE : PCIE_BASE_CONFIG_SIZE;
+    out->base_addr = cfg->base();
+    out->is_mmio = (cfg->addr_space() == PciAddrSpace::MMIO);
+
+    if (out->is_mmio) {
+        out->vmo = dev->config_vmo();
+    }
 
     return NO_ERROR;
 }

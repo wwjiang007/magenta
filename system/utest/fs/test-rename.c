@@ -117,6 +117,7 @@ bool test_rename_with_children(void) {
     fd = open("::dir/file", O_RDONLY, 06444);
     ASSERT_GT(fd, 0, "");
     ASSERT_TRUE(check_file_contents(fd, (uint8_t*) file_contents, strlen(file_contents)), "");
+    ASSERT_EQ(close(fd), 0, "");
 
     // Clean up
     ASSERT_EQ(unlink("::dir/dir1"), 0, "");
@@ -184,9 +185,9 @@ bool test_rename_at(void) {
     ASSERT_EQ(mkdir("::bar", 0755), 0, "");
 
     // Normal case of renameat, from one directory to another
-    int foofd = open("::foo", O_RDWR | O_DIRECTORY, 0644);
+    int foofd = open("::foo", O_RDONLY | O_DIRECTORY, 0644);
     ASSERT_GT(foofd, 0, "");
-    int barfd = open("::bar", O_RDWR | O_DIRECTORY, 0644);
+    int barfd = open("::bar", O_RDONLY | O_DIRECTORY, 0644);
     ASSERT_GT(barfd, 0, "");
 
     ASSERT_EQ(renameat(foofd, "baz", barfd, "zab"), 0, "");

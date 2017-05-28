@@ -9,7 +9,11 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <fs-management/mount.h>
+#include <magenta/compiler.h>
 #include <unittest/unittest.h>
+
+__BEGIN_CDECLS;
 
 typedef struct fs_info {
     const char* name;
@@ -17,6 +21,7 @@ typedef struct fs_info {
     int (*mkfs)(const char* disk_path);
     int (*mount)(const char* disk_path, const char* mount_path);
     int (*unmount)(const char* mount_path);
+    int (*fsck)(const char* mount_path);
     bool can_be_mounted;
     bool can_mount_sub_filesystems;
     bool supports_hardlinks;
@@ -30,9 +35,13 @@ extern const char* test_root_path;
 
 // Path to the mounted filesystem's backing store (if it exists)
 extern char test_disk_path[];
+// Is the disk path a REAL disk, or is it be a generated ramdisk?
+extern bool use_real_disk;
 
 // Current filesystem's info
 extern fs_info_t* test_info;
+
+extern const fsck_options_t test_fsck_options;
 
 #define NUM_FILESYSTEMS 3
 extern fs_info_t FILESYSTEMS[NUM_FILESYSTEMS];
@@ -69,3 +78,5 @@ int teardown_fs_test(void);
         BEGIN_FS_TEST_CASE(case_name, thinfs, &FILESYSTEMS[2])   \
         CASE_TESTS                                               \
         END_FS_TEST_CASE(case_name, thinfs)
+
+__END_CDECLS;

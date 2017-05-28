@@ -6,13 +6,26 @@
 
 #include <string.h>
 
-#include <magenta/new.h>
+#include <fs/dispatcher.h>
+#include <mxalloc/new.h>
 
 namespace svcfs {
+
+static void CopyToArray(const char* string, size_t len, mxtl::Array<char>* result) {
+    mxtl::Array<char> array(new char[len + 1], len);
+    memcpy(array.get(), string, len);
+    array[len] = '\0';
+    result->swap(array);
+}
 
 static bool IsDotOrDotDot(const char* name, size_t len) {
     return ((len == 1) && (name[0] == '.')) ||
            ((len == 2) && (name[0] == '.') && (name[1] == '.'));
+}
+
+static bool IsValidServiceName(const char* name, size_t len) {
+    return name && len >= 1 && !IsDotOrDotDot(name, len) &&
+        !memchr(name, '/', len) && !memchr(name, 0, len);
 }
 
 struct dircookie_t {
@@ -22,56 +35,23 @@ struct dircookie_t {
 static_assert(sizeof(dircookie_t) <= sizeof(vdircookie_t),
               "svcfs dircookie too large to fit in IO state");
 
-static mx_status_t ReaddirStart(void* cookie, void* data, size_t len) {
-    dircookie_t* c = static_cast<dircookie_t*>(cookie);
-    size_t pos = 0;
-    char* ptr = static_cast<char*>(data);
-    mx_status_t r;
-
-    if (c->last_id < 1) {
-        r = fs::vfs_fill_dirent(reinterpret_cast<vdirent_t*>(ptr + pos), len - pos, ".", 1,
-                                VTYPE_TO_DTYPE(V_TYPE_DIR));
-        if (r < 0) {
-            return static_cast<mx_status_t>(pos);
-        }
-        pos += r;
-        c->last_id = 1;
-    }
-
-    if (c->last_id < 2) {
-        r = fs::vfs_fill_dirent(reinterpret_cast<vdirent_t*>(ptr + pos), len - pos, "..", 2,
-                                VTYPE_TO_DTYPE(V_TYPE_DIR));
-        if (r < 0) {
-            return static_cast<mx_status_t>(pos);
-        }
-        pos += r;
-        c->last_id = 2;
-    }
-
-    return static_cast<mx_status_t>(pos);
-}
-
 // ServiceProvider -------------------------------------------------------------
 
 ServiceProvider::~ServiceProvider() = default;
 
 // Vnode -----------------------------------------------------------------------
 
-Vnode::Vnode(mxio_dispatcher_cb_t dispatcher) : dispatcher_(dispatcher) {}
+Vnode::Vnode(fs::Dispatcher* dispatcher) : dispatcher_(dispatcher) {}
 
 Vnode::~Vnode() = default;
 
-mx_status_t Vnode::Close() {
-    return NO_ERROR;
-}
-
-mx_status_t Vnode::AddDispatcher(mx_handle_t h, vfs_iostate_t* cookie) {
-    return dispatcher_(h, (void*)vfs_handler, cookie);
+fs::Dispatcher* Vnode::GetDispatcher() {
+    return dispatcher_;
 }
 
 // VnodeSvc --------------------------------------------------------------------
 
-VnodeSvc::VnodeSvc(mxio_dispatcher_cb_t dispatcher,
+VnodeSvc::VnodeSvc(fs::Dispatcher* dispatcher,
                    uint64_t node_id,
                    mxtl::Array<char> name,
                    ServiceProvider* provider)
@@ -94,6 +74,13 @@ mx_status_t VnodeSvc::Serve(mx_handle_t h, uint32_t flags) {
     }
 
     provider_->Connect(name_.get(), name_.size(), mx::channel(h));
+
+    // If node_id_ is zero, this vnode was created during |Lookup| and doesn't
+    // have a parent. Without a parent, there isn't anyone to clean up the raw
+    // |provider_| pointer, which means we need to clean it up here.
+    if (!node_id_)
+        provider_ = nullptr;
+
     return NO_ERROR;
 }
 
@@ -107,7 +94,7 @@ void VnodeSvc::ClearProvider() {
 
 // VnodeDir --------------------------------------------------------------------
 
-VnodeDir::VnodeDir(mxio_dispatcher_cb_t dispatcher)
+VnodeDir::VnodeDir(fs::Dispatcher* dispatcher)
     : Vnode(dispatcher), next_node_id_(2) {}
 
 VnodeDir::~VnodeDir() = default;
@@ -143,58 +130,48 @@ mx_status_t VnodeDir::Getattr(vnattr_t* attr) {
 void VnodeDir::NotifyAdd(const char* name, size_t len) { watcher_.NotifyAdd(name, len); }
 mx_status_t VnodeDir::WatchDir(mx_handle_t* out) { return watcher_.WatchDir(out); }
 
-mx_status_t VnodeDir::Readdir(void* cookie, void* _data, size_t len) {
+mx_status_t VnodeDir::Readdir(void* cookie, void* data, size_t len) {
     dircookie_t* c = static_cast<dircookie_t*>(cookie);
-    char* data = static_cast<char*>(_data);
+    fs::DirentFiller df(data, len);
+
     mx_status_t r = 0;
-
-    if (c->last_id < 2) {
-        r = ReaddirStart(cookie, data, len);
-        if (r < 0) {
-            return r;
+    if (c->last_id < 1) {
+        if ((r = df.Next(".", 1, VTYPE_TO_DTYPE(V_TYPE_DIR))) != NO_ERROR) {
+            return df.BytesFilled();
         }
+        c->last_id = 1;
     }
-
-    size_t pos = r;
-    char* ptr = static_cast<char*>(data);
+    if (c->last_id < 2) {
+        if ((r = df.Next("..", 2, VTYPE_TO_DTYPE(V_TYPE_DIR))) != NO_ERROR) {
+            return df.BytesFilled();
+        }
+        c->last_id = 2;
+    }
 
     for (const VnodeSvc& vn : services_) {
         if (c->last_id >= vn.node_id()) {
             continue;
         }
-        uint32_t vtype = V_TYPE_FILE;
-        r = fs::vfs_fill_dirent(reinterpret_cast<vdirent_t*>(ptr + pos), len - pos,
-                                vn.name().get(), vn.name().size(), VTYPE_TO_DTYPE(vtype));
-        if (r < 0) {
-            break;
+        if ((r = df.Next(vn.name().get(), vn.name().size(),
+                         VTYPE_TO_DTYPE(V_TYPE_FILE))) != NO_ERROR) {
+            return df.BytesFilled();
         }
-        pos += r;
         c->last_id = vn.node_id();
     }
 
-    return static_cast<mx_status_t>(pos);
+    return df.BytesFilled();
 }
 
 bool VnodeDir::AddService(const char* name, size_t len, ServiceProvider* provider) {
-    if (!name || len < 1 || !provider || IsDotOrDotDot(name, len) ||
-        memchr(name, '/', len) || memchr(name, 0, len)) {
+    if (!IsValidServiceName(name, len)) {
         return false;
     }
 
-    AllocChecker ac;
-    mxtl::Array<char> array(new (&ac) char[len + 1], len);
-    if (!ac.check()) {
-        return false;
-    }
+    mxtl::Array<char> array;
+    CopyToArray(name, len, &array);
 
-    memcpy(array.get(), name, len);
-    array[len] = '\0';
-
-    mxtl::RefPtr<VnodeSvc> vn = mxtl::AdoptRef(new (&ac) VnodeSvc(
+    mxtl::RefPtr<VnodeSvc> vn = mxtl::AdoptRef(new VnodeSvc(
         dispatcher_, next_node_id_++, mxtl::move(array), provider));
-    if (!ac.check()) {
-        return false;
-    }
 
     services_.push_back(mxtl::move(vn));
     NotifyAdd(name, len);
@@ -206,6 +183,45 @@ void VnodeDir::RemoveAllServices() {
         vn.ClearProvider();
     }
     services_.clear();
+}
+
+// VnodeProviderDir --------------------------------------------------------------------
+
+VnodeProviderDir::VnodeProviderDir(fs::Dispatcher* dispatcher)
+    : Vnode(dispatcher), provider_(nullptr) {}
+
+VnodeProviderDir::~VnodeProviderDir() = default;
+
+mx_status_t VnodeProviderDir::Open(uint32_t flags) {
+    return NO_ERROR;
+}
+
+mx_status_t VnodeProviderDir::Lookup(mxtl::RefPtr<fs::Vnode>* out, const char* name, size_t len) {
+    if (IsDotOrDotDot(name, len)) {
+        *out = mxtl::RefPtr<fs::Vnode>(this);
+        return NO_ERROR;
+    }
+
+    if (!IsValidServiceName(name, len)) {
+        return ERR_NOT_FOUND;
+    }
+
+    mxtl::Array<char> array;
+    CopyToArray(name, len, &array);
+
+    *out = mxtl::AdoptRef(new VnodeSvc(dispatcher_, 0, mxtl::move(array), provider_));
+    return NO_ERROR;
+}
+
+mx_status_t VnodeProviderDir::Getattr(vnattr_t* attr) {
+    memset(attr, 0, sizeof(vnattr_t));
+    attr->mode = V_TYPE_DIR | V_IRUSR;
+    attr->nlink = 1;
+    return NO_ERROR;
+}
+
+void VnodeProviderDir::SetServiceProvider(ServiceProvider* provider) {
+    provider_ = provider;
 }
 
 } // namespace svcfs

@@ -24,17 +24,19 @@
 
 namespace memfs {
 
+extern mxtl::unique_ptr<fs::Dispatcher> memfs_global_dispatcher;
+
 class Dnode;
 
 class VnodeMemfs : public fs::Vnode {
 public:
     virtual mx_status_t Open(uint32_t flags) override;
-    virtual mx_status_t Close() override;
     virtual mx_status_t Setattr(vnattr_t* a) override;
     virtual mx_status_t Sync() override;
     ssize_t Ioctl(uint32_t op, const void* in_buf,
                   size_t in_len, void* out_buf, size_t out_len) final;
     mx_status_t AttachRemote(mx_handle_t h) final;
+    fs::Dispatcher* GetDispatcher() final;
 
     // To be more specific: Is this vnode connected into the directory hierarchy?
     // VnodeDirs can be unlinked, and this method will subsequently return false.
@@ -45,7 +47,6 @@ public:
     // TODO(smklein): The following members should become private
     uint32_t seqcount_;
 
-    Dnode::DeviceList devices_; // All devices pointing to this vnode
     mxtl::RefPtr<Dnode> dnode_;
     uint32_t link_count_;
 
@@ -85,9 +86,6 @@ public:
     mx_status_t CreateFromVmo(const char* name, size_t namelen, mx_handle_t vmo, mx_off_t off,
                               mx_off_t len);
 
-    mx_status_t CreateDeviceAtLocked(mxtl::RefPtr<memfs::VnodeDir>* out, const char* name,
-                                     mx_handle_t h);
-
     // Use the watcher container to implement a directory watcher
     void NotifyAdd(const char* name, size_t len) final;
     mx_status_t WatchDir(mx_handle_t* out) final;
@@ -121,15 +119,6 @@ private:
 
     fs::RemoteContainer remoter_;
     fs::WatcherContainer watcher_;
-};
-
-class VnodeDevice final : public VnodeDir {
-public:
-    VnodeDevice();
-    ~VnodeDevice();
-
-private:
-    mx_status_t Getattr(vnattr_t* a) final;
 };
 
 class VnodeVmo final : public VnodeMemfs {
@@ -175,10 +164,7 @@ mx_handle_t vfs_create_global_root_handle(void);
 mx_handle_t vfs_create_root_handle(VnodeMemfs* vn);
 
 // device fs
-VnodeDir* devfs_get_root(void);
-mx_status_t memfs_create_device_at(VnodeDir* parent, VnodeDir** out, const char* name,
-                                   mx_handle_t hdevice) TA_EXCL(vfs_lock);
-mx_status_t devfs_remove(VnodeDir* vn);
+mx_status_t devfs_mount(mx_handle_t h);
 
 // boot fs
 mx_status_t bootfs_add_file(const char* path, mx_handle_t vmo, mx_off_t off, size_t len);
@@ -186,10 +172,6 @@ mx_status_t bootfs_add_file(const char* path, mx_handle_t vmo, mx_off_t off, siz
 // system fs
 VnodeDir* systemfs_get_root(void);
 mx_status_t systemfs_add_file(const char* path, mx_handle_t vmo, mx_off_t off, size_t len);
-
-// memory fs
-mx_status_t memfs_add_link(VnodeDir* parent, const char* name,
-                           VnodeMemfs* target) TA_EXCL(vfs_lock);
 
 // Create the global root to memfs
 VnodeDir* vfs_create_global_root(void) TA_NO_THREAD_SAFETY_ANALYSIS;

@@ -10,9 +10,14 @@
 
 #include <arch/x86/hypervisor.h>
 #include <arch/x86/hypervisor_state.h>
+#include <kernel/event.h>
+#include <kernel/timer.h>
+
+typedef struct mx_guest_gpr mx_guest_gpr_t;
 
 static const uint64_t kIoApicPhysBase = 0xfec00000;
 static const uint8_t kIoApicRedirectOffsets = 0x36;
+static const uint32_t kInvalidInterrupt = UINT32_MAX >> 1;
 
 #define X86_MSR_IA32_FEATURE_CONTROL                0x003a      /* Feature control */
 #define X86_MSR_IA32_VMX_BASIC                      0x0480      /* Basic info */
@@ -81,6 +86,7 @@ enum class VmcsField32 : uint64_t {
     ENTRY_CTLS                      = 0x4012,   /* VM-entry controls */
     ENTRY_MSR_LOAD_COUNT            = 0x4014,   /* VM-entry MSR-load count */
     ENTRY_INTERRUPTION_INFORMATION  = 0x4016,   /* VM-entry interruption-information field */
+    ENTRY_EXCEPTION_ERROR_CODE      = 0x4018,   /* VM-entry exception error code */
     PROCBASED_CTLS2                 = 0x401e,   /* Secondary processor-based controls */
     INSTRUCTION_ERROR               = 0x4400,   /* VM instruction error */
     EXIT_REASON                     = 0x4402,   /* Exit reason */
@@ -139,6 +145,7 @@ enum class VmcsFieldXX : uint64_t {
 #define PROCBASED_CTLS2_VPID                (1u << 5)
 
 /* PROCBASED_CTLS flags */
+#define PROCBASED_CTLS_INT_WINDOW_EXITING   (1u << 2)
 #define PROCBASED_CTLS_HLT_EXITING          (1u << 7)
 #define PROCBASED_CTLS_CR3_LOAD_EXITING     (1u << 15)
 #define PROCBASED_CTLS_CR3_STORE_EXITING    (1u << 16)
@@ -150,7 +157,7 @@ enum class VmcsFieldXX : uint64_t {
 #define PROCBASED_CTLS_PROCBASED_CTLS2      (1u << 31)
 
 /* PINBASED_CTLS flags */
-#define PINBASED_CTLS_EXTINT_EXITING        (1u << 0)
+#define PINBASED_CTLS_EXT_INT_EXITING       (1u << 0)
 #define PINBASED_CTLS_NMI_EXITING           (1u << 3)
 
 /* EXIT_CTLS flags */
@@ -166,7 +173,7 @@ enum class VmcsFieldXX : uint64_t {
 #define ENTRY_CTLS_LOAD_IA32_EFER           (1u << 15)
 
 /* LINK_POINTER values */
-#define LINK_POINTER_INVALIDATE             0xffffffffffffffff
+#define LINK_POINTER_INVALIDATE             UINT64_MAX
 
 /* GUEST_XX_ACCESS_RIGHTS flags */
 #define GUEST_XX_ACCESS_RIGHTS_UNUSABLE     (1u << 16)
@@ -240,29 +247,31 @@ private:
     bool is_on_ = false;
 };
 
-struct AutoVmcsLoad {
+class AutoVmcsLoad {
+public:
     AutoVmcsLoad(VmxPage* page);
     ~AutoVmcsLoad();
+
+    void reload();
+
+private:
+    VmxPage* page_;
 };
 
 /* Stores the local APIC state across VM exits. */
 struct LocalApicState {
+    // Timer for APIC timer.
+    timer_t timer;
+    // Event for handling block on HLT.
+    event_t event;
+    // Active interrupt, one of enum x86_interrupt_vector or kInvalidInterrupt.
+    uint32_t active_interrupt;
     // TSC deadline.
     uint64_t tsc_deadline;
     // Virtual local APIC address.
-    void* virtual_apic;
-    // Virtual local APIC page.
-    VmxPage virtual_apic_page;
-};
-
-/* Stores the IO APIC state across VM exits. */
-struct IoApicState {
-    // IO register-select register.
-    uint32_t select;
-    // IO APIC identification register.
-    uint32_t id;
-    // IO redirection table offsets.
-    uint32_t redirect[kIoApicRedirectOffsets];
+    void* apic_addr;
+    // Virtual local APIC memory.
+    mxtl::RefPtr<VmObject> apic_mem;
 };
 
 /* Creates a VMCS CPU context to initialize a VM. */
@@ -273,14 +282,19 @@ public:
     status_t Setup(paddr_t pml4_address, paddr_t apic_access_address,
                    paddr_t msr_bitmaps_address);
     status_t Enter(const VmcsContext& context, GuestPhysicalAddressSpace* gpas,
-                   FifoDispatcher* serial_fifo);
+                   FifoDispatcher* ctl_fifo);
+    status_t SetGpr(const mx_guest_gpr_t& guest_gpr);
+    status_t GetGpr(mx_guest_gpr_t* guest_gpr) const;
+    status_t SetApicMem(mxtl::RefPtr<VmObject> apic_mem);
+
+    bool ShouldResume() const { return vmx_state_.resume; }
+    bool HasApicMem() const { return local_apic_state_.apic_addr != nullptr; }
 
 private:
     VmxPage host_msr_page_;
     VmxPage guest_msr_page_;
     VmxState vmx_state_;
     LocalApicState local_apic_state_;
-    IoApicState io_apic_state_;
 };
 
 uint16_t vmcs_read(VmcsField16 field);

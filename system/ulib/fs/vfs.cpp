@@ -7,7 +7,6 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <mxio/dispatcher.h>
 #include <mxio/remoteio.h>
 #include <mxtl/auto_call.h>
 
@@ -25,7 +24,6 @@ uint32_t __trace_bits;
 #ifdef __Fuchsia__
 mtx_t vfs_lock = MTX_INIT;
 #endif
-mxio_dispatcher_t* vfs_dispatcher;
 
 namespace fs {
 namespace {
@@ -275,7 +273,7 @@ ssize_t Vfs::Ioctl(mxtl::RefPtr<Vnode> vn, uint32_t op, const void* in_buf, size
         }
         mxtl::AutoLock lock(&vfs_lock);
         mx_status_t r = Open(vn, &vn, name, &name,
-                             O_CREAT | O_RDWR | O_DIRECTORY | O_NOREMOTE, S_IFDIR);
+                             O_CREAT | O_RDONLY | O_DIRECTORY | O_NOREMOTE, S_IFDIR);
         MX_DEBUG_ASSERT(r <= NO_ERROR); // Should not be accessing remote nodes
         if (r < 0) {
             return r;
@@ -324,34 +322,30 @@ ssize_t Vfs::Ioctl(mxtl::RefPtr<Vnode> vn, uint32_t op, const void* in_buf, size
     }
 }
 
-mx_status_t Vfs::Close(mxtl::RefPtr<Vnode> vn) {
-    trace(VFS, "vfs_close: vn=%p\n", vn.get());
-    mx_status_t r = vn->Close();
-    return r;
+mx_status_t Vnode::Close() {
+    return NO_ERROR;
 }
 
-#ifdef __Fuchsia__
-mx_status_t Vnode::AddDispatcher(mx_handle_t h, vfs_iostate_t* cookie) {
-    // default implementation adds this object to the mxio single
-    // threaded dispatcher
-    return mxio_dispatcher_add(vfs_dispatcher, h, (void*)vfs_handler, cookie);
-}
-#endif
+DirentFiller::DirentFiller(void* ptr, size_t len) :
+    ptr_(static_cast<char*>(ptr)), pos_(0), len_(len) {}
 
-mx_status_t vfs_fill_dirent(vdirent_t* de, size_t delen,
-                            const char* name, size_t len, uint32_t type) {
+mx_status_t DirentFiller::Next(const char* name, size_t len, uint32_t type) {
+    vdirent_t* de = reinterpret_cast<vdirent_t*>(ptr_ + pos_);
     size_t sz = sizeof(vdirent_t) + len + 1;
 
     // round up to uint32 aligned
-    if (sz & 3)
+    if (sz & 3) {
         sz = (sz + 3) & (~3);
-    if (sz > delen)
+    }
+    if (sz > len_ - pos_) {
         return ERR_INVALID_ARGS;
+    }
     de->size = static_cast<uint32_t>(sz);
     de->type = type;
     memcpy(de->name, name, len);
     de->name[len] = 0;
-    return static_cast<mx_status_t>(sz);
+    pos_ += sz;
+    return NO_ERROR;
 }
 
 // Starting at vnode vn, walk the tree described by the path string,
