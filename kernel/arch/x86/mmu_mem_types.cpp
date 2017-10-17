@@ -128,7 +128,7 @@ void x86_pat_sync(mp_cpu_mask_t targets)
         .barrier2 = (int)targets,
     };
     /* Step 1: Broadcast to all processors to execute the sequence */
-    mp_sync_exec(targets, x86_pat_sync_task, &context);
+    mp_sync_exec(MP_IPI_TARGET_MASK, targets, x86_pat_sync_task, &context);
 }
 
 static void x86_pat_sync_task(void *raw_context)
@@ -253,13 +253,12 @@ static void print_pat_entries(void *_ignored)
 static int cmd_memtype(int argc, const cmd_args *argv, uint32_t flags)
 {
     if (argc < 2) {
-notenoughargs:
         printf("not enough arguments\n");
 usage:
         printf("usage:\n");
         printf("%s mtrr\n", argv[0].str);
         printf("%s pat\n", argv[0].str);
-        return ERR_INTERNAL;
+        return MX_ERR_INTERNAL;
     }
 
     if (!strcmp(argv[1].str, "mtrr")) {
@@ -270,7 +269,7 @@ usage:
             } else {
                 printf("usage: %s mtrr [-f]\n", argv[0].str);
                 printf("  -f    Display fixed registers\n");
-                return ERR_INTERNAL;
+                return MX_ERR_INTERNAL;
             }
         }
         uint64_t default_type = read_msr(X86_MSR_IA32_MTRR_DEF_TYPE);
@@ -301,14 +300,14 @@ usage:
         uint num_cpus = arch_max_num_cpus();
         for (uint i = 0; i < num_cpus; ++i) {
             printf("CPU %u Page Attribute Table types:\n", i);
-            mp_sync_exec(1 << i, print_pat_entries, NULL);
+            mp_sync_exec(MP_IPI_TARGET_MASK, 1u << i, print_pat_entries, NULL);
         }
     } else {
         printf("unknown command\n");
         goto usage;
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 STATIC_COMMAND_START

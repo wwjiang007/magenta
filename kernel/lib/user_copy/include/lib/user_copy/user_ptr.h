@@ -4,10 +4,11 @@
 
 #pragma once
 
+#include <arch/user_copy.h>
 #include <kernel/vm.h>
-#include <lib/user_copy.h>
 #include <lib/user_copy/internal.h>
-#include <mxtl/type_support.h>
+#include <magenta/types.h>
+#include <fbl/type_support.h>
 
 // user_ptr<> wraps a pointer to user memory, to differentiate it from kernel
 // memory.
@@ -37,52 +38,48 @@ public:
                     : user_ptr(nullptr);
     }
 
-    // check that the address is inside user space
-    // TODO(vtl): Make this more robust -- this only checks the initial address.
-    bool is_user_address() const { return ::is_user_address(reinterpret_cast<vaddr_t>(ptr_)); }
-
     // Copies a single T to user memory. (Using this will fail to compile if T is |void|.)
     // Note: The templatization is simply to allow the class to compile if T is |void|.
     template <typename S = T>
-    status_t copy_to_user(const S& src) const {
-        static_assert(mxtl::is_same<S, T>::value, "Do not use the template parameter.");
-        return copy_to_user_unsafe(ptr_, &src, sizeof(S));
+    mx_status_t copy_to_user(const S& src) const {
+        static_assert(fbl::is_same<S, T>::value, "Do not use the template parameter.");
+        return arch_copy_to_user(ptr_, &src, sizeof(S));
     }
 
     // Copies an array of T to user memory. Note: This takes a count not a size, unless T is |void|.
     // WARNING: This does not check that |count| is reasonable (i.e., that multiplication won't
     // overflow).
-    status_t copy_array_to_user(const T* src, size_t count) const {
-        return copy_to_user_unsafe(ptr_, src, count * internal::type_size<T>());
+    mx_status_t copy_array_to_user(const T* src, size_t count) const {
+        return arch_copy_to_user(ptr_, src, count * internal::type_size<T>());
     }
 
     // Copies an array of T to user memory. Note: This takes a count not a size, unless T is |void|.
     // WARNING: This does not check that |count| is reasonable (i.e., that multiplication won't
     // overflow).
-    status_t copy_array_to_user(const T* src, size_t count, size_t offset) const {
-        return copy_to_user_unsafe(ptr_ + offset, src, count * internal::type_size<T>());
+    mx_status_t copy_array_to_user(const T* src, size_t count, size_t offset) const {
+        return arch_copy_to_user(ptr_ + offset, src, count * internal::type_size<T>());
     }
 
     // Copies a single T from user memory. (Using this will fail to compile if T is |void|.)
-    status_t copy_from_user(typename mxtl::remove_const<T>::type* dst) const {
+    mx_status_t copy_from_user(typename fbl::remove_const<T>::type* dst) const {
         // Intentionally use sizeof(T) here, so *using* this method won't compile if T is |void|.
-        return copy_from_user_unsafe(dst, ptr_, sizeof(T));
+        return arch_copy_from_user(dst, ptr_, sizeof(T));
     }
 
     // Copies an array of T from user memory. Note: This takes a count not a size, unless T is
     // |void|.
     // WARNING: This does not check that |count| is reasonable (i.e., that multiplication won't
     // overflow).
-    status_t copy_array_from_user(typename mxtl::remove_const<T>::type* dst, size_t count) const {
-        return copy_from_user_unsafe(dst, ptr_, count * internal::type_size<T>());
+    mx_status_t copy_array_from_user(typename fbl::remove_const<T>::type* dst, size_t count) const {
+        return arch_copy_from_user(dst, ptr_, count * internal::type_size<T>());
     }
 
     // Copies a sub-array of T from user memory. Note: This takes a count not a size, unless T is
     // |void|.
     // WARNING: This does not check that |count| is reasonable (i.e., that multiplication won't
     // overflow).
-    status_t copy_array_from_user(typename mxtl::remove_const<T>::type* dst, size_t count, size_t offset) const {
-        return copy_from_user_unsafe(dst, ptr_ + offset, count * internal::type_size<T>());
+    mx_status_t copy_array_from_user(typename fbl::remove_const<T>::type* dst, size_t count, size_t offset) const {
+        return arch_copy_from_user(dst, ptr_ + offset, count * internal::type_size<T>());
     }
 
 private:

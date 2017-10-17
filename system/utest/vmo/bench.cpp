@@ -12,6 +12,7 @@
 #include <magenta/compiler.h>
 #include <magenta/process.h>
 #include <magenta/syscalls.h>
+#include <fbl/algorithm.h>
 
 #include "bench.h"
 
@@ -49,14 +50,14 @@ int vmo_run_benchmark() {
         }
     });
 
-    printf("\ttook %" PRIu64 " nsecs to create %zu vmos of size %zu\n", t, countof(vmos), size);
+    printf("\ttook %" PRIu64 " nsecs to create %zu vmos of size %zu\n", t, fbl::count_of(vmos), size);
 
     t = time_it([&](){
         for (auto& vmo : vmos) {
             mx_handle_close(vmo);
         }
     });
-    printf("\ttook %" PRIu64 " nsecs to delete %zu vmos of size %zu\n", t, countof(vmos), size);
+    printf("\ttook %" PRIu64 " nsecs to delete %zu vmos of size %zu\n", t, fbl::count_of(vmos), size);
 
     // create a vmo and demand fault it in
     mx_handle_t vmo;
@@ -149,6 +150,23 @@ int vmo_run_benchmark() {
         mx_vmo_op_range(vmo, MX_VMO_OP_COMMIT, 0, size, nullptr, 0);
     });
     printf("\ttook %" PRIu64 " nsecs to commit vmo of size %zu\n", t, size);
+
+    uint64_t addrs[size / PAGE_SIZE];
+    t = time_it([&](){
+        mx_status_t status = mx_vmo_op_range(vmo, MX_VMO_OP_LOOKUP, 0, size, addrs, sizeof(addrs));
+        if (status != MX_OK) {
+            __builtin_trap();
+        }
+    });
+    printf("\ttook %" PRIu64 " nsecs to lookup vmo of size %zu\n", t, size);
+
+    t = time_it([&](){
+        mx_status_t status = mx_vmo_op_range(vmo, MX_VMO_OP_COMMIT, 0, size, nullptr, 0);
+        if (status != MX_OK) {
+            __builtin_trap();
+        }
+    });
+    printf("\ttook %" PRIu64 " nsecs to commit already committed vmo of size %zu\n", t, size);
 
     t = time_it([&](){
         mx_vmo_op_range(vmo, MX_VMO_OP_DECOMMIT, 0, size, nullptr, 0);

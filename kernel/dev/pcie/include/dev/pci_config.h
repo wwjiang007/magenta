@@ -1,9 +1,16 @@
+// Copyright 2017 The Fuchsia Authors
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
+
 #pragma once
+
 #include <debug.h>
 #include <endian.h>
-#include <mxtl/ref_ptr.h>
-#include <mxtl/ref_counted.h>
-#include <mxtl/intrusive_single_list.h>
+#include <fbl/ref_ptr.h>
+#include <fbl/ref_counted.h>
+#include <fbl/intrusive_single_list.h>
 #include <dev/pci_common.h>
 
 class PciReg8 {
@@ -44,8 +51,8 @@ private:
 
 /* PciConfig supplies the factory for creating the appropriate pci config
  * object based on the address space of the pci device. */
-class PciConfig : public mxtl::SinglyLinkedListable<mxtl::RefPtr<PciConfig>>
-                , public mxtl::RefCounted<PciConfig> {
+class PciConfig : public fbl::SinglyLinkedListable<fbl::RefPtr<PciConfig>>
+                , public fbl::RefCounted<PciConfig> {
 public:
     // Standard PCI configuration space values. Offsets from PCI Firmware Spec ch 6.
     static constexpr PciReg16 kVendorId = PciReg16(0x0);
@@ -76,7 +83,7 @@ public:
     static constexpr PciReg8 kInterruptPin = PciReg8(0x3D);
     static constexpr PciReg8 kMinGrant = PciReg8(0x3E);
     static constexpr PciReg8 kMaxLatency = PciReg8(0x3F);
-    static constexpr uint8_t kStdCfgEnd = kMaxLatency.offset() + sizeof(uint8_t);
+    static constexpr uint8_t kStdCfgEnd = static_cast<uint8_t>(kMaxLatency.offset() + sizeof(uint8_t));
 
     /* pci to pci bridge config
      * Unlike a normal PCI header, a bridge only has two BARs, but the BAR offset in config space
@@ -111,11 +118,12 @@ public:
      *
      * @return a pointer to a new PciConfig instance on success, nullptr on failure.
      */
-    static mxtl::RefPtr<PciConfig> Create(uintptr_t base, PciAddrSpace addr_type);
+    static fbl::RefPtr<PciConfig> Create(uintptr_t base, PciAddrSpace addr_type);
     inline uintptr_t base() const { return base_; }
     inline PciAddrSpace addr_space() const { return addr_space_; }
 
     // Virtuals
+    void DumpConfig(uint16_t len) const;
     virtual uint8_t Read(const PciReg8 addr) const = 0;
     virtual uint16_t Read(const PciReg16 addr) const = 0;
     virtual uint32_t Read(const PciReg32 addr) const = 0;

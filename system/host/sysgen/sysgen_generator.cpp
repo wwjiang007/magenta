@@ -17,18 +17,18 @@ using std::map;
 using std::vector;
 
 const map<string, string> user_attrs = {
-    {"noreturn", "__attribute__((__noreturn__))"},
-    {"const", "__attribute__((const))"},
-    {"deprecated", "__attribute__((deprecated))"},
+    {"noreturn", "__NO_RETURN"},
+    {"const", "__CONST"},
+    {"deprecated", "__DEPRECATED"},
 
     // All vDSO calls are "leaf" in the sense of the GCC attribute.
     // It just means they can't ever call back into their callers'
     // own translation unit.  No vDSO calls make callbacks at all.
-    {"*", "__attribute__((__leaf__))"},
+    {"*", "__LEAF_FN"},
 };
 
 const map<string, string> kernel_attrs = {
-    {"noreturn", "__attribute__((__noreturn__))"},
+    {"noreturn", "__NO_RETURN"},
 };
 
 static TestWrapper test_wrapper;
@@ -36,9 +36,7 @@ static BlockingRetryWrapper blocking_wrapper;
 static vector<CallWrapper*> wrappers = {&test_wrapper, &blocking_wrapper};
 
 static VdsoWrapperGenerator vdso_wrapper_generator(
-    "mx_",         // external function name (points to wrapper)
     "_mx_",        // wrapper function name
-    "VDSO_mx_",    // vdso-internal name (points to wrapper)
     "SYSCALL_mx_", // syscall implementation name
     wrappers);
 
@@ -55,36 +53,48 @@ static KernelWrapperGenerator kernel_wrappers(
     "wrapper_", // wrapper prefix
     "MX_SYS_"); // syscall numbers constant prefix
 
+static bool skip_nothing(const Syscall&) {
+    return false;
+}
+
+static bool skip_internal(const Syscall& sc) {
+    return sc.is_internal();
+}
+
+static bool skip_vdso(const Syscall& sc) {
+    return sc.is_vdso();
+}
+
 static HeaderGenerator user_header(
     "extern ",                       // function prefix
-    vector<string>({"mx_", "_mx_"}), // function name prefixes
+    {
+        {"mx_", skip_internal},
+        {"_mx_", skip_internal},
+    },
     "void",                          // no-args special type
     false,                           // wrap pointers
-    user_attrs,
-    false); // skip vdso calls
+    user_attrs);
 
 static HeaderGenerator vdso_header(
-    "__attribute__((visibility(\"hidden\"))) extern ", // function prefix
-    vector<string>({"VDSO_mx_"}),                      // function name prefixes
+    "__LOCAL extern ", // function prefix
+    {
+        {"VDSO_mx_", skip_nothing},
+        {"SYSCALL_mx_", skip_vdso},
+    },
     "void",                                            // no-args special type
     false,
-    user_attrs,
-    true);
+    user_attrs);
 
 static HeaderGenerator kernel_header(
     "",
-    vector<string>({"sys_"}),
+    {
+        {"sys_", skip_vdso},
+    },
     "",
     true,
-    kernel_attrs,
-    true);
+    kernel_attrs);
 
-static X86AssemblyGenerator x86_generator(
-    "m_syscall", // syscall macro name
-    "mx_",       // syscall name prefix
-    wrappers);
-
-static Arm64AssemblyGenerator arm64_generator(
+static VDsoAsmGenerator vdso_asm_generator(
     "m_syscall", // syscall macro name
     "mx_",       // syscall name prefix
     wrappers);
@@ -115,10 +125,10 @@ const map<string, Generator&> type_to_generator = {
     {"kernel-wrappers", kernel_wrappers},
 
     //  The assembly file for x86-64.
-    {"x86-asm", x86_generator},
+    {"x86-asm", vdso_asm_generator},
 
     //  The assembly include file for ARM64.
-    {"arm-asm", arm64_generator},
+    {"arm-asm", vdso_asm_generator},
 
     // A C header defining MX_SYS_* syscall number macros.
     {"numbers", syscall_num_generator},

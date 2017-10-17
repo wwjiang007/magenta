@@ -50,7 +50,8 @@ __BEGIN_CDECLS
 #define MXRIO_SYNC         0x00000019
 #define MXRIO_LINK        (0x0000001a | MXRIO_ONE_HANDLE)
 #define MXRIO_MMAP         0x0000001b
-#define MXRIO_NUM_OPS      28
+#define MXRIO_FCNTL        0x0000001c
+#define MXRIO_NUM_OPS      29
 
 #define MXRIO_OP(n)        ((n) & 0x3FF) // opcode
 #define MXRIO_HC(n)        (((n) >> 8) & 3) // handle count
@@ -63,7 +64,18 @@ __BEGIN_CDECLS
     "read_at", "write_at", "truncate", "rename", \
     "connect", "bind", "listen", "getsockname", \
     "getpeername", "getsockopt", "setsockopt", "getaddrinfo", \
-    "setattr", "sync", "link", "mmap" }
+    "setattr", "sync", "link", "mmap", "fcntl" }
+
+// dispatcher callback return code that there were no messages to read
+#define ERR_DISPATCHER_NO_WORK MX_ERR_SHOULD_WAIT
+
+// indicates message handed off to another server
+// used by rio remote handler for deferred reply pipe completion
+#define ERR_DISPATCHER_INDIRECT MX_ERR_NEXT
+
+// indicates that this was a close message and that no further
+// callbacks should be made to the dispatcher
+#define ERR_DISPATCHER_DONE MX_ERR_STOP
 
 const char* mxio_opname(uint32_t op);
 
@@ -142,7 +154,7 @@ struct mxrio_msg {
 #define MXIO_MMAP_FLAG_READ    (1u << 0)
 #define MXIO_MMAP_FLAG_WRITE   (1u << 1)
 #define MXIO_MMAP_FLAG_EXEC    (1u << 2)
-#define MXIO_MMAP_FLAG_PRIVATE (1u << 10)
+#define MXIO_MMAP_FLAG_PRIVATE (1u << 16)
 
 static_assert(MXIO_MMAP_FLAG_READ == MX_VM_FLAG_PERM_READ, "Vmar / Mmap flags should be aligned");
 static_assert(MXIO_MMAP_FLAG_WRITE == MX_VM_FLAG_PERM_WRITE, "Vmar / Mmap flags should be aligned");
@@ -158,12 +170,6 @@ static_assert(MXIO_CHUNK_SIZE >= PATH_MAX, "MXIO_CHUNK_SIZE must be large enough
 
 #define READDIR_CMD_NONE  0
 #define READDIR_CMD_RESET 1
-
-// Top 4 bits of open flags are reserved for
-// the protocol, and not accepted by open()
-// in O_* flags
-#define MXRIO_OFLAG_MASK     0xF0000000
-#define MXRIO_OFLAG_PIPELINE 0x10000000
 
 // - msg.datalen is the size of data sent or received and must be <= MXIO_CHUNK_SIZE
 // - msg.arg is the return code on replies
@@ -197,6 +203,7 @@ static_assert(MXIO_CHUNK_SIZE >= PATH_MAX, "MXIO_CHUNK_SIZE must be large enough
 // SYNC        0          0        0                 0           -               -
 // LINK        0          0        <name1>0<name2>0  0           -               -
 // MMAP        maxreply   0        mmap_data_msg     0           mmap_data_msg   vmohandle
+// FCNTL       cmd        flags    0                 flags       -               -
 //
 // proposed:
 //

@@ -7,12 +7,13 @@
 #include <lib/rodso.h>
 
 #include <inttypes.h>
-#include <kernel/vm/vm_address_region.h>
-#include <kernel/vm/vm_object.h>
-#include <kernel/vm/vm_object_paged.h>
-#include <magenta/handle_owner.h>
-#include <magenta/vm_address_region_dispatcher.h>
-#include <magenta/vm_object_dispatcher.h>
+#include <vm/vm_address_region.h>
+#include <vm/vm_object.h>
+#include <vm/vm_object_paged.h>
+#include <object/handle_owner.h>
+#include <object/handles.h>
+#include <object/vm_address_region_dispatcher.h>
+#include <object/vm_object_dispatcher.h>
 
 RoDso::RoDso(const char* name, const void* image, size_t size,
              uintptr_t code_start)
@@ -21,13 +22,19 @@ RoDso::RoDso(const char* name, const void* image, size_t size,
     DEBUG_ASSERT(IS_PAGE_ALIGNED(code_start));
     DEBUG_ASSERT(code_start > 0);
     DEBUG_ASSERT(code_start < size);
-    mxtl::RefPtr<Dispatcher> dispatcher;
-    mx_status_t status = VmObjectDispatcher::Create(
-        VmObjectPaged::CreateFromROData(image, size),
+    fbl::RefPtr<Dispatcher> dispatcher;
+
+    fbl::RefPtr<VmObject> vmo;
+    mx_status_t status = VmObjectPaged::CreateFromROData(image, size, &vmo);
+    ASSERT(status == MX_OK);
+
+    status = VmObjectDispatcher::Create(
+        fbl::move(vmo),
         &dispatcher, &vmo_rights_);
-    ASSERT(status == NO_ERROR);
+    ASSERT(status == MX_OK);
+
     status = dispatcher->set_name(name, strlen(name));
-    ASSERT(status == NO_ERROR);
+    ASSERT(status == MX_OK);
     vmo_ = DownCastDispatcher<VmObjectDispatcher>(&dispatcher);
     vmo_rights_ &= ~MX_RIGHT_WRITE;
 }
@@ -37,7 +44,7 @@ HandleOwner RoDso::vmo_handle() const {
 }
 
 // Map one segment from our VM object.
-mx_status_t RoDso::MapSegment(mxtl::RefPtr<VmAddressRegionDispatcher> vmar,
+mx_status_t RoDso::MapSegment(fbl::RefPtr<VmAddressRegionDispatcher> vmar,
                               bool code,
                               size_t vmar_offset,
                               size_t start_offset,
@@ -49,12 +56,12 @@ mx_status_t RoDso::MapSegment(mxtl::RefPtr<VmAddressRegionDispatcher> vmar,
 
     size_t len = end_offset - start_offset;
 
-    mxtl::RefPtr<VmMapping> mapping;
+    fbl::RefPtr<VmMapping> mapping;
     mx_status_t status = vmar->Map(vmar_offset, vmo_->vmo(),
                                    start_offset, len, flags, &mapping);
 
     const char* segment_name = code ? "code" : "rodata";
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         dprintf(CRITICAL,
                 "userboot: %s %s mapping %#zx @ %#" PRIxPTR
                 " size %#zx failed %d\n",
@@ -70,11 +77,11 @@ mx_status_t RoDso::MapSegment(mxtl::RefPtr<VmAddressRegionDispatcher> vmar,
     return status;
 }
 
-mx_status_t RoDso::Map(mxtl::RefPtr<VmAddressRegionDispatcher> vmar,
+mx_status_t RoDso::Map(fbl::RefPtr<VmAddressRegionDispatcher> vmar,
                        size_t offset) const {
     mx_status_t status = MapSegment(vmar, false, offset, 0, code_start_);
-    if (status == NO_ERROR)
-        status = MapSegment(mxtl::move(vmar), true,
+    if (status == MX_OK)
+        status = MapSegment(fbl::move(vmar), true,
                             offset + code_start_, code_start_, size_);
     return status;
 }

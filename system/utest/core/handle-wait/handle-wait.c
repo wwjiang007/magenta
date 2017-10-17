@@ -63,7 +63,7 @@ static bool wait_readable(mx_handle_t handle, enum wait_result* result) {
     mx_signals_t signals = MX_CHANNEL_READABLE | MX_CHANNEL_PEER_CLOSED;
     mx_time_t deadline = MX_TIME_INFINITE;
     mx_status_t status = mx_object_wait_one(handle, signals, deadline, &pending);
-    if (status == ERR_CANCELED) {
+    if (status == MX_ERR_CANCELED) {
         *result = WAIT_CANCELLED;
         return true;
     }
@@ -82,13 +82,13 @@ static bool wait_signaled(mx_handle_t handle, enum wait_result* result) {
     mx_signals_t signals = MX_EVENT_SIGNALED;
     mx_time_t deadline = MX_TIME_INFINITE;
     mx_status_t status = mx_object_wait_one(handle, signals, deadline, &pending);
-    if (status == ERR_CANCELED) {
+    if (status == MX_ERR_CANCELED) {
         *result = WAIT_CANCELLED;
         return true;
     }
     ASSERT_GE(status, 0, "handle wait one failed");
-    ASSERT_NEQ(pending & MX_EVENT_SIGNALED, 0u,
-               "unexpected return in wait_signaled");
+    ASSERT_NE(pending & MX_EVENT_SIGNALED, 0u,
+              "unexpected return in wait_signaled");
     *result = WAIT_SIGNALED;
     return true;
 }
@@ -112,7 +112,7 @@ static bool recv_msg(mx_handle_t handle, enum message* msg) {
     unittest_printf("waiting for message on handle %u\n", handle);
     enum wait_result result;
     ASSERT_TRUE(wait_readable(handle, &result), "Error during waiting for read call");
-    ASSERT_NEQ(result, (enum wait_result)WAIT_CLOSED, "peer closed while trying to read message");
+    ASSERT_NE(result, (enum wait_result)WAIT_CLOSED, "peer closed while trying to read message");
     switch (result) {
     case WAIT_READABLE:
         break;
@@ -205,8 +205,9 @@ bool handle_wait_test(void) {
               "thread creation failed");
     unittest_printf("threads started\n");
 
+    event_handle = MX_HANDLE_INVALID;
     ASSERT_EQ(mx_event_create(0u, &event_handle), 0, "");
-    ASSERT_GT(event_handle, 0, "event creation failed");
+    ASSERT_NE(event_handle, MX_HANDLE_INVALID, "event creation failed");
 
     enum message msg;
     send_msg(thread1_channel[0], MSG_PING);
@@ -225,11 +226,11 @@ bool handle_wait_test(void) {
     // TODO(vtl): This is a flaky assumption, though the following sleep should help.
     mx_nanosleep(mx_deadline_after(MX_MSEC(20)));
 
-    mx_handle_t event_handle_dup;
+    mx_handle_t event_handle_dup = MX_HANDLE_INVALID;
     mx_status_t status = mx_handle_duplicate(event_handle, MX_RIGHT_SAME_RIGHTS, &event_handle_dup);
-    ASSERT_EQ(status, NO_ERROR, "");
-    ASSERT_GE(event_handle_dup, 0, "handle duplication failed");
-    ASSERT_EQ(mx_handle_close(event_handle), NO_ERROR, "handle close failed");
+    ASSERT_EQ(status, MX_OK, "");
+    ASSERT_NE(event_handle_dup, MX_HANDLE_INVALID, "handle duplication failed");
+    ASSERT_EQ(mx_handle_close(event_handle), MX_OK, "handle close failed");
 
     ASSERT_TRUE(recv_msg(thread1_channel[0], &msg), "Error while receiving msg");
     ASSERT_EQ(msg, (enum message)MSG_WAIT_EVENT_CANCELLED,
@@ -239,7 +240,7 @@ bool handle_wait_test(void) {
     send_msg(thread2_channel[0], MSG_EXIT);
     EXPECT_EQ(thrd_join(thread1, NULL), thrd_success, "failed to join thread");
     EXPECT_EQ(thrd_join(thread2, NULL), thrd_success, "failed to join thread");
-    EXPECT_EQ(mx_handle_close(event_handle_dup), NO_ERROR, "handle close failed");
+    EXPECT_EQ(mx_handle_close(event_handle_dup), MX_OK, "handle close failed");
     END_TEST;
 }
 

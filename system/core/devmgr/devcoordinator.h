@@ -11,23 +11,7 @@
 #include <magenta/types.h>
 #include <magenta/listnode.h>
 
-typedef struct port_handler port_handler_t;
-
-struct port_handler {
-    mx_handle_t handle;
-    mx_signals_t waitfor;
-    mx_status_t (*func)(port_handler_t* ph, mx_signals_t signals, uint32_t evt);
-};
-
-typedef struct {
-    mx_handle_t handle;
-} port_t;
-
-mx_status_t port_init(port_t* port);
-mx_status_t port_watch(port_t* port, port_handler_t* ph);
-mx_status_t port_dispatch(port_t* port, mx_time_t timeout);
-mx_status_t port_cancel(port_t* port, port_handler_t* ph);
-mx_status_t port_queue(port_t* port, port_handler_t* ph, uint32_t evt);
+#include <port/port.h>
 
 typedef struct dc_work work_t;
 typedef struct dc_pending pending_t;
@@ -35,7 +19,6 @@ typedef struct dc_devhost devhost_t;
 typedef struct dc_device device_t;
 typedef struct dc_driver driver_t;
 typedef struct dc_devnode devnode_t;
-
 
 struct dc_work {
     list_node_t node;
@@ -99,6 +82,9 @@ struct dc_device {
     // to this device's devhost, awaiting a response
     list_node_t pending;
 
+    // listnode for this device in the all devices list
+    list_node_t anode;
+
     mx_device_prop_t props[];
 };
 
@@ -145,9 +131,10 @@ void devfs_unpublish(device_t* dev);
 device_t* coordinator_init(mx_handle_t root_job);
 void coordinator(void);
 
-void coordinator_new_driver(driver_t* ctx, const char* version);
+void dc_driver_added(driver_t* drv, const char* version);
 
-void enumerate_drivers(void);
+void load_driver(const char* path);
+void find_loadable_drivers(const char* path);
 
 bool dc_is_bindable(driver_t* drv, uint32_t protocol_id,
                     mx_device_prop_t* props, size_t prop_count,
@@ -189,9 +176,13 @@ typedef struct {
 #define DC_OP_ADD_DEVICE         0x80000011
 #define DC_OP_REMOVE_DEVICE      0x80000012
 #define DC_OP_BIND_DEVICE        0x80000013
+#define DC_OP_GET_TOPO_PATH      0x80000014
 
 // Host->Coord Ops for DmCtl
 #define DC_OP_DM_COMMAND         0x80000020
+#define DC_OP_DM_OPEN_VIRTCON    0x80000021
+#define DC_OP_DM_WATCH           0x80000022
+#define DC_PATH_MAX 1024
 
 mx_status_t dc_msg_pack(dc_msg_t* msg, uint32_t* len_out,
                         const void* data, size_t datalen,
@@ -199,6 +190,7 @@ mx_status_t dc_msg_pack(dc_msg_t* msg, uint32_t* len_out,
 mx_status_t dc_msg_unpack(dc_msg_t* msg, size_t len, const void** data,
                           const char** name, const char** args);
 mx_status_t dc_msg_rpc(mx_handle_t h, dc_msg_t* msg, size_t msglen,
-                       mx_handle_t* handles, size_t hcount);
+                       mx_handle_t* handles, size_t hcount,
+                       dc_status_t* rsp, size_t rsp_len);
 
 void devmgr_set_mdi(mx_handle_t mdi_handle);

@@ -5,13 +5,12 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-#ifndef __APP_H
-#define __APP_H
+#pragma once
 
 #include <stddef.h>
 #include <magenta/compiler.h>
 
-__BEGIN_CDECLS;
+__BEGIN_CDECLS
 
 /* app support api */
 void apps_init(void); /* one time setup */
@@ -34,11 +33,17 @@ struct app_descriptor {
     size_t stack_size;
 };
 
-#define APP_START(appname) const struct app_descriptor _app_##appname __ALIGNED(sizeof(void *)) __SECTION("apps") = { .name = #appname,
+#define APP_FLAGS(appname, _init, _entry, _flags, _stack_size) \
+    __ALIGNED(sizeof(void *)) __USED __SECTION("apps") \
+    static const struct app_descriptor _app_##appname = { \
+        .name = #appname, \
+        .init = _init, \
+        .entry = _entry, \
+        .flags = _flags, \
+        .stack_size = _stack_size \
+    };
 
-#define APP_END };
+#define APP(appname, _init, _entry) \
+    APP_FLAGS(appname, _init, _entry, 0, 0);
 
-__END_CDECLS;
-
-#endif
-
+__END_CDECLS

@@ -33,12 +33,10 @@ static nbfile nbramdisk;
 static nbfile nbcmdline;
 
 nbfile* netboot_get_buffer(const char* name, size_t size) {
-    // we know these are in a buffer large enough
-    // that this is safe (todo: implement strcmp)
-    if (!memcmp(name, "kernel.bin", 11)) {
+    if (!strcmp(name, NB_KERNEL_FILENAME)) {
         return &nbkernel;
     }
-    if (!memcmp(name, "ramdisk.bin", 12)) {
+    if (!strcmp(name, NB_RAMDISK_FILENAME)) {
         efi_physical_addr mem = 0xFFFFFFFF;
         size_t buf_size = size > 0 ? (size + PAGE_MASK) & ~PAGE_MASK : RBUFSIZE;
 
@@ -68,7 +66,7 @@ nbfile* netboot_get_buffer(const char* name, size_t size) {
 
         return &nbramdisk;
     }
-    if (!memcmp(name, "cmdline", 8)) {
+    if (!strcmp(name, NB_CMDLINE_FILENAME)) {
         return &nbcmdline;
     }
     return NULL;
@@ -376,11 +374,17 @@ EFIAPI efi_status efi_main(efi_handle img, efi_system_table* sys) {
     printf("\n\n");
     print_cmdline();
 
-    // Look for a kernel image on disk
-    // TODO: use the filesystem protocol
+    // First look for a self-contained magentaboot image
     size_t ksz = 0;
-    void* kernel = xefi_load_file(L"magenta.bin", &ksz, 0);
+    void* kernel = xefi_load_file(L"mxboot.bin", &ksz, 0);
 
+    if (kernel) {
+        mxboot(img, sys, kernel, ksz);
+    }
+
+    // Look for a kernel image on disk
+    ksz = 0;
+    kernel = xefi_load_file(L"magenta.bin", &ksz, 0);
     if (!have_network && kernel == NULL) {
         goto fail;
     }
@@ -411,6 +415,10 @@ EFIAPI efi_status efi_main(efi_handle img, efi_system_table* sys) {
 
     // make sure we update valid_keys if we ever add new options
     if (key_idx >= sizeof(valid_keys)) goto fail;
+
+    // Disable WDT
+    // The second parameter can be any value outside of the range [0,0xffff]
+    gBS->SetWatchdogTimer(0, 0x10000, 0, NULL);
 
     int timeout_s = cmdline_get_uint32("bootloader.timeout", DEFAULT_TIMEOUT);
     while (true) {

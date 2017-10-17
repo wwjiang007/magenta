@@ -14,11 +14,13 @@ MODULE_SRCS := \
     $(LOCAL_DIR)/blobstore.cpp
 
 MODULE_STATIC_LIBS := \
-    system/ulib/merkle \
-    third_party/ulib/cryptolib \
-    system/ulib/mxalloc \
+    system/ulib/fvm \
+    system/ulib/digest \
+    system/ulib/fs \
+    system/ulib/gpt \
     system/ulib/mxcpp \
-    system/ulib/mxtl \
+    system/ulib/fbl \
+    third_party/ulib/cryptolib \
 
 MODULE_LIBS := \
     system/ulib/mxio \

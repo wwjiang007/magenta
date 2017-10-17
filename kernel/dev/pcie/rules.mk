@@ -21,7 +21,8 @@ MODULE_SRCS += \
 
 MODULE_DEPS += \
     kernel/lib/mxcpp \
-    kernel/lib/mxtl \
+    kernel/lib/fbl \
+    kernel/lib/pci \
     kernel/lib/region-alloc
 
 MODULE_CPPFLAGS += -Wno-invalid-offsetof

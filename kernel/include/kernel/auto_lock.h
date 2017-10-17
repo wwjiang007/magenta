@@ -8,16 +8,24 @@
 
 #include <kernel/mutex.h>
 #include <kernel/spinlock.h>
-#include <mxtl/auto_lock.h>
-#include <mxtl/macros.h>
+#include <fbl/auto_lock.h>
+#include <fbl/macros.h>
 
 // Various lock guard wrappers for kernel only locks
-// NOTE: wrapper for mutex_t is in mxtl/auto_lock.h
+// NOTE: wrapper for mutex_t is in fbl/auto_lock.h
 
 class TA_SCOPED_CAP AutoSpinLock {
 public:
-    explicit AutoSpinLock(spin_lock_t& lock) : spinlock_(&lock) { acquire(); }
-    explicit AutoSpinLock(SpinLock& lock) : spinlock_(lock.GetInternal()) { acquire(); }
+    explicit AutoSpinLock(spin_lock_t* lock)
+        : spinlock_(lock) {
+        DEBUG_ASSERT(lock);
+        acquire();
+    }
+    explicit AutoSpinLock(SpinLock* lock)
+        : spinlock_(lock->GetInternal()) {
+        DEBUG_ASSERT(lock);
+        acquire();
+    }
     ~AutoSpinLock() { release(); }
 
     void release() TA_REL() {
@@ -37,8 +45,16 @@ private:
 
 class AutoSpinLockIrqSave {
 public:
-    explicit AutoSpinLockIrqSave(spin_lock_t& lock) : spinlock_(&lock) { acquire(); }
-    explicit AutoSpinLockIrqSave(SpinLock& lock) : spinlock_(lock.GetInternal()) { acquire(); }
+    explicit AutoSpinLockIrqSave(spin_lock_t* lock)
+        : spinlock_(lock) {
+        DEBUG_ASSERT(lock);
+        acquire();
+    }
+    explicit AutoSpinLockIrqSave(SpinLock* lock)
+        : spinlock_(lock->GetInternal()) {
+        DEBUG_ASSERT(lock);
+        acquire();
+    }
     ~AutoSpinLockIrqSave() { release(); }
 
     void release() {

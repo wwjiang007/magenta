@@ -15,28 +15,6 @@ struct waiter {
     atomic_int* notify;
 };
 
-/* Self-synchronized-destruction-safe lock functions */
-
-static inline void lock(atomic_int* l) {
-    if (a_cas_shim(l, 0, 1)) {
-        a_cas_shim(l, 1, 2);
-        do
-            __wait(l, 0, 2);
-        while (a_cas_shim(l, 0, 2));
-    }
-}
-
-static inline void unlock(atomic_int* l) {
-    if (atomic_exchange(l, 0) == 2)
-        __wake(l, 1);
-}
-
-static inline void unlock_requeue(atomic_int* l, mx_futex_t* r) {
-    atomic_store(l, 0);
-    _mx_futex_requeue(l, /* wake count */ 0, /* l futex value */ 0,
-                      r, /* requeue count */ 1);
-}
-
 enum {
     WAITING,
     LEAVING,

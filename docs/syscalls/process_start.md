@@ -32,22 +32,21 @@ thread.
 
 ## RETURN VALUE
 
-**process_start**() returns NO_ERROR on success.
+**process_start**() returns MX_OK on success.
 In the event of failure, a negative error value is returned.
 
 ## ERRORS
 
-**ERR_BAD_HANDLE**  *process* or *thread* is not a valid handle.
+**MX_ERR_BAD_HANDLE**  *process* or *thread* or *arg1* is not a valid handle.
 
-**ERR_WRONG_TYPE**  *process* is not a process handle or *thread* is
+**MX_ERR_WRONG_TYPE**  *process* is not a process handle or *thread* is
 not a thread handle.
 
-**ERR_ACCESS_DENIED**  The handle *thread* lacks *MX_RIGHT_WRITE* or *thread*
-does not belong to *process*, or the handle *process* lacks *MX_RIGHT_WRITE*.
+**MX_ERR_ACCESS_DENIED**  The handle *thread* lacks *MX_RIGHT_WRITE* or *thread*
+does not belong to *process*, or the handle *process* lacks *MX_RIGHT_WRITE* or
+*arg1* lacks MX_RIGHT_TRANSFER.
 
-**ERR_INVALID_ARGS**  *arg1* is not a valid handle with *MX_RIGHT_TRANSFER*.
-
-**ERR_BAD_STATE**  *process* is already running or has exited.
+**MX_ERR_BAD_STATE**  *process* is already running or has exited.
 
 ## SEE ALSO
 

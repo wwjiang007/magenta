@@ -27,7 +27,12 @@ __BEGIN_CDECLS
 // ask clang format not to mess up the indentation:
 // clang-format off
 
+#ifdef _KERNEL
+typedef uint32_t mx_handle_t;
+#else
 typedef int32_t mx_handle_t;
+#endif
+
 #define MX_HANDLE_INVALID         ((mx_handle_t)0)
 
 // Same as kernel status_t
@@ -114,24 +119,18 @@ typedef uint32_t mx_signals_t;
 #define MX_SOCKET_READABLE          __MX_OBJECT_READABLE
 #define MX_SOCKET_WRITABLE          __MX_OBJECT_WRITABLE
 #define MX_SOCKET_PEER_CLOSED       __MX_OBJECT_PEER_CLOSED
+#define MX_SOCKET_READ_DISABLED     __MX_OBJECT_SIGNAL_4
+#define MX_SOCKET_WRITE_DISABLED    __MX_OBJECT_SIGNAL_5
+#define MX_SOCKET_CONTROL_READABLE  __MX_OBJECT_SIGNAL_6
+#define MX_SOCKET_CONTROL_WRITABLE  __MX_OBJECT_SIGNAL_7
 
 // Port
 #define MX_PORT_READABLE            __MX_OBJECT_READABLE
-
-// Resource
-#define MX_RESOURCE_DESTROYED       __MX_OBJECT_SIGNALED
-#define MX_RESOURCE_READABLE        __MX_OBJECT_READABLE
-#define MX_RESOURCE_WRITABLE        __MX_OBJECT_WRITABLE
-#define MX_RESOURCE_CHILD_ADDED     __MX_OBJECT_SIGNAL_4
 
 // Fifo
 #define MX_FIFO_READABLE            __MX_OBJECT_READABLE
 #define MX_FIFO_WRITABLE            __MX_OBJECT_WRITABLE
 #define MX_FIFO_PEER_CLOSED         __MX_OBJECT_PEER_CLOSED
-
-// Waitset
-#define MX_WAITSET_READABLE         __MX_OBJECT_READABLE
-#define MX_WAITSET_PEER_CLOSED      __MX_OBJECT_PEER_CLOSED
 
 // Task signals (process, thread, job)
 #define MX_TASK_TERMINATED          __MX_OBJECT_SIGNALED
@@ -150,10 +149,8 @@ typedef uint32_t mx_signals_t;
 #define MX_LOG_READABLE             __MX_OBJECT_READABLE
 #define MX_LOG_WRITABLE             __MX_OBJECT_WRITABLE
 
-// Compatibility Definitions
-// TODO: remove when safe. Magenta should not be using them.
-#define MX_PROCESS_SIGNALED         MX_PROCESS_TERMINATED
-#define MX_THREAD_SIGNALED          MX_THREAD_TERMINATED
+// Timer
+#define MX_TIMER_SIGNALED           __MX_OBJECT_SIGNALED
 
 // global kernel object id.
 typedef uint64_t mx_koid_t;
@@ -164,8 +161,8 @@ typedef uint64_t mx_koid_t;
 typedef uint32_t mx_txid_t;
 
 typedef struct {
-    void* wr_bytes;
-    mx_handle_t* wr_handles;
+    const void* wr_bytes;
+    const mx_handle_t* wr_handles;
     void *rd_bytes;
     mx_handle_t* rd_handles;
     uint32_t wr_num_bytes;
@@ -181,13 +178,6 @@ typedef struct {
     mx_signals_t pending;
 } mx_wait_item_t;
 
-// Structure for mx_waitset_*():
-typedef struct mx_waitset_result {
-    uint64_t cookie;
-    mx_status_t status;
-    mx_signals_t observed;
-} mx_waitset_result_t;
-
 typedef uint32_t mx_rights_t;
 #define MX_RIGHT_NONE             ((mx_rights_t)0u)
 #define MX_RIGHT_DUPLICATE        ((mx_rights_t)1u << 0)
@@ -202,6 +192,8 @@ typedef uint32_t mx_rights_t;
 #define MX_RIGHT_DESTROY          ((mx_rights_t)1u << 9)
 #define MX_RIGHT_SET_POLICY       ((mx_rights_t)1u << 10)
 #define MX_RIGHT_GET_POLICY       ((mx_rights_t)1u << 11)
+#define MX_RIGHT_SIGNAL           ((mx_rights_t)1u << 12)
+#define MX_RIGHT_SIGNAL_PEER      ((mx_rights_t)1u << 13)
 
 #define MX_RIGHT_SAME_RIGHTS      ((mx_rights_t)1u << 31)
 
@@ -260,8 +252,21 @@ typedef int64_t mx_rel_off_t;
 // Channel options and limits.
 #define MX_CHANNEL_READ_MAY_DISCARD         1u
 
+#define MX_CHANNEL_MAX_MSG_BYTES            65536u
+#define MX_CHANNEL_MAX_MSG_HANDLES          64u
+
 // Socket options and limits.
-#define MX_SOCKET_HALF_CLOSE                1u
+// These options can be passed to mx_socket_write()
+#define MX_SOCKET_SHUTDOWN_WRITE            (1u << 0)
+#define MX_SOCKET_SHUTDOWN_READ             (1u << 1)
+#define MX_SOCKET_SHUTDOWN_MASK             (MX_SOCKET_SHUTDOWN_WRITE | MX_SOCKET_SHUTDOWN_READ)
+// These can be passed to mx_socket_create()
+#define MX_SOCKET_STREAM                    (0u << 0)
+#define MX_SOCKET_DATAGRAM                  (1u << 0)
+#define MX_SOCKET_HAS_CONTROL               (1u << 1)
+#define MX_SOCKET_CREATE_MASK               (MX_SOCKET_DATAGRAM | MX_SOCKET_HAS_CONTROL)
+// These can be passed to mx_socket_read() and mx_socket_write().
+#define MX_SOCKET_CONTROL                   (1u << 2)
 
 // Flags which can be used to to control cache policy for APIs which map memory.
 typedef enum {
@@ -273,29 +278,15 @@ typedef enum {
     MX_CACHE_POLICY_MASK            = 0x3,
 } mx_cache_policy_t;
 
-// Fifo state
-typedef struct {
-    uint64_t head;
-    uint64_t tail;
-} mx_fifo_state_t;
-
-// Fifo ops
-typedef enum {
-    MX_FIFO_OP_READ_STATE         = 0,
-    MX_FIFO_OP_ADVANCE_HEAD       = 1,
-    MX_FIFO_OP_ADVANCE_TAIL       = 2,
-    MX_FIFO_OP_PRODUCER_EXCEPTION = 3,
-    MX_FIFO_OP_CONSUMER_EXCEPTION = 4,
-} mx_fifo_op_t;
-
-#define MX_FIFO_PRODUCER_RIGHTS \
-    (MX_RIGHT_READ | MX_RIGHT_TRANSFER | MX_RIGHT_DUPLICATE | MX_RIGHT_FIFO_PRODUCER)
-#define MX_FIFO_CONSUMER_RIGHTS \
-    (MX_RIGHT_READ | MX_RIGHT_TRANSFER | MX_RIGHT_DUPLICATE | MX_RIGHT_FIFO_CONSUMER)
-
 // Flag bits for mx_cache_flush.
-#define MX_CACHE_FLUSH_INSN       (1u << 0)
-#define MX_CACHE_FLUSH_DATA       (1u << 1)
+#define MX_CACHE_FLUSH_INSN         (1u << 0)
+#define MX_CACHE_FLUSH_DATA         (1u << 1)
+
+// Timer options.
+#define MX_TIMER_SLACK_CENTER       0u
+#define MX_TIMER_SLACK_EARLY        1u
+#define MX_TIMER_SLACK_LATE         2u
+
 
 #ifdef __cplusplus
 // We cannot use <stdatomic.h> with C++ code as _Atomic qualifier defined by

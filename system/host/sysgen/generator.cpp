@@ -11,6 +11,9 @@ using std::ofstream;
 using std::string;
 
 static constexpr char kAuthors[] = "The Fuchsia Authors";
+static constexpr char kWrapMacro[] = "MX_SYSCALL_PARAM_ATTR";
+static constexpr char kDefaultHandleAnnotation[] = "handle_use";
+bool is_identifier_keyword(const string& iden);
 
 bool Generator::header(ofstream& os) {
     auto t = std::time(nullptr);
@@ -18,8 +21,8 @@ bool Generator::header(ofstream& os) {
 
     os << "// Copyright " << ltime->tm_year + 1900
        << " " << kAuthors << ". All rights reserved.\n";
-    os << "// This is a GENERATED file. The license governing this file can be ";
-    os << "found in the LICENSE file.\n\n";
+    os << "// This is a GENERATED file, see //magenta/system/host/sysgen.\n";
+    os << "// The license governing this file can be found in the LICENSE file.\n\n";
 
     return os.good();
 }
@@ -29,37 +32,31 @@ bool Generator::footer(ofstream& os) {
     return os.good();
 }
 
-static int alias_arg(const Syscall& sc, const std::vector<CallWrapper*> wrappers) {
-    for (const CallWrapper* wrapper : wrappers) {
-        if (wrapper->applies(sc)) {
-            return 0;
+bool VDsoAsmGenerator::syscall(ofstream& os, const Syscall& sc) {
+    if (!sc.is_vdso()) {
+        bool is_public = !sc.is_internal();
+        for (const CallWrapper* wrapper : wrappers_) {
+            if (wrapper->applies(sc)) {
+                is_public = false;
+                break;
+            }
         }
+
+        // m_syscall name, syscall_num, nargs
+        os << syscall_macro_
+           << " " << name_prefix_ << sc.name
+           << " " << sc.index
+           << " " << sc.num_kernel_args()
+           << " " << (is_public ? 1 : 0)
+           << "\n";
     }
-    return 1;
-}
-
-bool X86AssemblyGenerator::syscall(ofstream& os, const Syscall& sc) {
-    if (sc.is_vdso())
-        return true;
-
-    // SYSCALL_DEF(nargs64, nargs32, n, ret, name, args...) m_syscall nargs64, mx_##name, n
-    os << syscall_macro_ << " " << sc.num_kernel_args() << " "
-       << name_prefix_ << sc.name << " " << sc.index << " "
-       << alias_arg(sc, wrappers_) << "\n";
-    return os.good();
-}
-
-bool Arm64AssemblyGenerator::syscall(ofstream& os, const Syscall& sc) {
-    if (sc.is_vdso())
-        return true;
-
-    // SYSCALL_DEF(nargs64, nargs32, n, ret, name, args...) m_syscall mx_##name, n
-    os << syscall_macro_ << " " << name_prefix_ << sc.name << " " << sc.index << " "
-       << alias_arg(sc, wrappers_) << "\n";
     return os.good();
 }
 
 bool KernelBranchGenerator::header(ofstream& os) {
+    if (!Generator::header(os))
+        return false;
+
     os << "start_syscall_dispatch\n";
     return os.good();
 }
@@ -99,7 +96,7 @@ bool TraceInfoGenerator::syscall(ofstream& os, const Syscall& sc) {
 
 bool CategoryGenerator::syscall(ofstream& os, const Syscall& sc) {
     for (const auto& attr : sc.attributes) {
-        if (attr != "*")
+        if (attr != "*" && attr != "internal")
             category_map_[attr].push_back(&sc.name);
     }
     return true;
@@ -134,6 +131,7 @@ void write_syscall_signature_line(ofstream& os, const Syscall& sc, string name_p
             os << inter_arg;
         }
         first = false;
+        write_argument_annotation(os, arg);
         os << arg.as_cpp_declaration(wrap_pointers_with_user_ptr) << ",";
     });
 
@@ -174,4 +172,18 @@ void write_syscall_invocation(ofstream& os, const Syscall& sc,
     }
 
     os << ");\n";
+}
+
+void write_argument_annotation(std::ofstream& os, const TypeSpec& arg) {
+    bool has_annotation = false;
+    for (const auto& a : arg.attributes) {
+        if (!a.empty() && !is_identifier_keyword(a)) {
+            has_annotation = true;
+            os << kWrapMacro << "(" << a << ") ";
+        }
+    }
+    // If arg type is a handle (not an array) and no annotation is present, use default annotation
+    if (!has_annotation && arg.type == "mx_handle_t" && arg.arr_spec == nullptr) {
+        os << kWrapMacro << "(" << kDefaultHandleAnnotation << ") ";
+    }
 }

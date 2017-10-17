@@ -25,15 +25,16 @@ With the machine off, Press and hold Volume Up, then continue to hold while pres
 - USB HDD
 - USB FDD
 - USB CDROM
+- HDD: <MFG> <SERIALNO>
 - Network Boot-IPV4
 - Network Boot-IPV6
-- HDD: <MFG> <SERIALNO>
 - Windows Boot Manager
-10. (Optional)  Go back to the “Security” tab and set the supervisor password back to nothing.
+10. Select the “Main” tab on the left and set the time and date by pressing “[SetTime]” and “[SetDate]” buttons respectfully. This is necessary for proper network operation.
+11. (Optional)  Go back to the “Security” tab and set the supervisor password back to nothing.
 Otherwise you’ll need to enter the password every time you use the BIOS.
 A password is required to modify the secure boot setting, but “disabled” will persist without one.
-11. Select “Exit” from the tabs at the left
-12. Select “Exit Saving Changes”
+12. Select “Exit” from the tabs at the left
+13. Select “Exit Saving Changes”
 
 ## What if you end up in the Windows 10 Setup?
 If you don’t enter the BIOS and haven’t installed another OS, You’ll end up on a blue background “Hi there” screen asking you to select country, language, etc.  
@@ -53,13 +54,21 @@ It’s possible to end up in a situation where the machine *really* wants to hel
 7. Check that “Windows Boot Manager” didn’t get moved to the top of the boot order, fix it if it did
 
 ## How to Create a Bootable USB Flash Drive
-1. Build the bootloader
-  * `(cd $MAGENTA_ROOT; make bootloader)`
+1. Build everything
+  * `(cd $FUCHSIA_ROOT; fbuild)`
 2. Format your USB Flash Drive with a FAT32 partition as the first partition
-3. Copy `$MAGENTA_ROOT/build-magenta-pc-x86-64/bootloader/bootx64.efi` to `EFI/BOOT/BOOTX64.EFI` on the USB Flash Drive.
+3. Copy `$FUCHSIA_ROOT/out/build-magenta/build-magenta-pc-x86-64/bootloader/bootx64.efi` to `EFI/BOOT/BOOTX64.EFI` on the USB Flash Drive.
 If you plan to netboot, you're done.
-4. Copy `build-magenta-pc-x86-64/magenta.bin` to the root of the USB Flash Drive
+4. Copy `$FUCHSIA_ROOT/out/build-magenta/build-magenta-pc-x86-64/magenta.bin` to the root of the USB Flash Drive
 5. Optionally copy an additional bootfs image to `ramdisk.bin` on the root of the USB Flash Drive (for a Fuchsia build, a bootfs image can be found at `$FUCHSIA_ROOT/out/debug-x86-64/user.bootfs`)
 
 If you need to boot magenta over the network, skip step 4 and/or delete
 magenta.bin from the root of the USB Flash Drive.
+
+## Quirks
+It has been observed that USB initialization is racy on a cold boot.  So if you're starting from a cold boot and trying to boot to USB, you may find that you boot to disk instead.
+
+Mitigations:
+- It's useful to use a `cmdline` file to set `magenta.nodename=foo` to know during the boot screen whether you're booting from USB or disk.
+- If the Acer is booting from disk and you want to boot from USB, remove and reinsert the USB drive, then reboot with `ctrl-alt-del` (not the power button.)
+- You can tell from the bios whether USB has been initialized because it will name the USB device.

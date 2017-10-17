@@ -5,10 +5,7 @@
 #include "asm.h"
 
 // %rax = memcpy(%rdi, %rsi, %rdx)
-.hidden __memcpy_fwd
 ENTRY(memcpy)
-ALIAS_ENTRY(__memcpy_fwd)
-
     // Save return value.
     mov %rdi, %rax
 
@@ -16,6 +13,9 @@ ALIAS_ENTRY(__memcpy_fwd)
     rep movsb // while (rcx-- > 0) *rdi++ = *rsi++;
 
     ret
-
-ALIAS_END(__memcpy_fwd)
 END(memcpy)
+
+ALIAS(memcpy, __unsanitized_memcpy)
+ASAN_WEAK_ALIAS(memcpy)
+ALIAS(memcpy, __memcpy_fwd)
+.hidden __memcpy_fwd

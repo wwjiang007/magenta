@@ -13,17 +13,17 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/channel.cpp \
     $(LOCAL_DIR)/event.cpp \
     $(LOCAL_DIR)/eventpair.cpp \
+    $(LOCAL_DIR)/fifo.cpp \
     $(LOCAL_DIR)/job.cpp \
     $(LOCAL_DIR)/log.cpp \
     $(LOCAL_DIR)/port.cpp \
     $(LOCAL_DIR)/process.cpp \
     $(LOCAL_DIR)/socket.cpp \
     $(LOCAL_DIR)/thread.cpp \
+    $(LOCAL_DIR)/timer.cpp \
     $(LOCAL_DIR)/vmar.cpp \
     $(LOCAL_DIR)/vmo.cpp \
 
 MODULE_LIBS := system/ulib/magenta
-
-MODULE_COMPILEFLAGS := $(NO_SAFESTACK)
 
 include make/module.mk

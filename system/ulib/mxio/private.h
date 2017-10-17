@@ -30,9 +30,11 @@ typedef struct mxio_namespace mxio_ns_t;
 
 typedef struct mxio_ops {
     ssize_t (*read)(mxio_t* io, void* data, size_t len);
-    ssize_t (*read_at)(mxio_t* io, void* data, size_t len, mx_off_t offset);
+    ssize_t (*read_at)(mxio_t* io, void* data, size_t len, off_t offset);
     ssize_t (*write)(mxio_t* io, const void* data, size_t len);
-    ssize_t (*write_at)(mxio_t* io, const void* data, size_t len, mx_off_t offset);
+    ssize_t (*write_at)(mxio_t* io, const void* data, size_t len, off_t offset);
+    ssize_t (*recvfrom)(mxio_t* io, void* data, size_t len, int flags, struct sockaddr* restrict addr, socklen_t* restrict addrlen);
+    ssize_t (*sendto)(mxio_t* io, const void* data, size_t len, int flags, const struct sockaddr* addr, socklen_t addrlen);
     ssize_t (*recvmsg)(mxio_t* io, struct msghdr* msg, int flags);
     ssize_t (*sendmsg)(mxio_t* io, const struct msghdr* msg, int flags);
     off_t (*seek)(mxio_t* io, off_t offset, int whence);
@@ -41,6 +43,7 @@ typedef struct mxio_ops {
     mx_status_t (*open)(mxio_t* io, const char* path, int32_t flags, uint32_t mode, mxio_t** out);
     mx_status_t (*clone)(mxio_t* io, mx_handle_t* out_handles, uint32_t* out_types);
     mx_status_t (*unwrap)(mxio_t* io, mx_handle_t* out_handles, uint32_t* out_types);
+    mx_status_t (*shutdown)(mxio_t* io, int how);
     void (*wait_begin)(mxio_t* io, uint32_t events, mx_handle_t* handle, mx_signals_t* signals);
     void (*wait_end)(mxio_t* io, mx_signals_t signals, uint32_t* events);
     ssize_t (*ioctl)(mxio_t* io, uint32_t op, const void* in_buf, size_t in_len, void* out_buf, size_t out_len);
@@ -56,7 +59,6 @@ typedef struct mxio_ops {
 #define MXIO_FLAG_SOCKET_CONNECTING ((int32_t)1 << 4)
 #define MXIO_FLAG_SOCKET_CONNECTED ((int32_t)1 << 5)
 #define MXIO_FLAG_NONBLOCK ((int32_t)1 << 6)
-#define MXIO_FLAG_PIPE ((int32_t)1 << 7)
 
 // The subset of mxio_t per-fd flags queryable via fcntl.
 // Static assertions in unistd.c ensure we aren't colliding.
@@ -167,12 +169,15 @@ void mxio_socket_set_dgram_ops(mxio_t* io);
 
 mx_status_t mxio_socket_posix_ioctl(mxio_t* io, int req, va_list va);
 mx_status_t mxio_socket_shutdown(mxio_t* io, int how);
+mx_status_t mxio_socketpair_shutdown(mxio_t* io, int how);
 
 // unsupported / do-nothing hooks shared by implementations
 ssize_t mxio_default_read(mxio_t* io, void* _data, size_t len);
 ssize_t mxio_default_read_at(mxio_t* io, void* _data, size_t len, off_t offset);
 ssize_t mxio_default_write(mxio_t* io, const void* _data, size_t len);
 ssize_t mxio_default_write_at(mxio_t* io, const void* _data, size_t len, off_t offset);
+ssize_t mxio_default_recvfrom(mxio_t* io, void* _data, size_t len, int flags, struct sockaddr* restrict addr, socklen_t* restrict addrlen);
+ssize_t mxio_default_sendto(mxio_t* io, const void* _data, size_t len, int flags, const struct sockaddr* addr, socklen_t addrlen);
 ssize_t mxio_default_recvmsg(mxio_t* io, struct msghdr* msg, int flags);
 ssize_t mxio_default_sendmsg(mxio_t* io, const struct msghdr* msg, int flags);
 off_t mxio_default_seek(mxio_t* io, off_t offset, int whence);
@@ -184,6 +189,7 @@ ssize_t mxio_default_ioctl(mxio_t* io, uint32_t op, const void* in_buf, size_t i
 void mxio_default_wait_begin(mxio_t* io, uint32_t events, mx_handle_t* handle, mx_signals_t* _signals);
 void mxio_default_wait_end(mxio_t* io, mx_signals_t signals, uint32_t* _events);
 mx_status_t mxio_default_unwrap(mxio_t* io, mx_handle_t* handles, uint32_t* types);
+mx_status_t mxio_default_shutdown(mxio_t* io, int how);
 ssize_t mxio_default_posix_ioctl(mxio_t* io, int req, va_list va);
 mx_status_t mxio_default_get_vmo(mxio_t* io, mx_handle_t* out, size_t* off, size_t* len);
 
@@ -198,7 +204,6 @@ typedef struct {
     mtx_t cwd_lock;
     bool init;
     mode_t umask;
-    mx_handle_t svc_root;
     mxio_t* root;
     mxio_t* cwd;
     mxio_t* fdtab[MAX_MXIO_FD];
@@ -215,5 +220,4 @@ extern mxio_state_t __mxio_global_state;
 #define mxio_cwd_path (__mxio_global_state.cwd_path)
 #define mxio_fdtab (__mxio_global_state.fdtab)
 #define mxio_root_init (__mxio_global_state.init)
-#define mxio_svc_root (__mxio_global_state.svc_root)
 #define mxio_root_ns (__mxio_global_state.ns)

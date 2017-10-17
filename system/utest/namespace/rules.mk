@@ -6,7 +6,7 @@ LOCAL_DIR := $(GET_LOCAL_DIR)
 
 MODULE := $(LOCAL_DIR)
 
-MODULE_TYPE := userapp
+MODULE_TYPE := usertest
 
 MODULE_NAME := namespace-test
 
@@ -16,6 +16,7 @@ MODULE_LIBS := \
     system/ulib/launchpad \
     system/ulib/mxio \
     system/ulib/magenta \
-    system/ulib/c
+    system/ulib/c \
+    system/ulib/unittest \
 
 include make/module.mk

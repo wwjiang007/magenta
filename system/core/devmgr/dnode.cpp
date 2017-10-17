@@ -7,9 +7,9 @@
 #include <string.h>
 
 #include <fs/vfs.h>
-#include <mxalloc/new.h>
-#include <mxtl/ref_ptr.h>
-#include <mxtl/unique_ptr.h>
+#include <fbl/alloc_checker.h>
+#include <fbl/ref_ptr.h>
+#include <fbl/unique_ptr.h>
 
 #include "dnode.h"
 #include "devmgr.h"
@@ -18,19 +18,19 @@
 namespace memfs {
 
 // Create a new dnode and attach it to a vnode
-mxtl::RefPtr<Dnode> Dnode::Create(const char* name, size_t len, mxtl::RefPtr<VnodeMemfs> vn) {
+fbl::RefPtr<Dnode> Dnode::Create(const char* name, size_t len, fbl::RefPtr<VnodeMemfs> vn) {
     if ((len > kDnodeNameMax) || (len < 1)) {
         return nullptr;
     }
 
-    AllocChecker ac;
-    mxtl::unique_ptr<char[]> namebuffer (new (&ac) char[len + 1]);
+    fbl::AllocChecker ac;
+    fbl::unique_ptr<char[]> namebuffer (new (&ac) char[len + 1]);
     if (!ac.check()) {
         return nullptr;
     }
     memcpy(namebuffer.get(), name, len);
     namebuffer[len] = '\0';
-    mxtl::RefPtr<Dnode> dn = mxtl::AdoptRef(new (&ac) Dnode(vn, mxtl::move(namebuffer),
+    fbl::RefPtr<Dnode> dn = fbl::AdoptRef(new (&ac) Dnode(vn, fbl::move(namebuffer),
                                                             static_cast<uint32_t>(len)));
     if (!ac.check()) {
         return nullptr;
@@ -49,6 +49,7 @@ void Dnode::RemoveFromParent() {
             // '..' no longer references parent.
             parent_->vnode_->link_count_--;
         }
+        parent_->vnode_->UpdateModified();
         if (parent_->vnode_->IsDetachedDevice() && !parent_->HasChildren()) {
             // Extremely special case: Parent is a detached device node,
             // which has had a linked reference, but just ran out of children.
@@ -74,7 +75,7 @@ void Dnode::Detach() {
     vnode_ = nullptr;
 }
 
-void Dnode::AddChild(mxtl::RefPtr<Dnode> parent, mxtl::RefPtr<Dnode> child) {
+void Dnode::AddChild(fbl::RefPtr<Dnode> parent, fbl::RefPtr<Dnode> child) {
     MX_DEBUG_ASSERT(parent != nullptr);
     MX_DEBUG_ASSERT(child != nullptr);
     MX_DEBUG_ASSERT(child->parent_ == nullptr); // Child shouldn't have a parent
@@ -93,54 +94,37 @@ void Dnode::AddChild(mxtl::RefPtr<Dnode> parent, mxtl::RefPtr<Dnode> child) {
     } else {
         child->ordering_token_ = parent->children_.back().ordering_token_ + 1;
     }
-    parent->children_.push_back(mxtl::move(child));
+    parent->children_.push_back(fbl::move(child));
+    parent->vnode_->UpdateModified();
 }
 
-mx_status_t Dnode::Lookup(const char* name, size_t len, mxtl::RefPtr<Dnode>* out) const {
-    if ((len == 1) && (name[0] == '.')) {
-        if (out != nullptr) {
-            *out = nullptr;
-        }
-        return NO_ERROR;
-    }
-    if ((len == 2) && (name[0] == '.') && (name[1] == '.')) {
-        if (out != nullptr) {
-#ifdef NO_DOTDOT
-            // ".." --> "." when every directory is its own root.
-            *out = nullptr;
-#else
-            *out = parent_;
-#endif
-        }
-        return NO_ERROR;
-    }
-
+mx_status_t Dnode::Lookup(const char* name, size_t len, fbl::RefPtr<Dnode>* out) const {
     auto dn = children_.find_if([&name, &len](const Dnode& elem) -> bool {
         return elem.NameMatch(name, len);
     });
     if (dn == children_.end()) {
-        return ERR_NOT_FOUND;
+        return MX_ERR_NOT_FOUND;
     }
 
     if (out != nullptr) {
         *out = dn.CopyPointer();
     }
-    return NO_ERROR;
+    return MX_OK;
 }
 
-mxtl::RefPtr<VnodeMemfs> Dnode::AcquireVnode() const {
+fbl::RefPtr<VnodeMemfs> Dnode::AcquireVnode() const {
     return vnode_;
 }
 
 mx_status_t Dnode::CanUnlink() const {
     if (!children_.is_empty()) {
         // Cannot unlink non-empty directory
-        return ERR_BAD_STATE;
+        return MX_ERR_NOT_EMPTY;
     } else if (vnode_->IsRemote()) {
         // Cannot unlink mount points
-        return ERR_BAD_STATE;
+        return MX_ERR_UNAVAILABLE;
     }
-    return NO_ERROR;
+    return MX_OK;
 }
 
 struct dircookie_t {
@@ -157,26 +141,20 @@ mx_status_t Dnode::ReaddirStart(fs::DirentFiller* df, void* cookie) {
     mx_status_t r;
 
     if (c->order == 0) {
-        if ((r = df->Next(".", 1, VTYPE_TO_DTYPE(V_TYPE_DIR))) != NO_ERROR) {
+        if ((r = df->Next(".", 1, VTYPE_TO_DTYPE(V_TYPE_DIR))) != MX_OK) {
             return r;
         }
         c->order++;
     }
-    if (c->order == 1) {
-        if ((r = df->Next("..", 2, VTYPE_TO_DTYPE(V_TYPE_DIR))) != NO_ERROR) {
-            return r;
-        }
-        c->order++;
-    }
-    return NO_ERROR;
+    return MX_OK;
 }
 
 void Dnode::Readdir(fs::DirentFiller* df, void* cookie) const {
     dircookie_t* c = static_cast<dircookie_t*>(cookie);
     mx_status_t r = 0;
 
-    if (c->order <= 1) {
-        if ((r = Dnode::ReaddirStart(df, cookie)) != NO_ERROR) {
+    if (c->order < 1) {
+        if ((r = Dnode::ReaddirStart(df, cookie)) != MX_OK) {
             return;
         }
     }
@@ -186,7 +164,7 @@ void Dnode::Readdir(fs::DirentFiller* df, void* cookie) const {
             continue;
         }
         uint32_t vtype = dn.IsDirectory() ? V_TYPE_DIR : V_TYPE_FILE;
-        if ((r = df->Next(dn.name_.get(), dn.NameLen(), VTYPE_TO_DTYPE(vtype))) != NO_ERROR) {
+        if ((r = df->Next(dn.name_.get(), dn.NameLen(), VTYPE_TO_DTYPE(vtype))) != MX_OK) {
             return;
         }
         c->order = dn.ordering_token_ + 1;
@@ -194,7 +172,7 @@ void Dnode::Readdir(fs::DirentFiller* df, void* cookie) const {
 }
 
 // Answers the question: "Is dn a subdirectory of this?"
-bool Dnode::IsSubdirectory(mxtl::RefPtr<Dnode> dn) const {
+bool Dnode::IsSubdirectory(fbl::RefPtr<Dnode> dn) const {
     if (IsDirectory() && dn->IsDirectory()) {
         // Iterate all the way up to root
         while (dn->parent_ != nullptr && dn->parent_ != dn) {
@@ -207,19 +185,19 @@ bool Dnode::IsSubdirectory(mxtl::RefPtr<Dnode> dn) const {
     return false;
 }
 
-mxtl::unique_ptr<char[]> Dnode::TakeName() {
-    return mxtl::move(name_);
+fbl::unique_ptr<char[]> Dnode::TakeName() {
+    return fbl::move(name_);
 }
 
-void Dnode::PutName(mxtl::unique_ptr<char[]> name, size_t len) {
+void Dnode::PutName(fbl::unique_ptr<char[]> name, size_t len) {
     flags_ = static_cast<uint32_t>((flags_ & ~kDnodeNameMax) | len);
-    name_ = mxtl::move(name);
+    name_ = fbl::move(name);
 }
 
 bool Dnode::IsDirectory() const { return vnode_->IsDirectory(); }
 
-Dnode::Dnode(mxtl::RefPtr<VnodeMemfs> vn, mxtl::unique_ptr<char[]> name, uint32_t flags) :
-    vnode_(mxtl::move(vn)), parent_(nullptr), ordering_token_(0), flags_(flags), name_(mxtl::move(name)) {
+Dnode::Dnode(fbl::RefPtr<VnodeMemfs> vn, fbl::unique_ptr<char[]> name, uint32_t flags) :
+    vnode_(fbl::move(vn)), parent_(nullptr), ordering_token_(0), flags_(flags), name_(fbl::move(name)) {
 };
 
 size_t Dnode::NameLen() const {

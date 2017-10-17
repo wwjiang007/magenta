@@ -26,31 +26,26 @@ counterpart).
 When all the handles to one of the objects have been closed, the *MX_EPAIR_PEER_CLOSED*
 signal will be asserted on the opposing object.
 
-The newly-created handles will have the *MX_RIGHT_TRANSER*,
-*MX_RIGHT_DUPLICATE*, *MX_RIGHT_READ*, and *MX_RIGHT_WRITE* rights.
+The newly-created handles will have the *MX_RIGHT_TRANSFER*,
+*MX_RIGHT_DUPLICATE*, *MX_RIGHT_READ*, *MX_RIGHT_WRITE*, *MX_RIGHT_SIGNAL*,
+and *MX_RIGHT_SIGNAL_PEER* rights.
 
 Currently, no options are supported, so *options* must be set to 0.
 
 
 ## RETURN VALUE
 
-**eventpair_create**() returns **NO_ERROR** on success. On failure, a (negative)
+**eventpair_create**() returns **MX_OK** on success. On failure, a (negative)
 error code is returned.
 
 
 ## ERRORS
 
-**ERR_INVALID_ARGS**  *out0* or *out1* is an invalid pointer or NULL.
+**MX_ERR_INVALID_ARGS**  *out0* or *out1* is an invalid pointer or NULL.
 
-**ERR_NOT_SUPPORTED**  *options* has an unsupported flag set (i.e., is not 0).
+**MX_ERR_NOT_SUPPORTED**  *options* has an unsupported flag set (i.e., is not 0).
 
-**ERR_NO_MEMORY**  (Temporary) Failure due to lack of memory.
-
-
-## NOTES
-
-The right *MX_RIGHT_WRITE* gates both the ability to modify the object's signals
-and the signals of the object's peer.  These should probably become distinct rights.
+**MX_ERR_NO_MEMORY**  (Temporary) Failure due to lack of memory.
 
 
 ## SEE ALSO

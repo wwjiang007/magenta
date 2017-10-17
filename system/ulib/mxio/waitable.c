@@ -2,9 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <poll.h>
 #include <stdbool.h>
 #include <stdlib.h>
-#include <sys/epoll.h>
 
 #include <magenta/syscalls.h>
 #include <mxio/io.h>
@@ -19,10 +19,10 @@ struct mxwio {
     // arbitrary handle
     mx_handle_t h;
 
-    // signals that cause EPOLLIN
+    // signals that cause POLLIN
     mx_signals_t signals_in;
 
-    // signals that cause EPOLLOUT
+    // signals that cause POLLOUT
     mx_signals_t signals_out;
 
     // if true, don't close handle on close() op
@@ -36,7 +36,7 @@ static mx_status_t mxwio_close(mxio_t* io) {
     if (!wio->shared_handle) {
         mx_handle_close(h);
     }
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static void mxwio_wait_begin(mxio_t* io, uint32_t events, mx_handle_t* handle,
@@ -44,10 +44,10 @@ static void mxwio_wait_begin(mxio_t* io, uint32_t events, mx_handle_t* handle,
     mxwio_t* wio = (void*)io;
     *handle = wio->h;
     mx_signals_t signals = 0;
-    if (events & EPOLLIN) {
+    if (events & POLLIN) {
         signals |= wio->signals_in;
     }
-    if (events & EPOLLOUT) {
+    if (events & POLLOUT) {
         signals |= wio->signals_out;
     }
     *_signals = signals;
@@ -57,17 +57,21 @@ static void mxwio_wait_end(mxio_t* io, mx_signals_t signals, uint32_t* _events) 
     mxwio_t* wio = (void*)io;
     uint32_t events = 0;
     if (signals & wio->signals_in) {
-        events |= EPOLLIN;
+        events |= POLLIN;
     }
     if (signals & wio->signals_out) {
-        events |= EPOLLOUT;
+        events |= POLLOUT;
     }
     *_events = events;
 }
 
 static mxio_ops_t mxio_waitable_ops = {
     .read = mxio_default_read,
+    .read_at = mxio_default_read_at,
     .write = mxio_default_write,
+    .write_at = mxio_default_write_at,
+    .recvfrom = mxio_default_recvfrom,
+    .sendto = mxio_default_sendto,
     .recvmsg = mxio_default_recvmsg,
     .sendmsg = mxio_default_sendmsg,
     .seek = mxio_default_seek,
@@ -76,6 +80,8 @@ static mxio_ops_t mxio_waitable_ops = {
     .open = mxio_default_open,
     .clone = mxio_default_clone,
     .ioctl = mxio_default_ioctl,
+    .unwrap = mxio_default_unwrap,
+    .shutdown = mxio_default_shutdown,
     .wait_begin = mxwio_wait_begin,
     .wait_end = mxwio_wait_end,
     .posix_ioctl = mxio_default_posix_ioctl,

@@ -2,82 +2,119 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <ctype.h>
 #include <fcntl.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
 #include <ddk/driver.h>
+#include <driver-info/driver-info.h>
 #include <launchpad/launchpad.h>
 #include <magenta/assert.h>
 #include <magenta/ktrace.h>
 #include <magenta/processargs.h>
 #include <magenta/syscalls.h>
+#include <magenta/syscalls/policy.h>
+#include <magenta/device/dmctl.h>
 #include <mxio/io.h>
 
 #include "acpi.h"
+
 #include "devcoordinator.h"
+#include "devmgr.h"
 #include "log.h"
 #include "memfs-private.h"
+
+extern mx_handle_t virtcon_open;
 
 uint32_t log_flags = LOG_ERROR | LOG_INFO;
 
 static void dc_dump_state(void);
+static void dc_dump_devprops(void);
+static void dc_dump_drivers(void);
 
-extern mx_handle_t application_launcher;
+static mx_handle_t dmctl_socket;
+
+static void dmprintf(const char* fmt, ...) {
+    if (dmctl_socket == MX_HANDLE_INVALID) {
+        return;
+    }
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    size_t actual;
+    if (mx_socket_write(dmctl_socket, 0, buf, strlen(buf), &actual) < 0) {
+        mx_handle_close(dmctl_socket);
+        dmctl_socket = MX_HANDLE_INVALID;
+    }
+}
 
 static mx_status_t handle_dmctl_write(size_t len, const char* cmd) {
     if (len == 4) {
         if (!memcmp(cmd, "dump", 4)) {
             dc_dump_state();
-            return NO_ERROR;
+            return MX_OK;
         }
         if (!memcmp(cmd, "help", 4)) {
-            printf("dump        - dump device tree\n"
-                   "poweroff    - power off the system\n"
-                   "shutdown    - power off the system\n"
-                   "reboot      - reboot the system\n"
-                   "kerneldebug - send a command to the kernel\n"
-                   "ktraceoff   - stop kernel tracing\n"
-                   "ktraceon    - start kernel tracing\n"
-                   "acpi-ps0    - invoke the _PS0 method on an acpi object\n"
-                   );
-            return NO_ERROR;
+            dmprintf("dump        - dump device tree\n"
+                     "poweroff    - power off the system\n"
+                     "shutdown    - power off the system\n"
+                     "reboot      - reboot the system\n"
+                     "kerneldebug - send a command to the kernel\n"
+                     "ktraceoff   - stop kernel tracing\n"
+                     "ktraceon    - start kernel tracing\n"
+                     "devprops    - dump published devices and their binding properties\n"
+                     "drivers     - list discovered drivers and their properties\n"
+                     );
+            return MX_OK;
         }
     }
     if ((len == 6) && !memcmp(cmd, "reboot", 6)) {
+        devmgr_vfs_exit();
         devhost_acpi_reboot();
-        return NO_ERROR;
+        return MX_OK;
+    }
+    if ((len == 7) && !memcmp(cmd, "drivers", 7)) {
+        dc_dump_drivers();
+        return MX_OK;
     }
     if (len == 8) {
         if (!memcmp(cmd, "poweroff", 8) || !memcmp(cmd, "shutdown", 8)) {
+            devmgr_vfs_exit();
             devhost_acpi_poweroff();
-            return NO_ERROR;
+            return MX_OK;
         }
         if (!memcmp(cmd, "ktraceon", 8)) {
             mx_ktrace_control(get_root_resource(), KTRACE_ACTION_START, KTRACE_GRP_ALL, NULL);
-            return NO_ERROR;
+            return MX_OK;
+        }
+        if (!memcmp(cmd, "devprops", 8)) {
+            dc_dump_devprops();
+            return MX_OK;
         }
     }
     if ((len == 9) && (!memcmp(cmd, "ktraceoff", 9))) {
         mx_ktrace_control(get_root_resource(), KTRACE_ACTION_STOP, 0, NULL);
         mx_ktrace_control(get_root_resource(), KTRACE_ACTION_REWIND, 0, NULL);
-        return NO_ERROR;
-    }
-    if ((len > 9) && !memcmp(cmd, "acpi-ps0:", 9)) {
-        char arg[len - 8];
-        memcpy(arg, cmd + 9, len - 9);
-        arg[len - 9] = 0;
-        devhost_acpi_ps0(arg);
-        return NO_ERROR;
+        return MX_OK;
     }
     if ((len > 12) && !memcmp(cmd, "kerneldebug ", 12)) {
         return mx_debug_send_command(get_root_resource(), cmd + 12, len - 12);
     }
-    if ((len > 1) && (cmd[0] == '@')) {
-        return mx_channel_write(application_launcher, 0, cmd, len, NULL, 0);
+    if ((len > 11) && !memcmp(cmd, "add-driver:", 11)) {
+        len -= 11;
+        char path[len + 1];
+        memcpy(path, cmd + 11, len);
+        path[len] = 0;
+        load_driver(path);
+        return MX_OK;
     }
+    dmprintf("unknown command\n");
     log(ERROR, "dmctl: unknown command '%.*s'\n", (int) len, cmd);
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 //TODO: these are copied from devhost.h
@@ -88,9 +125,21 @@ mx_handle_t get_sysinfo_job_root(void);
 static mx_status_t dc_handle_device(port_handler_t* ph, mx_signals_t signals, uint32_t evt);
 static mx_status_t dc_attempt_bind(driver_t* drv, device_t* dev);
 
+static bool dc_running;
+
+static mx_handle_t dc_watch_channel;
+
 static mx_handle_t devhost_job;
 port_t dc_port;
+
+// All Drivers
 static list_node_t list_drivers = LIST_INITIAL_VALUE(list_drivers);
+
+// Drivers to add to All Drivers
+static list_node_t list_drivers_new = LIST_INITIAL_VALUE(list_drivers_new);
+
+// All Devices (excluding static immortal devices)
+static list_node_t list_devices = LIST_INITIAL_VALUE(list_devices);
 
 static driver_t* libname_to_driver(const char* libname) {
     driver_t* drv;
@@ -106,12 +155,12 @@ static mx_status_t libname_to_vmo(const char* libname, mx_handle_t* out) {
     driver_t* drv = libname_to_driver(libname);
     if (drv == NULL) {
         log(ERROR, "devcoord: cannot find driver '%s'\n", libname);
-        return ERR_NOT_FOUND;
+        return MX_ERR_NOT_FOUND;
     }
     int fd = open(libname, O_RDONLY);
     if (fd < 0) {
         log(ERROR, "devcoord: cannot open driver '%s'\n", libname);
-        return ERR_IO;
+        return MX_ERR_IO;
     }
     mx_status_t r = mxio_get_vmo(fd, out);
     close(fd);
@@ -143,9 +192,21 @@ static device_t misc_device = {
     .refcount = 1,
 };
 
+static mx_handle_t acpi_rpc[2] = { MX_HANDLE_INVALID, MX_HANDLE_INVALID };
+
+static device_t acpi_device = {
+    .flags = DEV_CTX_IMMORTAL | DEV_CTX_BUSDEV,
+    .protocol_id = MX_PROTOCOL_ACPI_BUS,
+    .name = "acpi",
+    .libname = "",
+    .args = "acpi,,",
+    .children = LIST_INITIAL_VALUE(acpi_device.children),
+    .pending = LIST_INITIAL_VALUE(acpi_device.pending),
+    .refcount = 1,
+};
+
 static device_t platform_device = {
     .flags = DEV_CTX_IMMORTAL | DEV_CTX_BUSDEV,
-    .protocol_id = MX_PROTOCOL_PLATFORM_BUS,
     .name = "platform",
     .libname = "",
     .args = "platform,,",
@@ -179,15 +240,15 @@ static void dc_dump_device(device_t* dev, size_t indent) {
         extra[0] = 0;
     }
     if (pid == 0) {
-        printf("%*s[%s]%s\n", (int) (indent * 3), "", dev->name, extra);
+        dmprintf("%*s[%s]%s\n", (int) (indent * 3), "", dev->name, extra);
     } else {
-        printf("%*s%c%s%c pid=%zu%s %s\n",
-               (int) (indent * 3), "",
-               dev->flags & DEV_CTX_SHADOW ? '<' : '[',
-               dev->name,
-               dev->flags & DEV_CTX_SHADOW ? '>' : ']',
-               pid, extra,
-               dev->libname ? dev->libname : "");
+        dmprintf("%*s%c%s%c pid=%zu%s %s\n",
+                 (int) (indent * 3), "",
+                 dev->flags & DEV_CTX_SHADOW ? '<' : '[',
+                 dev->name,
+                 dev->flags & DEV_CTX_SHADOW ? '>' : ']',
+                 pid, extra,
+                 dev->libname ? dev->libname : "");
     }
     device_t* child;
     if (dev->shadow) {
@@ -202,13 +263,102 @@ static void dc_dump_device(device_t* dev, size_t indent) {
 static void dc_dump_state(void) {
     dc_dump_device(&root_device, 0);
     dc_dump_device(&misc_device, 1);
-    dc_dump_device(&platform_device, 1);
+    dc_dump_device(&acpi_device, 1);
+    if (platform_device.hrsrc != MX_HANDLE_INVALID) {
+        dc_dump_device(&platform_device, 1);
+    }
+}
+
+static void dc_dump_device_props(device_t* dev) {
+    if (dev->host) {
+        dmprintf("Name [%s]%s%s%s\n",
+                 dev->name,
+                 dev->libname ? " Driver [" : "",
+                 dev->libname ? dev->libname : "",
+                 dev->libname ? "]" : "");
+        dmprintf("Flags   :%s%s%s%s%s%s%s\n",
+                 dev->flags & DEV_CTX_IMMORTAL   ? " Immortal"  : "",
+                 dev->flags & DEV_CTX_BUSDEV     ? " BusDev"    : "",
+                 dev->flags & DEV_CTX_MULTI_BIND ? " MultiBind" : "",
+                 dev->flags & DEV_CTX_BOUND      ? " Bound"     : "",
+                 dev->flags & DEV_CTX_DEAD       ? " Dead"      : "",
+                 dev->flags & DEV_CTX_ZOMBIE     ? " Zombie"    : "",
+                 dev->flags & DEV_CTX_SHADOW     ? " Shadow"    : "");
+
+        char a = (char)((dev->protocol_id >> 24) & 0xFF);
+        char b = (char)((dev->protocol_id >> 16) & 0xFF);
+        char c = (char)((dev->protocol_id >> 8) & 0xFF);
+        char d = (char)(dev->protocol_id & 0xFF);
+        dmprintf("ProtoId : '%c%c%c%c' 0x%08x(%u)\n",
+                 isprint(a) ? a : '.',
+                 isprint(b) ? b : '.',
+                 isprint(c) ? c : '.',
+                 isprint(d) ? d : '.',
+                 dev->protocol_id,
+                 dev->protocol_id);
+
+        dmprintf("%u Propert%s\n", dev->prop_count, dev->prop_count == 1 ? "y" : "ies");
+        for (uint32_t i = 0; i < dev->prop_count; ++i) {
+            const mx_device_prop_t* p = dev->props + i;
+            const char* param_name = di_bind_param_name(p->id);
+
+            if (param_name) {
+                dmprintf("[%2u/%2u] : Value 0x%08x Id %s\n",
+                         i, dev->prop_count, p->value, param_name);
+            } else {
+                dmprintf("[%2u/%2u] : Value 0x%08x Id 0x%04hx\n",
+                         i, dev->prop_count, p->value, p->id);
+            }
+        }
+        dmprintf("\n");
+    }
+
+    device_t* child;
+    if (dev->shadow) {
+        dc_dump_device_props(dev->shadow);
+    }
+    list_for_every_entry(&dev->children, child, device_t, node) {
+        dc_dump_device_props(child);
+    }
+}
+
+static void dc_dump_devprops(void) {
+    dc_dump_device_props(&root_device);
+    dc_dump_device_props(&misc_device);
+    dc_dump_device_props(&acpi_device);
+    if (platform_device.hrsrc != MX_HANDLE_INVALID) {
+        dc_dump_device_props(&platform_device);
+    }
+}
+
+static void dc_dump_drivers(void) {
+    driver_t* drv;
+    bool first = true;
+    list_for_every_entry(&list_drivers, drv, driver_t, node) {
+        dmprintf("%sName    : %s\n", first ? "" : "\n", drv->name);
+        dmprintf("Driver  : %s\n", drv->libname ? drv->libname : "(null)");
+        dmprintf("Flags   : 0x%08x\n", drv->flags);
+        if (drv->binding_size) {
+            char line[256];
+            uint32_t count = drv->binding_size / sizeof(drv->binding[0]);
+            dmprintf("Binding : %u instruction%s (%u bytes)\n",
+                     count, (count == 1) ? "" : "s", drv->binding_size);
+            for (uint32_t i = 0; i < count; ++i) {
+                di_dump_bind_inst(drv->binding + i, line, sizeof(line));
+                dmprintf("[%u/%u]: %s\n", i + 1, count, line);
+            }
+        }
+        first = false;
+    }
 }
 
 static void dc_handle_new_device(device_t* dev);
+static void dc_handle_new_driver(void);
 
 #define WORK_IDLE 0
 #define WORK_DEVICE_ADDED 1
+#define WORK_DRIVER_ADDED 2
+
 static list_node_t list_pending_work = LIST_INITIAL_VALUE(list_pending_work);
 static list_node_t list_unbound_devices = LIST_INITIAL_VALUE(list_unbound_devices);
 
@@ -236,6 +386,10 @@ static void process_work(work_t* work) {
         dc_handle_new_device(dev);
         break;
     }
+    case WORK_DRIVER_ADDED: {
+        dc_handle_new_driver();
+        break;
+    }
     default:
         log(ERROR, "devcoord: unknown work: op=%u\n", op);
     }
@@ -244,6 +398,103 @@ static void process_work(work_t* work) {
 static const char* devhost_bin = "/boot/bin/devhost";
 
 mx_handle_t get_service_root(void);
+
+static mx_status_t dc_get_topo_path(device_t* dev, char* out, size_t max) {
+    char tmp[max];
+    char* path = tmp + max - 1;
+    *path = 0;
+    size_t total = 1;
+
+    while (dev != NULL) {
+        if (dev->flags & DEV_CTX_SHADOW) {
+            dev = dev->parent;
+        }
+        const char* name;
+
+        if (dev->parent) {
+            name = dev->name;
+        } else if (!strcmp(misc_device.name, dev->name)) {
+            name = "dev/misc";
+        } else if (!strcmp(acpi_device.name, dev->name)) {
+            name = "dev/acpi";
+        } else {
+            name = "dev";
+        }
+        size_t len = strlen(name) + 1;
+        if (len > (max - total)) {
+            return MX_ERR_BUFFER_TOO_SMALL;
+        }
+        memcpy(path - len + 1, name, len - 1);
+        path -= len;
+        *path = '/';
+        total += len;
+        dev = dev->parent;
+    }
+
+    memcpy(out, path, total);
+    return MX_OK;
+}
+
+//TODO: use a better device identifier
+static mx_status_t dc_notify(device_t* dev, uint32_t op) {
+    if (dc_watch_channel == MX_HANDLE_INVALID) {
+        return MX_ERR_BAD_STATE;
+    }
+    mx_status_t r;
+    if (op == DEVMGR_OP_DEVICE_ADDED) {
+        size_t propslen = sizeof(mx_device_prop_t) * dev->prop_count;
+        size_t len = sizeof(devmgr_event_t) + propslen;
+        char msg[len + DC_PATH_MAX];
+        devmgr_event_t* evt = (void*) msg;
+        memset(evt, 0, sizeof(devmgr_event_t));
+        memcpy(msg + sizeof(devmgr_event_t), dev->props, propslen);
+        if (dc_get_topo_path(dev, msg + len, DC_PATH_MAX) < 0) {
+            return MX_OK;
+        }
+        size_t pathlen = strlen(msg + len);
+        len += pathlen;
+        evt->opcode = op;
+        if (dev->flags & DEV_CTX_BOUND) {
+            evt->flags |= DEVMGR_FLAGS_BOUND;
+        }
+        evt->id = (uintptr_t) dev;
+        evt->u.add.protocol_id = dev->protocol_id;
+        evt->u.add.props_len = propslen;
+        evt->u.add.path_len = pathlen;
+        r = mx_channel_write(dc_watch_channel, 0, msg, len, NULL, 0);
+    } else {
+        devmgr_event_t evt;
+        memset(&evt, 0, sizeof(evt));
+        evt.opcode = op;
+        if (dev->flags & DEV_CTX_BOUND) {
+            evt.flags |= DEVMGR_FLAGS_BOUND;
+        }
+        evt.id = (uintptr_t) dev;
+        r = mx_channel_write(dc_watch_channel, 0, &evt, sizeof(evt), NULL, 0);
+    }
+    if (r < 0) {
+        mx_handle_close(dc_watch_channel);
+        dc_watch_channel = MX_HANDLE_INVALID;
+    }
+    return r;
+}
+
+static void dc_watch(mx_handle_t h) {
+    if (dc_watch_channel != MX_HANDLE_INVALID) {
+        mx_handle_close(dc_watch_channel);
+    }
+    dc_watch_channel = h;
+    device_t* dev;
+    list_for_every_entry(&list_devices, dev, device_t, anode) {
+        if (dev->flags & (DEV_CTX_DEAD | DEV_CTX_ZOMBIE)) {
+            // if device is dead, ignore it
+            continue;
+        }
+        if (dc_notify(dev, DEVMGR_OP_DEVICE_ADDED) < 0) {
+            break;
+        }
+    }
+}
 
 static mx_status_t dc_launch_devhost(devhost_t* host,
                                      const char* name, mx_handle_t hrpc) {
@@ -259,23 +510,33 @@ static mx_status_t dc_launch_devhost(devhost_t* host,
     mx_handle_duplicate(get_root_resource(), MX_RIGHT_SAME_RIGHTS, &h);
     launchpad_add_handle(lp, h, PA_HND(PA_RESOURCE, 0));
 
+    // Inherit devmgr's environment (including kernel cmdline)
     launchpad_clone(lp, LP_CLONE_ENVIRON);
+
+    const char* nametable[2] = { "/", "/svc", };
+    size_t name_count = 0;
 
     //TODO: eventually devhosts should not have vfs access
     launchpad_add_handle(lp, vfs_create_global_root_handle(),
-                         PA_HND(PA_MXIO_ROOT, 0));
+                         PA_HND(PA_NS_DIR, name_count++));
 
     //TODO: constrain to /svc/device
     if ((h = get_service_root()) != MX_HANDLE_INVALID) {
-        launchpad_add_handle(lp, h, PA_SERVICE_ROOT);
+        launchpad_add_handle(lp, h, PA_HND(PA_NS_DIR, name_count++));
     }
+
+    launchpad_set_nametable(lp, name_count, nametable);
 
     //TODO: limit root job access to root devhost only
     launchpad_add_handle(lp, get_sysinfo_job_root(),
                          PA_HND(PA_USER0, ID_HJOBROOT));
 
-    // Inherit devmgr's environment (including kernel cmdline)
-    launchpad_clone(lp, LP_CLONE_ENVIRON | LP_CLONE_MXIO_ROOT);
+    //TODO: pass a channel to the acpi devhost to rpc with
+    //      devcoordinator, so it can call reboot/poweroff/ps0.
+    //      come up with a better way to wire this up.
+    if (!strcmp(name, "devhost:acpi")) {
+        launchpad_add_handle(lp, acpi_rpc[1], PA_HND(PA_USER0, 10));
+    }
 
     const char* errmsg;
     mx_status_t status = launchpad_go(lp, &host->proc, &errmsg);
@@ -286,19 +547,19 @@ static mx_status_t dc_launch_devhost(devhost_t* host,
     }
     mx_info_handle_basic_t info;
     if (mx_object_get_info(host->proc, MX_INFO_HANDLE_BASIC, &info,
-                           sizeof(info), NULL, NULL) == NO_ERROR) {
+                           sizeof(info), NULL, NULL) == MX_OK) {
         host->koid = info.koid;
     }
     log(INFO, "devcoord: launch devhost '%s': pid=%zu\n",
         name, host->koid);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static mx_status_t dc_new_devhost(const char* name, devhost_t** out) {
     devhost_t* dh = calloc(1, sizeof(devhost_t));
     if (dh == NULL) {
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
 
     mx_handle_t hrpc;
@@ -317,7 +578,7 @@ static mx_status_t dc_new_devhost(const char* name, devhost_t** out) {
     list_initialize(&dh->devices);
 
     *out = dh;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static void dc_release_devhost(devhost_t* dh) {
@@ -376,17 +637,17 @@ static mx_status_t dc_add_device(device_t* parent,
                                  dc_msg_t* msg, const char* name,
                                  const char* args, const void* data) {
     if (hcount == 0) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
     if (msg->datalen % sizeof(mx_device_prop_t)) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
     device_t* dev;
     // allocate device struct, followed by space for props, followed
     // by space for bus arguments, followed by space for the name
     size_t sz = sizeof(*dev) + msg->datalen + msg->argslen + msg->namelen + 2;
     if ((dev = calloc(1, sz)) == NULL) {
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
     list_initialize(&dev->children);
     list_initialize(&dev->pending);
@@ -416,7 +677,7 @@ static mx_status_t dc_add_device(device_t* parent,
 
     if (strlen(dev->name) > MX_DEVICE_NAME_MAX) {
         free(dev);
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     // If we have bus device args or resource handle
@@ -444,7 +705,7 @@ static mx_status_t dc_add_device(device_t* parent,
     dev->ph.handle = handle[0];
     dev->ph.waitfor = MX_CHANNEL_READABLE | MX_CHANNEL_PEER_CLOSED;
     dev->ph.func = dc_handle_device;
-    if ((r = port_watch(&dc_port, &dev->ph)) < 0) {
+    if ((r = port_wait(&dc_port, &dev->ph)) < 0) {
         devfs_unpublish(dev);
         free(dev);
         return r;
@@ -460,14 +721,17 @@ static mx_status_t dc_add_device(device_t* parent,
     list_add_tail(&parent->children, &dev->node);
     parent->refcount++;
 
+    list_add_tail(&list_devices, &dev->anode);
+
     log(DEVLC, "devcoord: dev %p name='%s' ++ref=%d (child)\n",
         parent, parent->name, parent->refcount);
 
     log(DEVLC, "devcoord: publish %p '%s' props=%u args='%s' parent=%p\n",
         dev, dev->name, dev->prop_count, dev->args, dev->parent);
 
+    dc_notify(dev, DEVMGR_OP_DEVICE_ADDED);
     queue_work(&dev->work, WORK_DEVICE_ADDED, 0);
-    return NO_ERROR;
+    return MX_OK;
 }
 
 // Remove device from parent
@@ -481,17 +745,17 @@ static mx_status_t dc_remove_device(device_t* dev, bool forced) {
         // closing), and is now receiving the final remove call
         dev->flags &= (~DEV_CTX_ZOMBIE);
         dc_release_device(dev);
-        return NO_ERROR;
+        return MX_OK;
     }
     if (dev->flags & DEV_CTX_DEAD) {
         // This should not happen
         log(ERROR, "devcoord: cannot remove dev %p name='%s' twice!\n", dev, dev->name);
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
     }
     if (dev->flags & DEV_CTX_IMMORTAL) {
         // This too should not happen
         log(ERROR, "devcoord: cannot remove dev %p name='%s' (immortal)\n", dev, dev->name);
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
     }
 
     log(DEVLC, "devcoord: remove %p name='%s' parent=%p\n", dev, dev->name, dev->parent);
@@ -543,14 +807,20 @@ static mx_status_t dc_remove_device(device_t* dev, bool forced) {
             if (list_is_empty(&parent->children)) {
                 parent->flags &= (~DEV_CTX_BOUND);
 
+                //TODO: This code is to cause the bind process to
+                //      restart and get a new devhost to be launched
+                //      when a devhost dies.  It should probably be
+                //      more tied to devhost teardown than it is.
+
                 // IF we are the last child of our parent
                 // AND our parent is not itself dead
+                // AND our parent is a BUSDEV
                 // AND our parent's devhost is not dying
                 // THEN we will want to rebind our parent
-                if (!(parent->flags & DEV_CTX_DEAD) &&
+                if (!(parent->flags & DEV_CTX_DEAD) && (parent->flags & DEV_CTX_BUSDEV) &&
                     ((parent->host == NULL) || !(parent->host->flags & DEV_HOST_DYING))) {
 
-                    log(DEVLC, "devcoord: device %p name='%s' is unbound\n",
+                    log(DEVLC, "devcoord: bus device %p name='%s' is unbound\n",
                         parent, parent->name);
 
                     //TODO: introduce timeout, exponential backoff
@@ -559,6 +829,12 @@ static mx_status_t dc_remove_device(device_t* dev, bool forced) {
             }
         }
         dc_release_device(parent);
+    }
+
+    if (!(dev->flags & DEV_CTX_SHADOW)) {
+        // remove from list of all devices
+        list_delete(&dev->anode);
+        dc_notify(dev, DEVMGR_OP_DEVICE_REMOVED);
     }
 
     if (forced) {
@@ -571,7 +847,7 @@ static mx_status_t dc_remove_device(device_t* dev, bool forced) {
         // reference would close the RPC channel.
         dev->flags |= DEV_CTX_ZOMBIE;
     }
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static mx_status_t dc_bind_device(device_t* dev, const char* drvlibname) {
@@ -579,24 +855,28 @@ static mx_status_t dc_bind_device(device_t* dev, const char* drvlibname) {
 
     // shouldn't be possible to get a bind request for a shadow device
     if (dev->flags & DEV_CTX_SHADOW) {
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
+
+    // A libname of "" means a general rebind request
+    // instead of a specific request
+    bool autobind = (drvlibname[0] == 0);
 
     //TODO: disallow if we're in the middle of enumeration, etc
     driver_t* drv;
     list_for_every_entry(&list_drivers, drv, driver_t, node) {
-        if (!strcmp(drv->libname, drvlibname)) {
+        if (autobind || !strcmp(drv->libname, drvlibname)) {
             if (dc_is_bindable(drv, dev->protocol_id,
-                               dev->props, dev->prop_count, false)) {
-                log(INFO, "devcoord: drv='%s' bindable to dev='%s'\n",
+                               dev->props, dev->prop_count, autobind)) {
+                log(SPEW, "devcoord: drv='%s' bindable to dev='%s'\n",
                     drv->name, dev->name);
                 dc_attempt_bind(drv, dev);
+                break;
             }
-            break;
         }
     }
 
-    return NO_ERROR;
+    return MX_OK;
 };
 
 static mx_status_t dc_handle_device_read(device_t* dev) {
@@ -607,7 +887,7 @@ static mx_status_t dc_handle_device_read(device_t* dev) {
 
     if (dev->flags & DEV_CTX_DEAD) {
         log(ERROR, "devcoord: dev %p already dead (in read)\n", dev);
-        return ERR_INTERNAL;
+        return MX_ERR_INTERNAL;
     }
 
     mx_status_t r;
@@ -620,15 +900,10 @@ static mx_status_t dc_handle_device_read(device_t* dev) {
     const char* name;
     const char* args;
     if ((r = dc_msg_unpack(&msg, msize, &data, &name, &args)) < 0) {
-        return ERR_INTERNAL;
-    }
-
-    // Only ADD_DEVICE takes handles.
-    // For all other ops, silently close any passed handles.
-    if ((hcount != 0) && (msg.op != DC_OP_ADD_DEVICE)) {
         while (hcount > 0) {
             mx_handle_close(hin[--hcount]);
         }
+        return MX_ERR_INTERNAL;
     }
 
     dc_status_t dcs;
@@ -645,44 +920,101 @@ static mx_status_t dc_handle_device_read(device_t* dev) {
         break;
 
     case DC_OP_REMOVE_DEVICE:
+        if (hcount != 0) {
+            goto fail_wrong_hcount;
+        }
         log(RPC_IN, "devcoord: rpc: remove-device '%s'\n", dev->name);
         dc_remove_device(dev, false);
         goto disconnect;
 
     case DC_OP_BIND_DEVICE:
+        if (hcount != 0) {
+            goto fail_wrong_hcount;
+        }
         log(RPC_IN, "devcoord: rpc: bind-device '%s'\n", dev->name);
         r = dc_bind_device(dev, args);
         break;
 
     case DC_OP_DM_COMMAND:
+        if (hcount > 1) {
+            goto fail_wrong_hcount;
+        }
+        if (hcount == 1) {
+            dmctl_socket = hin[0];
+        }
         r = handle_dmctl_write(msg.datalen, data);
+        if (dmctl_socket != MX_HANDLE_INVALID) {
+            mx_handle_close(dmctl_socket);
+            dmctl_socket = MX_HANDLE_INVALID;
+        }
         break;
 
+    case DC_OP_DM_OPEN_VIRTCON:
+        if (hcount != 1) {
+            goto fail_wrong_hcount;
+        }
+        if (mx_channel_write(virtcon_open, 0, NULL, 0, hin, 1) < 0) {
+            mx_handle_close(hin[0]);
+        }
+        r = MX_OK;
+        break;
+
+    case DC_OP_DM_WATCH:
+        if (hcount != 1) {
+            goto fail_wrong_hcount;
+        }
+        dc_watch(hin[0]);
+        r = MX_OK;
+        break;
+
+    case DC_OP_GET_TOPO_PATH: {
+        if (hcount != 0) {
+            goto fail_wrong_hcount;
+        }
+        struct {
+            dc_status_t rsp;
+            char path[DC_PATH_MAX];
+        } reply;
+        if ((r = dc_get_topo_path(dev, reply.path, DC_PATH_MAX)) < 0) {
+            break;
+        }
+        reply.rsp.status = MX_OK;
+        reply.rsp.txid = msg.txid;
+        if ((r = mx_channel_write(dev->hrpc, 0, &reply, sizeof(reply), NULL, 0)) < 0) {
+            return r;
+        }
+        return MX_OK;
+    }
     case DC_OP_STATUS: {
+        if (hcount != 0) {
+            goto fail_wrong_hcount;
+        }
         // all of these return directly and do not write a
         // reply, since this message is a reply itself
         pending_t* pending = list_remove_tail_type(&dev->pending, pending_t, node);
         if (pending == NULL) {
             log(ERROR, "devcoord: rpc: spurious status message\n");
-            return NO_ERROR;
+            return MX_OK;
         }
         switch (pending->op) {
         case PENDING_BIND:
-            if (msg.status != NO_ERROR) {
+            if (msg.status != MX_OK) {
                 log(ERROR, "devcoord: rpc: bind-driver '%s' status %d\n",
                     dev->name, msg.status);
+            } else {
+                dc_notify(dev, DEVMGR_OP_DEVICE_CHANGED);
             }
             //TODO: try next driver, clear BOUND flag
             break;
         }
         free(pending);
-        return NO_ERROR;
+        return MX_OK;
     }
 
     default:
         log(ERROR, "devcoord: invalid rpc op %08x\n", msg.op);
-        r = ERR_NOT_SUPPORTED;
-        break;
+        r = MX_ERR_NOT_SUPPORTED;
+        goto fail_close_handles;
     }
 
 done:
@@ -690,12 +1022,20 @@ done:
     if ((r = mx_channel_write(dev->hrpc, 0, &dcs, sizeof(dcs), NULL, 0)) < 0) {
         return r;
     }
-    return NO_ERROR;
+    return MX_OK;
 
 disconnect:
-    dcs.status = NO_ERROR;
+    dcs.status = MX_OK;
     mx_channel_write(dev->hrpc, 0, &dcs, sizeof(dcs), NULL, 0);
-    return ERR_STOP;
+    return MX_ERR_STOP;
+
+fail_wrong_hcount:
+    r = MX_ERR_INVALID_ARGS;
+fail_close_handles:
+    while (hcount > 0) {
+        mx_handle_close(hin[--hcount]);
+    }
+    goto done;
 }
 
 #define dev_from_ph(ph) containerof(ph, device_t, ph)
@@ -707,22 +1047,22 @@ static mx_status_t dc_handle_device(port_handler_t* ph, mx_signals_t signals, ui
     if (signals & MX_CHANNEL_READABLE) {
         mx_status_t r;
         if ((r = dc_handle_device_read(dev)) < 0) {
-            if (r != ERR_STOP) {
+            if (r != MX_ERR_STOP) {
                 log(ERROR, "devcoord: device %p name='%s' rpc status: %d\n",
                     dev, dev->name, r);
             }
             dc_remove_device(dev, true);
-            return ERR_STOP;
+            return MX_ERR_STOP;
         }
-        return NO_ERROR;
+        return MX_OK;
     }
     if (signals & MX_CHANNEL_PEER_CLOSED) {
         log(ERROR, "devcoord: device %p name='%s' disconnected!\n", dev, dev->name);
         dc_remove_device(dev, true);
-        return ERR_STOP;
+        return MX_ERR_STOP;
     }
     log(ERROR, "devcoord: no work? %08x\n", signals);
-    return NO_ERROR;
+    return MX_OK;
 }
 
 // send message to devhost, requesting the creation of a device
@@ -777,13 +1117,13 @@ static mx_status_t dh_create_device(device_t* dev, devhost_t* dh,
     dev->ph.handle = hrpc;
     dev->ph.waitfor = MX_CHANNEL_READABLE | MX_CHANNEL_PEER_CLOSED;
     dev->ph.func = dc_handle_device;
-    if ((r = port_watch(&dc_port, &dev->ph)) < 0) {
+    if ((r = port_wait(&dc_port, &dev->ph)) < 0) {
         goto fail_watch;
     }
     dev->host = dh;
     dh->refcount++;
     list_add_tail(&dh->devices, &dev->dhnode);
-    return NO_ERROR;
+    return MX_OK;
 
 fail:
     while (hcount > 0) {
@@ -796,14 +1136,14 @@ fail_watch:
 
 static mx_status_t dc_create_shadow(device_t* parent) {
     if (parent->shadow != NULL) {
-        return NO_ERROR;
+        return MX_OK;
     }
 
     size_t namelen = strlen(parent->name);
     size_t liblen = strlen(parent->libname);
     device_t* dev = calloc(1, sizeof(device_t) + namelen + liblen + 2);
     if (dev == NULL) {
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
     char* text = (char*) (dev + 1);
     memcpy(text, parent->name, namelen + 1);
@@ -822,7 +1162,7 @@ static mx_status_t dc_create_shadow(device_t* parent) {
     parent->refcount++;
     log(DEVLC, "devcoord: dev %p name='%s' ++ref=%d (shadow)\n",
         parent, parent->name, parent->refcount);
-    return NO_ERROR;
+    return MX_OK;
 }
 
 // send message to devhost, requesting the binding of a driver to a device
@@ -832,7 +1172,7 @@ static mx_status_t dh_bind_driver(device_t* dev, const char* libname) {
 
     pending_t* pending = malloc(sizeof(pending_t));
     if (pending == NULL) {
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
 
     mx_status_t r;
@@ -859,19 +1199,19 @@ static mx_status_t dh_bind_driver(device_t* dev, const char* libname) {
     pending->op = PENDING_BIND;
     pending->ctx = NULL;
     list_add_tail(&dev->pending, &pending->node);
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static mx_status_t dc_attempt_bind(driver_t* drv, device_t* dev) {
     // cannot bind driver to already bound device
     if ((dev->flags & DEV_CTX_BOUND) && (!(dev->flags & DEV_CTX_MULTI_BIND))) {
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
     }
     if (!(dev->flags & DEV_CTX_BUSDEV)) {
         // non-busdev is pretty simple
         if (dev->host == NULL) {
             log(ERROR, "devcoord: can't bind to device without devhost\n");
-            return ERR_BAD_STATE;
+            return MX_ERR_BAD_STATE;
         }
         return dh_bind_driver(dev, drv->libname);
     }
@@ -880,7 +1220,7 @@ static mx_status_t dc_attempt_bind(driver_t* drv, device_t* dev) {
     const char* arg0 = (dev->flags & DEV_CTX_SHADOW) ? dev->parent->args : dev->args;
     const char* arg1 = strchr(arg0, ',');
     if (arg1 == NULL) {
-        return ERR_INTERNAL;
+        return MX_ERR_INTERNAL;
     }
     size_t arg0len = arg1 - arg0;
     arg1++;
@@ -915,7 +1255,7 @@ static void dc_handle_new_device(device_t* dev) {
     list_for_every_entry(&list_drivers, drv, driver_t, node) {
         if (dc_is_bindable(drv, dev->protocol_id,
                            dev->props, dev->prop_count, true)) {
-            log(INFO, "devcoord: drv='%s' bindable to dev='%s'\n",
+            log(SPEW, "devcoord: drv='%s' bindable to dev='%s'\n",
                 drv->name, dev->name);
 
             dc_attempt_bind(drv, dev);
@@ -946,13 +1286,28 @@ static bool is_root_driver(driver_t* drv) {
         (memcmp(&root_device_binding, drv->binding, sizeof(root_device_binding)) == 0);
 }
 
+static bool is_acpi_bus_driver(driver_t* drv) {
+    // only our built-in acpi driver should bind as acpi bus
+    // so compare library path instead of binding program
+    return !strcmp(drv->libname, "/boot/driver/bus-acpi.so");
+}
+
 static bool is_platform_bus_driver(driver_t* drv) {
     // only our built-in platform-bus driver should bind as platform bus
     // so compare library path instead of binding program
     return !strcmp(drv->libname, "/boot/driver/platform-bus.so");
 }
 
-void coordinator_new_driver(driver_t* drv, const char* version) {
+static work_t new_driver_work;
+
+void dc_driver_added(driver_t* drv, const char* version) {
+    if (dc_running) {
+        list_add_head(&list_drivers_new, &drv->node);
+        if (new_driver_work.op == WORK_IDLE) {
+            queue_work(&new_driver_work, WORK_DRIVER_ADDED, 0);
+        }
+        return;
+    }
     if (version[0] == '!') {
         // debugging / development hack
         // prioritize drivers with version "!..." over others
@@ -969,6 +1324,14 @@ device_t* coordinator_init(mx_handle_t root_job) {
     if (status < 0) {
         log(ERROR, "devcoord: unable to create devhost job\n");
     }
+    static const mx_policy_basic_t policy[] = {
+        { MX_POL_BAD_HANDLE, MX_POL_ACTION_EXCEPTION },
+    };
+    status = mx_job_set_policy(devhost_job, MX_JOB_POL_RELATIVE,
+                               MX_JOB_POL_BASIC, &policy, countof(policy));
+    if (status < 0) {
+        log(ERROR, "devcoord: mx_job_set_policy() failed\n");
+    }
     mx_object_set_property(devhost_job, MX_PROP_NAME, "magenta-drivers", 15);
 
     port_init(&dc_port);
@@ -979,54 +1342,131 @@ device_t* coordinator_init(mx_handle_t root_job) {
 //TODO: The acpisvc needs to become the acpi bus device
 //      For now, we launch it manually here so PCI can work
 static void acpi_init(void) {
-    mx_status_t status = devhost_launch_acpisvc(devhost_job);
-    if (status != NO_ERROR) {
+    mx_status_t status = mx_channel_create(0, &acpi_rpc[0], &acpi_rpc[1]);
+    if (status != MX_OK) {
         return;
     }
+    devhost_acpi_set_rpc(acpi_rpc[0]);
+}
 
-    // Ignore the return value of this; if it fails, it may just be that the
-    // platform doesn't support initing PCIe via ACPI.  If the platform needed
-    // it, it will fail later.
-    devhost_init_pcie();
+void dc_bind_driver(driver_t* drv) {
+    if (dc_running) {
+        printf("devcoord: driver '%s' added\n", drv->name);
+    }
+    if (is_root_driver(drv)) {
+        dc_attempt_bind(drv, &root_device);
+    } else if (is_misc_driver(drv)) {
+        dc_attempt_bind(drv, &misc_device);
+    } else if (is_acpi_bus_driver(drv)) {
+        dc_attempt_bind(drv, &acpi_device);
+    } else if (is_platform_bus_driver(drv) &&
+               (platform_device.hrsrc != MX_HANDLE_INVALID)) {
+        dc_attempt_bind(drv, &platform_device);
+    } else if (dc_running) {
+        device_t* dev;
+        list_for_every_entry(&list_devices, dev, device_t, anode) {
+            if (dev->flags & (DEV_CTX_BOUND | DEV_CTX_DEAD | DEV_CTX_ZOMBIE)) {
+                // if device is already bound or being destroyed, skip it
+                continue;
+            }
+            if (dc_is_bindable(drv, dev->protocol_id,
+                               dev->props, dev->prop_count, true)) {
+                log(INFO, "devcoord: drv='%s' bindable to dev='%s'\n",
+                    drv->name, dev->name);
+
+                dc_attempt_bind(drv, dev);
+            }
+        }
+    }
+}
+
+void dc_handle_new_driver(void) {
+    driver_t* drv;
+    while ((drv = list_remove_head_type(&list_drivers_new, driver_t, node)) != NULL) {
+        list_add_tail(&list_drivers, &drv->node);
+        dc_bind_driver(drv);
+    }
+}
+
+#define CTL_SCAN_SYSTEM 1
+
+static bool system_available;
+static bool system_loaded;
+
+static mx_status_t dc_control_event(port_handler_t* ph, mx_signals_t signals, uint32_t evt) {
+    switch (evt) {
+    case CTL_SCAN_SYSTEM:
+        if (!system_loaded) {
+            system_loaded = true;
+            find_loadable_drivers("/system/driver");
+            find_loadable_drivers("/system/lib/driver");
+        }
+        break;
+    }
+    return MX_OK;
+}
+
+static port_handler_t control_handler = {
+    .func = dc_control_event,
+};
+
+
+void load_system_drivers(void) {
+    system_available = true;
+    port_queue(&dc_port, &control_handler, CTL_SCAN_SYSTEM);
 }
 
 void coordinator(void) {
     log(INFO, "devmgr: coordinator()\n");
 
-    if (getenv("devmgr.verbose")) {
+    if (getenv_bool("devmgr.verbose", false)) {
         log_flags |= LOG_DEVLC;
     }
+
+// TODO(MG-1074): Conditionally initialize ACPI if it is present.
+#if defined(__x86_64__)
     acpi_init();
+#endif
 
     devfs_publish(&root_device, &misc_device);
     devfs_publish(&root_device, &socket_device);
-    devfs_publish(&root_device, &platform_device);
+    devfs_publish(&root_device, &acpi_device);
+    if (platform_device.hrsrc != MX_HANDLE_INVALID) {
+        devfs_publish(&root_device, &platform_device);
+    }
 
-    enumerate_drivers();
+    find_loadable_drivers("/boot/driver");
+    find_loadable_drivers("/boot/driver/test");
+    find_loadable_drivers("/boot/lib/driver");
+
+    // Special case early handling for the ramdisk boot
+    // path where /system is present before the coordinator
+    // starts.  This avoids breaking the "priority hack" and
+    // can be removed once the real driver priority system
+    // exists.
+    if (system_available) {
+        dc_control_event(&control_handler, 0, CTL_SCAN_SYSTEM);
+    }
 
     driver_t* drv;
     list_for_every_entry(&list_drivers, drv, driver_t, node) {
-        if (is_root_driver(drv)) {
-            dc_attempt_bind(drv, &root_device);
-        } else if (is_misc_driver(drv)) {
-            dc_attempt_bind(drv, &misc_device);
-        } else if (is_platform_bus_driver(drv)) {
-            dc_attempt_bind(drv, &platform_device);
-        }
+        dc_bind_driver(drv);
     }
+
+    dc_running = true;
 
     for (;;) {
         mx_status_t status;
         if (list_is_empty(&list_pending_work)) {
-            status = port_dispatch(&dc_port, MX_TIME_INFINITE);
+            status = port_dispatch(&dc_port, MX_TIME_INFINITE, true);
         } else {
-            status = port_dispatch(&dc_port, 0);
-            if (status == ERR_TIMED_OUT) {
+            status = port_dispatch(&dc_port, 0, true);
+            if (status == MX_ERR_TIMED_OUT) {
                 process_work(list_remove_head_type(&list_pending_work, work_t, node));
                 continue;
             }
         }
-        if (status != NO_ERROR) {
+        if (status != MX_OK) {
             log(ERROR, "devcoord: port dispatch ended: %d\n", status);
         }
     }

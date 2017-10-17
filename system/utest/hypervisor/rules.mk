@@ -9,15 +9,20 @@ MODULE := $(LOCAL_DIR)
 MODULE_TYPE := usertest
 
 MODULE_SRCS += \
-    $(LOCAL_DIR)/guest.c \
+    $(LOCAL_DIR)/block.cpp \
+    $(LOCAL_DIR)/guest.cpp \
 
 ifeq ($(SUBARCH),x86-64)
 MODULE_SRCS += \
-    $(LOCAL_DIR)/decode.c \
-    $(LOCAL_DIR)/page_table.c \
+    $(LOCAL_DIR)/decode.cpp \
+    $(LOCAL_DIR)/page_table.cpp \
+    $(LOCAL_DIR)/pci.cpp \
+    $(LOCAL_DIR)/uart.cpp \
+    $(LOCAL_DIR)/vcpu.cpp \
     $(LOCAL_DIR)/x86-64.S
 
-MODULE_STATIC_LIBS := system/ulib/pretty
+MODULE_STATIC_LIBS := \
+    system/ulib/pretty
 endif
 
 MODULE_NAME := hypervisor-test
@@ -28,5 +33,9 @@ MODULE_LIBS := \
     system/ulib/magenta \
     system/ulib/mxio \
     system/ulib/unittest \
+
+MODULE_STATIC_LIBS += \
+    system/ulib/ddk \
+    system/ulib/virtio \
 
 include make/module.mk

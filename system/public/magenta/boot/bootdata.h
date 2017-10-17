@@ -12,8 +12,29 @@
 // lsw of sha256("bootdata")
 #define BOOTDATA_MAGIC (0x868cf7e6)
 
+// lsw of sha256("bootitem")
+#define BOOTITEM_MAGIC (0xb5781729)
+
 // Round n up to the next 8 byte boundary
 #define BOOTDATA_ALIGN(n) (((n) + 7) & (~7))
+
+#define BOOTITEM_NO_CRC32 (~BOOTITEM_MAGIC)
+
+// Bootdata items with the EXTRA flag have a bootextra_t
+// between them and the payload, which must have BOOTITEM_MAGIC
+// in its magic field, otherwise the file is corrupt.
+//
+// The bootextra_t is not included in the length of the header.
+// Consider the EXTRA flag to indicate a larger v2 header.
+//
+// The crc32 field must be BOOTITEM_NO_CRC32, unless the CRC32
+// flag is present, in which case it must be a valid crc32 of
+// the bootitem, bootextra (with crc32 field set to 0), and the
+// payload.
+#define BOOTDATA_FLAG_EXTRA      (0x00010000)
+
+// Bootdata items with the CRC32 flag must have a valid crc32
+#define BOOTDATA_FLAG_CRC32      (0x00020000)
 
 // Containers are used to wrap a set of bootdata items
 // written to a file or partition.  The "length" is the
@@ -56,6 +77,17 @@
 // Framebuffer Parameters
 // Content: bootdata_swfb_t
 #define BOOTDATA_FRAMEBUFFER      (0x42465753) // SWFB
+
+// Debug Serial Port
+// Content: bootdata_uart_t
+#define BOOTDATA_DEBUG_UART       (0x54524155) // UART
+
+// Memory which will persist across warm boots
+// Content bootdata_lastlog_nvram_t
+#define BOOTDATA_LASTLOG_NVRAM    (0x4c4c564e) // NVLL
+
+// This reflects a typo we need to support for a while
+#define BOOTDATA_LASTLOG_NVRAM2   (0x4c4c5643) // CVLL
 
 // E820 Memory Table
 // Content: e820entry[]
@@ -103,7 +135,14 @@ typedef struct {
 } bootdata_t;
 
 typedef struct {
-    uint64_t phys_base;
+    uint32_t reserved0;
+    uint32_t reserved1;
+    uint32_t magic;
+    uint32_t crc32;
+} bootextra_t;
+
+typedef struct {
+    uint64_t base; // physical base addr
     uint32_t width;
     uint32_t height;
     uint32_t stride;
@@ -121,6 +160,27 @@ typedef struct {
     bootdata_kernel_t data_kernel;
 } magenta_kernel_t;
 
+typedef struct {
+    bootdata_t hdr_file;
+    bootextra_t ext_file;
+    bootdata_t hdr_kernel;
+    bootextra_t ext_kernel;
+    bootdata_kernel_t data_kernel;
+} magenta_kernel2_t;
+
+typedef struct {
+    uint64_t base;
+    uint64_t length;
+} bootdata_nvram_t;
+
+#define BOOTDATA_UART_NONE 0
+#define BOOTDATA_UART_PC_PORT 1
+#define BOOTDATA_UART_PC_MMIO 2
+typedef struct {
+    uint64_t base;
+    uint32_t type;
+    uint32_t irq;
+} bootdata_uart_t;
 
 /* EFI Variable for Crash Log */
 #define MAGENTA_VENDOR_GUID \
@@ -131,5 +191,49 @@ typedef struct {
     (EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS)
 
 __END_CDECLS;
+
+
+// BOOTFS is a trivial "filesystem" format
+//
+// It consists of a bootfs_header_t
+//
+// Followed by a series of bootfs_entry_t's of:
+//   name length (32bit le)
+//   data size   (32bit le)
+//   data offset (32bit le)
+//   namedata   (namelength bytes, includes \0)
+//
+// - data offsets must be page aligned (multiple of 4096)
+// - entries start on uint32 boundaries
+
+//lsw of sha256("bootfs")
+#define BOOTFS_MAGIC (0xa56d3ff9)
+
+#define BOOTFS_MAX_NAME_LEN 256
+
+typedef struct bootfs_header {
+    // magic value BOOTFS_MAGIC
+    uint32_t magic;
+
+    // total size of all bootfs_entry_t's
+    // does not include the size of the bootfs_header_t
+    uint32_t dirsize;
+
+    // 0, 0
+    uint32_t reserved0;
+    uint32_t reserved1;
+} bootfs_header_t;
+
+typedef struct bootfs_entry {
+    uint32_t name_len;
+    uint32_t data_len;
+    uint32_t data_off;
+    char name[];
+} bootfs_entry_t;
+
+#define BOOTFS_ALIGN(nlen) (((nlen) + 3) & (~3))
+#define BOOTFS_RECSIZE(entry) \
+    (sizeof(bootfs_entry_t) + BOOTFS_ALIGN(entry->name_len))
+
 #endif
 

@@ -2,11 +2,11 @@
 
 ## Introduction
 
-The kernel manages a number of different types of Objects.  Those which are accessible
-directly via system calls are actual C++ objects which implement the Dispatcher
-interface.  These are implemented in the kernel's [libmagenta](../kernel/lib/magenta).
-Many are self-contained higher level Objects.  Some wrap lower level lk primitives.
-
+The kernel manages a number of different types of Objects. Those which are
+accessible directly via system calls are C++ classes which implement the
+Dispatcher interface. These are implemented in
+[kernel/object](../kernel/object). Many are self-contained higher-level Objects.
+Some wrap lower-level lk primitives.
 
 ## [System Calls](syscalls.md)
 
@@ -31,9 +31,11 @@ and [*mx_port_bind()*](syscalls/port_bind.md).
 [*mx_channel_create()*](syscalls/channel_create.md).  Access to these (and limitations
 upon them) is controlled by the Job in which the calling Process is contained.
 
-System calls are provided by libmagenta.so, which is a "virtual" shared library (VDSO)
-that the Magenta Kernel provides to userspace.  They are C ELF ABI functions of the
-form *mx_noun_verb()* or *mx_noun_verb_direct-object()*
+System calls are provided by libmagenta.so, which is a "virtual" shared
+library that the Magenta kernel provides to userspace, better known as the
+[*virtual Dynamic Shared Object* or vDSO](vdso.md).
+They are C ELF ABI functions of the form *mx_noun_verb()* or
+*mx_noun_verb_direct-object()*.
 
 The system calls are defined by [syscalls.sysgen](../system/public/magenta/syscalls.sysgen)
 and processed by the [sysgen](../system/host/sysgen/) tool into include files and glue
@@ -66,14 +68,17 @@ the last one for that Object.
 
 ## Running Code: Jobs, Processes, and Threads.
 
-Threads represent threads of execution (CPU registers, stack, etc) within an address
-space which is owned by the Process in which they exist.  Processes are owned by Jobs,
-which define various resource limitations.  Jobs are owned by parent Jobs, all the way
-up to the Root Job which was created by the kernel at boot and passed to "userboot",
-the first userspace Process to begin execution.
+Threads represent threads of execution (CPU registers, stack, etc) within an
+address space which is owned by the Process in which they exist.  Processes are
+owned by Jobs, which define various resource limitations.  Jobs are owned by
+parent Jobs, all the way up to the Root Job which was created by the kernel at
+boot and passed to [`userboot`, the first userspace Process to begin execution](userboot.md).
 
 Without a Job Handle, it is not possible for a Thread within a Process to create another
 Process or another Job.
+
+[Program loading](program_loading.md) is provided by userspace facilities and
+protocols above the kernel layer.
 
 See: [process_create](syscalls/process_create.md),
 [process_start](syscalls/process_start.md),
@@ -116,8 +121,7 @@ for example, may be READABLE or WRITABLE.  Processes or Threads may be TERMINATE
 
 Threads may wait for signals to become active on one or more Objects.
 
-There is a set of signals avaiable for all waitable objects. See
-[generic_signals](generic_signals.md) for more information.
+See [signals](signals.md) for more information.
 
 ## Waiting: Wait One, Wait Many, and Ports
 

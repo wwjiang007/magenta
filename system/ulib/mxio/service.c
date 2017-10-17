@@ -21,12 +21,16 @@ static mx_status_t mxsvc_close(mxio_t* io) {
     mxsvc_t* svc = (mxsvc_t*) io;
     mx_handle_close(svc->h);
     svc->h = MX_HANDLE_INVALID;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static mxio_ops_t mx_svc_ops = {
     .read = mxio_default_read,
+    .read_at = mxio_default_read_at,
     .write = mxio_default_write,
+    .write_at = mxio_default_write_at,
+    .recvfrom = mxio_default_recvfrom,
+    .sendto = mxio_default_sendto,
     .recvmsg = mxio_default_recvmsg,
     .sendmsg = mxio_default_sendmsg,
     .seek = mxio_default_seek,
@@ -38,6 +42,7 @@ static mxio_ops_t mx_svc_ops = {
     .wait_begin = mxio_default_wait_begin,
     .wait_end = mxio_default_wait_end,
     .unwrap = mxio_default_unwrap,
+    .shutdown = mxio_default_shutdown,
     .posix_ioctl = mxio_default_posix_ioctl,
     .get_vmo = mxio_default_get_vmo,
 };
@@ -69,7 +74,7 @@ mx_status_t mxio_get_service_handle(int fd, mx_handle_t* out) {
         // this fd goes away but we can't give away the handle
         mtx_unlock(&mxio_lock);
         mxio_release(io);
-        return ERR_UNAVAILABLE;
+        return MX_ERR_UNAVAILABLE;
     } else {
         mtx_unlock(&mxio_lock);
         int r;
@@ -78,7 +83,7 @@ mx_status_t mxio_get_service_handle(int fd, mx_handle_t* out) {
             mxsvc_t* svc = (mxsvc_t*) io;
             *out = svc->h;
             svc->h = MX_HANDLE_INVALID;
-            r = NO_ERROR;
+            r = MX_OK;
         } else {
             r = io->ops->close(io);
             mxio_release(io);

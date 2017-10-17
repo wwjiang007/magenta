@@ -4,7 +4,8 @@
 
 #
 # The syntax of each line is
-#     syscall <name> [attributes] ([args]) [returns (<type> [args])];
+#     syscall <name> [attributes] ([args])
+#         [returns (<type> [attributes] [args])];
 #
 # with '[]' being optional and '<>' being required input.
 #
@@ -13,7 +14,8 @@
 # [attributes] can be empty or is a space separated list of words with
 # meaning for a particular generator.
 #
-# [args] can be empty or is a comma separated list of '<aname>: <type> [ctr]'
+# [args] can be empty or is a comma separated list of
+# '<aname>: <type> [attributes] [ctr]'
 #
 # <aname> is the argument name. It must be a valid C indentifier.
 #
@@ -26,6 +28,21 @@
 # with valid values being one of: 'IN', 'OUT', 'INOUT'
 #
 # The 'returns (<type>)' is expected unless one of the attributes is 'noreturn'.
+#
+#
+# To help the clang static analyzer identify handle related syscalls, 3
+# attributes are available to describe handle behaviors. Which are
+# handle_acquire, handle_release and handle_release_always.
+#
+#  handle_acquire        The handle will be allocated when this call is
+#                        successful.
+#
+#  handle_release        The handle will be released/destroyed when this
+#                        call is successful.
+#
+#  handle_release_always The handle will be released/destroyed; the only failure
+#                        possible is for an invalid handle.
+#
 #
 
 # Time
@@ -50,6 +67,10 @@ syscall deadline_after vdsocall
     (nanoseconds: mx_duration_t)
     returns (mx_time_t);
 
+syscall clock_adjust
+    (handle: mx_handle_t, clock_id: uint32_t, offset: int64_t)
+    returns (mx_status_t);
+
 # Global system information
 
 syscall system_get_num_cpus vdsocall const
@@ -73,22 +94,22 @@ syscall cache_flush vdsocall
 # Generic handle operations
 
 syscall handle_close
-    (handle: mx_handle_t)
+    (handle: mx_handle_t handle_release_always)
     returns (mx_status_t);
 
 syscall handle_duplicate
     (handle: mx_handle_t, rights: mx_rights_t)
-    returns (mx_status_t, out: mx_handle_t);
+    returns (mx_status_t, out: mx_handle_t handle_acquire);
 
 syscall handle_replace
-    (handle: mx_handle_t, rights: mx_rights_t)
-    returns (mx_status_t, out: mx_handle_t);
+    (handle: mx_handle_t handle_release, rights: mx_rights_t)
+    returns (mx_status_t, out: mx_handle_t handle_acquire);
 
 # Generic object operations
 
 syscall object_wait_one blocking
     (handle: mx_handle_t, waitfor: mx_signals_t, deadline: mx_time_t)
-    returns (mx_status_t, observed: mx_signals_t);
+    returns (mx_status_t, observed: mx_signals_t optional);
 
 syscall object_wait_many blocking
     (items: mx_wait_item_t[count] INOUT, count: uint32_t, deadline: mx_time_t)
@@ -126,7 +147,7 @@ syscall object_get_cookie
 syscall object_get_info
     (handle: mx_handle_t, topic: uint32_t,
         buffer: any[buffer_size] OUT, buffer_size: size_t)
-    returns (mx_status_t, actual_count: size_t, avail_count: size_t);
+    returns (mx_status_t, actual_count: size_t optional, avail_count: size_t optional);
 
 syscall object_get_child
     (handle: mx_handle_t, koid: uint64_t, rights: mx_rights_t)
@@ -136,7 +157,8 @@ syscall object_get_child
 
 syscall channel_create
     (options: uint32_t)
-    returns (mx_status_t, out0: mx_handle_t, out1: mx_handle_t);
+    returns (mx_status_t, out0: mx_handle_t handle_acquire,
+        out1: mx_handle_t handle_acquire);
 
 syscall channel_read
     (handle: mx_handle_t, options: uint32_t,
@@ -144,7 +166,7 @@ syscall channel_read
         handles: mx_handle_t[num_handles] OUT,
         num_bytes: uint32_t,
         num_handles: uint32_t)
-    returns (mx_status_t, actual_bytes: uint32_t, actual_handles: uint32_t);
+    returns (mx_status_t, actual_bytes: uint32_t optional, actual_handles: uint32_t optional);
 
 syscall channel_write
     (handle: mx_handle_t, options: uint32_t,
@@ -152,27 +174,39 @@ syscall channel_write
         handles: mx_handle_t[num_handles] IN, num_handles: uint32_t)
     returns (mx_status_t);
 
-syscall channel_call
+syscall channel_call_noretry internal
     (handle: mx_handle_t, options: uint32_t, deadline: mx_time_t,
         args: mx_channel_call_args_t[1] IN)
     returns (mx_status_t, actual_bytes: uint32_t,
-                actual_handles: uint32_t, read_status: mx_status_t);
+                actual_handles: uint32_t, read_status: mx_status_t optional);
+
+syscall channel_call_finish internal
+    (deadline: mx_time_t, args: mx_channel_call_args_t[1] IN)
+    returns (mx_status_t, actual_bytes: uint32_t,
+                actual_handles: uint32_t, read_status: mx_status_t optional);
+
+syscall channel_call vdsocall
+    (handle: mx_handle_t, options: uint32_t, deadline: mx_time_t,
+        args: mx_channel_call_args_t[1] IN)
+    returns (mx_status_t, actual_bytes: uint32_t,
+                actual_handles: uint32_t, read_status: mx_status_t optional);
 
 # IPC: Sockets
 
 syscall socket_create
     (options: uint32_t)
-    returns (mx_status_t, out0: mx_handle_t, out1: mx_handle_t);
+    returns (mx_status_t, out0: mx_handle_t handle_acquire,
+        out1: mx_handle_t handle_acquire);
 
 syscall socket_write
     (handle: mx_handle_t, options: uint32_t,
         buffer: any[size] IN, size: size_t)
-    returns (mx_status_t, actual: size_t);
+    returns (mx_status_t, actual: size_t optional);
 
 syscall socket_read
     (handle: mx_handle_t, options: uint32_t,
         buffer: any[size] OUT, size: size_t)
-    returns (mx_status_t, actual: size_t);
+    returns (mx_status_t, actual: size_t optional);
 
 # Threads
 
@@ -181,7 +215,7 @@ syscall thread_exit noreturn ();
 syscall thread_create
     (process: mx_handle_t, name: char[name_len] IN, name_len: uint32_t,
         options: uint32_t)
-    returns (mx_status_t, out: mx_handle_t);
+    returns (mx_status_t, out: mx_handle_t handle_acquire);
 
 syscall thread_start
     (handle: mx_handle_t, thread_entry: uintptr_t,
@@ -197,6 +231,13 @@ syscall thread_write_state
     (handle: mx_handle_t, kind: uint32_t, buffer: any[buffer_len] IN, buffer_len: uint32_t)
     returns (mx_status_t);
 
+# NOTE: thread_set_priority is an experimental syscall.
+# Do not use it.  It is going away very soon.  Just don't do it.  This is not
+# the syscall you are looking for.  See MG-940
+syscall thread_set_priority
+    (prio: int32_t)
+    returns (mx_status_t);
+
 # Processes
 
 syscall process_exit noreturn
@@ -204,11 +245,13 @@ syscall process_exit noreturn
 
 syscall process_create
     (job: mx_handle_t, name: char[name_len] IN, name_len: uint32_t, options: uint32_t)
-    returns (mx_status_t, proc_handle: mx_handle_t, vmar_handle: mx_handle_t);
+    returns (mx_status_t, proc_handle: mx_handle_t handle_acquire,
+        vmar_handle: mx_handle_t handle_acquire);
 
 syscall process_start
-    (process_handle: mx_handle_t, thread_handle: mx_handle_t, entry: uintptr_t,
-        stack: uintptr_t, arg_handle: mx_handle_t, arg2: uintptr_t)
+    (process_handle: mx_handle_t,
+        thread_handle: mx_handle_t, entry: uintptr_t,
+        stack: uintptr_t, arg_handle: mx_handle_t handle_release, arg2: uintptr_t)
     returns (mx_status_t);
 
 syscall process_read_memory
@@ -225,7 +268,7 @@ syscall process_write_memory
 
 syscall job_create
     (parent_job: mx_handle_t, options: uint32_t)
-    returns (mx_status_t, out: mx_handle_t);
+    returns (mx_status_t, out: mx_handle_t handle_acquire);
 
 syscall job_set_policy
     (job: mx_handle_t, options: uint32_t, topic: uint32_t, policy: any[count] IN, count: uint32_t)
@@ -252,11 +295,12 @@ syscall task_kill
 
 syscall event_create
     (options: uint32_t)
-    returns (mx_status_t, out: mx_handle_t);
+    returns (mx_status_t, out: mx_handle_t handle_acquire);
 
 syscall eventpair_create
     (options: uint32_t)
-    returns (mx_status_t, out0: mx_handle_t, out1: mx_handle_t);
+    returns (mx_status_t,
+        out0: mx_handle_t handle_acquire, out1: mx_handle_t handle_acquire);
 
 syscall futex_wait blocking
     (value_ptr: mx_futex_t[1] INOUT, current_value: int, deadline: mx_time_t)
@@ -271,31 +315,11 @@ syscall futex_requeue
         requeue_ptr: mx_futex_t[1] INOUT, requeue_count: uint32_t)
     returns (mx_status_t);
 
-# Wait sets
-
-syscall waitset_create deprecated
-    (options: uint32_t)
-    returns (mx_status_t, out: mx_handle_t);
-
-syscall waitset_add deprecated
-    (waitset_handle: mx_handle_t, cookie: uint64_t,
-        handle: mx_handle_t, signals: mx_signals_t)
-    returns (mx_status_t);
-
-syscall waitset_remove deprecated
-    (waitset_handle: mx_handle_t, cookie: uint64_t)
-    returns (mx_status_t);
-
-syscall waitset_wait blocking deprecated
-    (waitset_handle: mx_handle_t, deadline: mx_time_t,
-        results: mx_waitset_result_t[count] OUT, count: uint32_t[1] INOUT)
-    returns (mx_status_t);
-
 # Ports
 
 syscall port_create
     (options: uint32_t)
-    returns (mx_status_t, out: mx_handle_t);
+    returns (mx_status_t, out: mx_handle_t handle_acquire);
 
 syscall port_queue
     (handle: mx_handle_t, packet: any[size] IN, size: size_t)
@@ -305,19 +329,29 @@ syscall port_wait blocking
     (handle: mx_handle_t, deadline: mx_time_t, packet: any[size] OUT, size: size_t)
     returns (mx_status_t);
 
-syscall port_bind
-    (handle: mx_handle_t, key: uint64_t, source: mx_handle_t, signals: mx_signals_t)
-    returns (mx_status_t);
-
 syscall port_cancel
     (handle: mx_handle_t, source: mx_handle_t, key: uint64_t)
+    returns (mx_status_t);
+
+# Timers
+
+syscall timer_create
+    (options: uint32_t, clock_id: uint32_t)
+    returns (mx_status_t, out: mx_handle_t handle_acquire);
+
+syscall timer_set
+    (handle: mx_handle_t, deadline: mx_time_t, slack: mx_duration_t)
+    returns (mx_status_t);
+
+syscall timer_cancel
+    (handle: mx_handle_t)
     returns (mx_status_t);
 
 # Memory management
 
 syscall vmo_create
     (size: uint64_t, options: uint32_t)
-    returns (mx_status_t, out: mx_handle_t);
+    returns (mx_status_t, out: mx_handle_t handle_acquire);
 
 syscall vmo_read
     (handle: mx_handle_t, data: any[len] OUT, offset: uint64_t, len: size_t)
@@ -342,7 +376,7 @@ syscall vmo_op_range
 
 syscall vmo_clone
     (handle: mx_handle_t, options: uint32_t, offset: uint64_t, size: uint64_t)
-    returns (mx_status_t, out: mx_handle_t);
+    returns (mx_status_t, out: mx_handle_t handle_acquire);
 
 syscall vmo_set_cache_policy
     (handle: mx_handle_t, cache_policy: uint32_t)
@@ -352,7 +386,8 @@ syscall vmo_set_cache_policy
 
 syscall vmar_allocate
     (parent_vmar_handle: mx_handle_t, offset: size_t, size: size_t, map_flags: uint32_t)
-     returns (mx_status_t, child_vmar: mx_handle_t, child_addr: uintptr_t);
+    returns (mx_status_t,
+        child_vmar: mx_handle_t handle_acquire, child_addr: uintptr_t);
 
 syscall vmar_destroy
     (vmar_handle: mx_handle_t)
@@ -387,7 +422,8 @@ syscall cprng_add_entropy
 
 syscall fifo_create
     (elem_count: uint32_t, elem_size: uint32_t, options: uint32_t)
-    returns (mx_status_t, out0: mx_handle_t, out1: mx_handle_t);
+    returns (mx_status_t,
+        out0: mx_handle_t handle_acquire, out1: mx_handle_t handle_acquire);
 
 syscall fifo_read
     (handle: mx_handle_t, data: any[len] OUT, len: size_t)
@@ -400,12 +436,13 @@ syscall fifo_write
 # Multi-function
 
 syscall vmar_unmap_handle_close_thread_exit vdsocall
-    (vmar_handle: mx_handle_t, addr: uintptr_t, len: size_t, handle: mx_handle_t)
+    (vmar_handle: mx_handle_t, addr: uintptr_t, len: size_t,
+        handle: mx_handle_t handle_release)
     returns (mx_status_t);
 
-syscall futex_wake_handle_close_thread_exit vdsocall
-    (value_ptr: mx_futex_t[1] IN, count: uint32_t, handle: mx_handle_t)
-    returns (mx_status_t);
+syscall futex_wake_handle_close_thread_exit vdsocall noreturn
+    (value_ptr: mx_futex_t[1] IN, count: uint32_t, new_value: int,
+        handle: mx_handle_t handle_release);
 
 # ---------------------------------------------------------------------------------------
 # Syscalls past this point are non-public
@@ -428,6 +465,19 @@ syscall log_read
     (handle: mx_handle_t, len: uint32_t, buffer: any[len] OUT, options: uint32_t)
     returns (mx_status_t);
 
+
+syscall debuglog_create
+    (resource: mx_handle_t, options: uint32_t)
+    returns (mx_status_t, out: mx_handle_t);
+
+syscall debuglog_write
+    (handle: mx_handle_t, options: uint32_t, buffer: any[len] IN, len: size_t)
+    returns (mx_status_t);
+
+syscall debuglog_read
+    (handle: mx_handle_t, options: uint32_t, buffer: any[len] OUT, len: size_t)
+    returns (mx_status_t);
+
 # Tracing
 
 syscall ktrace_read
@@ -443,29 +493,23 @@ syscall ktrace_write
     (handle: mx_handle_t, id: uint32_t, arg0: uint32_t, arg1: uint32_t)
     returns (mx_status_t);
 
-syscall mtrace_control no_wrap
+syscall mtrace_control
     (handle: mx_handle_t,
         kind: uint32_t, action: uint32_t, options: uint32_t,
         ptr: any[size] INOUT, size: uint32_t)
     returns (mx_status_t);
 
-# Syscalls to be removed / refactored
-
-syscall debug_transfer_handle
-    (proc: mx_handle_t, handle: mx_handle_t)
-    returns (mx_handle_t);
-
 # Legacy LK debug syscalls
 
-syscall debug_read no_wrap
+syscall debug_read
     (handle: mx_handle_t, buffer: any[length] OUT, length: uint32_t)
     returns (mx_status_t);
 
-syscall debug_write no_wrap
+syscall debug_write
     (buffer: any[length] IN, length: uint32_t)
     returns (mx_status_t);
 
-syscall debug_send_command no_wrap
+syscall debug_send_command
     (resource_handle: mx_handle_t, buffer: any[length] IN, length: uint32_t)
     returns (mx_status_t);
 
@@ -473,7 +517,7 @@ syscall debug_send_command no_wrap
 
 syscall interrupt_create
     (handle: mx_handle_t, vector: uint32_t, options: uint32_t)
-    returns (mx_handle_t);
+    returns (mx_status_t, out_handle: mx_handle_t);
 
 syscall interrupt_complete
     (handle: mx_handle_t)
@@ -493,17 +537,12 @@ syscall mmap_device_io
     (handle: mx_handle_t, io_addr: uint32_t, len: uint32_t)
     returns (mx_status_t);
 
-syscall mmap_device_memory
-    (handle: mx_handle_t, paddr: mx_paddr_t, len: uint32_t,
-        cache_policy: mx_cache_policy_t)
-    returns (mx_status_t, out_vaddr: uintptr_t);
-
-syscall io_mapping_get_info
-    (handle: mx_handle_t)
-    returns (mx_status_t, out_vaddr: uintptr_t, out_size: uint64_t);
-
 syscall vmo_create_contiguous
     (rsrc_handle: mx_handle_t, size: size_t, alignment_log2: uint32_t)
+    returns (mx_status_t, out: mx_handle_t);
+
+syscall vmo_create_physical
+    (rsrc_handle: mx_handle_t, paddr: mx_paddr_t, size: size_t)
     returns (mx_status_t, out: mx_handle_t);
 
 # DDK Syscalls: Misc Info
@@ -522,19 +561,11 @@ syscall set_framebuffer_vmo
         width: uint32_t, height: uint32_t, stride: uint32_t)
     returns (mx_status_t);
 
-syscall clock_adjust
-    (handle: mx_handle_t, clock_id: uint32_t, offset: int64_t)
-    returns (mx_status_t);
-
 # DDK Syscalls: PCI
 
 syscall pci_get_nth_device
     (handle: mx_handle_t, index: uint32_t)
-    returns (mx_handle_t, out_info: mx_pcie_device_info_t);
-
-syscall pci_claim_device
-    (handle: mx_handle_t)
-    returns (mx_status_t);
+    returns (mx_status_t, out_info: mx_pcie_device_info_t, out_handle: mx_handle_t);
 
 syscall pci_enable_bus_master
     (handle: mx_handle_t, enable: bool)
@@ -548,9 +579,10 @@ syscall pci_reset_device
     (handle: mx_handle_t)
     returns (mx_status_t);
 
-syscall pci_map_mmio
-    (handle: mx_handle_t, bar_num: uint32_t, cache_policy: mx_cache_policy_t)
-    returns (mx_status_t, out_handle: mx_handle_t);
+syscall pci_cfg_pio_rw
+    (handle: mx_handle_t, bus: uint8_t, dev: uint8_t, func: uint8_t, offset: uint8_t,
+        val: uint32_t[1] OUT, width: size_t, write: bool)
+    returns (mx_status_t);
 
 syscall pci_get_bar
     (handle: mx_handle_t, bar_num: uint32_t, out_bar: mx_pci_resource_t[1] OUT)
@@ -571,10 +603,6 @@ syscall pci_io_read
 
 syscall pci_map_interrupt
     (handle: mx_handle_t, which_irq: int32_t)
-    returns (mx_status_t, out_handle: mx_handle_t);
-
-syscall pci_map_config
-    (handle: mx_handle_t)
     returns (mx_status_t, out_handle: mx_handle_t);
 
 syscall pci_query_irq_mode_caps
@@ -606,45 +634,52 @@ syscall acpi_cache_flush
 # Resources
 
 syscall resource_create
-    (parent_handle: mx_handle_t, records: mx_rrec_t[count] IN, count: uint32_t)
+    (parent_handle: mx_handle_t, kind: uint32_t, low: uint64_t, high: uint64_t)
     returns (mx_status_t, resource_out: mx_handle_t);
-
-syscall resource_destroy
-    (handle: mx_handle_t)
-    returns (mx_status_t);
-
-syscall resource_get_handle
-    (handle: mx_handle_t, index: uint32_t, options: uint32_t)
-    returns (mx_status_t, out: mx_handle_t);
-
-syscall resource_do_action
-    (handle: mx_handle_t, index: uint32_t, action: uint32_t, arg0: uint32_t, arg1: uint32_t)
-    returns (mx_status_t);
-
-syscall resource_connect
-    (handle: mx_handle_t, channel: mx_handle_t)
-    returns (mx_status_t);
-
-syscall resource_accept
-    (handle: mx_handle_t)
-    returns (mx_status_t, channel: mx_handle_t);
 
 # Hypervisor
 
-syscall hypervisor_create
-    (handle: mx_handle_t, options: uint32_t)
-    returns (mx_status_t, out: mx_handle_t);
+syscall guest_create
+    (resource: mx_handle_t, options: uint32_t, physmem_vmo: mx_handle_t)
+    returns (mx_status_t, out: mx_handle_t handle_acquire);
 
-syscall hypervisor_op
-    (handle: mx_handle_t, opcode: uint32_t, args: any[args_len] IN, args_len: uint32_t,
-        result: any[result_len] OUT, result_len: uint32_t)
+syscall guest_set_trap
+    (guest: mx_handle_t, kind: uint32_t, addr: mx_vaddr_t, len: size_t, port: mx_handle_t,
+        key: uint64_t)
+    returns (mx_status_t);
+
+syscall vcpu_create
+    (guest: mx_handle_t, options: uint32_t, args: mx_vcpu_create_args_t[1] IN)
+    returns (mx_status_t, out: mx_handle_t handle_acquire);
+
+syscall vcpu_resume
+    (vcpu: mx_handle_t)
+    returns (mx_status_t, packet: mx_port_packet_t OUT);
+
+syscall vcpu_interrupt
+    (vcpu: mx_handle_t, vector: uint32_t)
+    returns (mx_status_t);
+
+syscall vcpu_read_state
+    (vcpu: mx_handle_t, kind: uint32_t, buffer: any[len] OUT, len: uint32_t)
+    returns (mx_status_t);
+
+syscall vcpu_write_state
+    (vcpu: mx_handle_t, kind: uint32_t, buffer: any[len] IN, len: uint32_t)
     returns (mx_status_t);
 
 # System Control
 
 syscall system_mexec
-   (kernel: mx_handle_t, bootimage: mx_handle_t)
+   (kernel: mx_handle_t, bootimage: mx_handle_t, cmdline: char[cmdline_len] IN, cmdline_len: uint32_t)
    returns (mx_status_t);
+
+# Internal-only task syscalls
+
+syscall job_set_relative_importance
+    (root_resource: mx_handle_t,
+        job: mx_handle_t, less_important_job: mx_handle_t)
+    returns (mx_status_t);
 
 # Test syscalls (keep at the end)
 

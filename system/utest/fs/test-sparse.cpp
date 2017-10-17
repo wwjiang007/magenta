@@ -10,8 +10,8 @@
 #include <unistd.h>
 
 #include <magenta/syscalls.h>
-#include <mxalloc/new.h>
-#include <mxtl/unique_ptr.h>
+#include <fbl/alloc_checker.h>
+#include <fbl/unique_ptr.h>
 #include <unittest/unittest.h>
 
 #include "filesystems.h"
@@ -21,12 +21,12 @@ bool test_sparse(void) {
     BEGIN_TEST;
 
     int fd = open("::my_file", O_RDWR | O_CREAT, 0644);
-    ASSERT_GT(fd, 0, "");
+    ASSERT_GT(fd, 0);
 
     // Create a random write buffer of data
-    AllocChecker ac;
-    mxtl::unique_ptr<uint8_t[]> wbuf(new (&ac) uint8_t[WriteSize]);
-    ASSERT_EQ(ac.check(), true, "");
+    fbl::AllocChecker ac;
+    fbl::unique_ptr<uint8_t[]> wbuf(new (&ac) uint8_t[WriteSize]);
+    ASSERT_EQ(ac.check(), true);
     unsigned int seed = static_cast<unsigned int>(mx_ticks_get());
     unittest_printf("Sparse test using seed: %u\n", seed);
     for (size_t i = 0; i < WriteSize; i++) {
@@ -34,21 +34,21 @@ bool test_sparse(void) {
     }
 
     // Dump write buffer to file
-    ASSERT_EQ(pwrite(fd, &wbuf[0], WriteSize, WriteOffset), WriteSize, "");
+    ASSERT_EQ(pwrite(fd, &wbuf[0], WriteSize, WriteOffset), WriteSize);
 
     // Reopen file
-    ASSERT_EQ(close(fd), 0, "");
+    ASSERT_EQ(close(fd), 0);
     fd = open("::my_file", O_RDWR, 0644);
-    ASSERT_GT(fd, 0, "");
+    ASSERT_GT(fd, 0);
 
     // Access read buffer from file
     constexpr size_t kFileSize = WriteOffset + WriteSize;
     constexpr size_t kBytesToRead = (kFileSize - ReadOffset) > WriteSize ?
                                      WriteSize : (kFileSize - ReadOffset);
     static_assert(kBytesToRead > 0, "We want to test writing AND reading");
-    mxtl::unique_ptr<uint8_t[]> rbuf(new (&ac) uint8_t[kBytesToRead]);
-    ASSERT_EQ(ac.check(), true, "");
-    ASSERT_EQ(pread(fd, &rbuf[0], kBytesToRead, ReadOffset), kBytesToRead, "");
+    fbl::unique_ptr<uint8_t[]> rbuf(new (&ac) uint8_t[kBytesToRead]);
+    ASSERT_EQ(ac.check(), true);
+    ASSERT_EQ(pread(fd, &rbuf[0], kBytesToRead, ReadOffset), kBytesToRead);
 
     constexpr size_t kSparseLength = (ReadOffset < WriteOffset) ?
                                       WriteOffset - ReadOffset : 0;
@@ -65,13 +65,13 @@ bool test_sparse(void) {
 
     if (kValidLength > 0) {
         for (size_t i = 0; i < kValidLength; i++) {
-            ASSERT_EQ(rbuf[kSparseLength + i], wbuf[kWbufOffset + i], "");
+            ASSERT_EQ(rbuf[kSparseLength + i], wbuf[kWbufOffset + i]);
         }
     }
 
     // Clean up
-    ASSERT_EQ(close(fd), 0, "");
-    ASSERT_EQ(unlink("::my_file"), 0, "");
+    ASSERT_EQ(close(fd), 0);
+    ASSERT_EQ(unlink("::my_file"), 0);
     END_TEST;
 }
 

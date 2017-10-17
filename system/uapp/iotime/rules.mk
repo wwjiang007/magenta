@@ -7,6 +7,7 @@ LOCAL_DIR := $(GET_LOCAL_DIR)
 MODULE := $(LOCAL_DIR)
 
 MODULE_TYPE := userapp
+MODULE_GROUP := misc
 
 MODULE_SRCS += $(LOCAL_DIR)/iotime.c
 
@@ -15,6 +16,7 @@ MODULE_STATIC_LIBS := \
     system/ulib/sync
 
 MODULE_LIBS := \
+    system/ulib/fs-management \
     system/ulib/mxio \
     system/ulib/magenta \
     system/ulib/c

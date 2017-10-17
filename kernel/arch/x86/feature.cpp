@@ -14,6 +14,8 @@
 
 #include <arch/ops.h>
 
+#include <fbl/algorithm.h>
+
 #define LOCAL_TRACE 0
 
 struct cpuid_leaf _cpuid[MAX_SUPPORTED_CPUID + 1];
@@ -26,11 +28,13 @@ enum x86_microarch_list x86_microarch;
 
 static struct x86_model_info model_info;
 
+bool g_x86_feature_smap;
+
 static int initialized = 0;
 
 static enum x86_microarch_list get_microarch(struct x86_model_info* info);
 
-__NO_SAFESTACK void x86_feature_init(void)
+void x86_feature_init(void)
 {
     if (atomic_swap(&initialized, 1)) {
         return;
@@ -100,6 +104,8 @@ __NO_SAFESTACK void x86_feature_init(void)
 
         x86_microarch = get_microarch(&model_info);
     }
+
+    g_x86_feature_smap = x86_feature_test(X86_FEATURE_SMAP);
 }
 
 static enum x86_microarch_list get_microarch(struct x86_model_info* info) {
@@ -213,6 +219,7 @@ void x86_feature_debug(void)
         { X86_FEATURE_VMX, "vmx" },
         { X86_FEATURE_HYPERVISOR, "hypervisor" },
         { X86_FEATURE_PT, "pt" },
+        { X86_FEATURE_HWP, "hwp" },
     };
 
     const char *vendor_string = NULL;
@@ -240,7 +247,7 @@ void x86_feature_debug(void)
 
     printf("Features: ");
     uint col = 0;
-    for (uint i = 0; i < countof(features); ++i) {
+    for (uint i = 0; i < fbl::count_of(features); ++i) {
         if (x86_feature_test(features[i].bit))
             col += printf("%s ", features[i].name);
         if (col >= 80) {

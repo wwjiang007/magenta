@@ -16,7 +16,12 @@
 #include <magenta/compiler.h>
 #include <magenta/process.h>
 #include <magenta/processargs.h>
-#include <mxtl/unique_ptr.h>
+#include <fbl/unique_ptr.h>
+
+#ifdef __Fuchsia__
+#include <async/loop.h>
+#include <fs/async-dispatcher.h>
+#endif
 
 #include "minfs-private.h"
 #ifndef __Fuchsia__
@@ -25,7 +30,7 @@
 
 #ifndef __Fuchsia__
 
-extern mxtl::RefPtr<minfs::VnodeMinfs> fake_root;
+extern fbl::RefPtr<minfs::VnodeMinfs> fake_root;
 
 int run_fs_tests(int argc, char** argv);
 
@@ -33,54 +38,62 @@ int run_fs_tests(int argc, char** argv);
 
 namespace {
 
-int do_minfs_check(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
+int do_minfs_check(fbl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
 #ifdef __Fuchsia__
-    return minfs_check(mxtl::move(bc));
+    return minfs_check(fbl::move(bc));
 #else
     return -1;
 #endif
 }
 
 #ifdef __Fuchsia__
-int do_minfs_mount(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
-    mxtl::RefPtr<minfs::VnodeMinfs> vn;
-    if (minfs_mount(&vn, mxtl::move(bc)) < 0) {
+int do_minfs_mount(fbl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
+    fbl::RefPtr<minfs::VnodeMinfs> vn;
+    if (minfs_mount(&vn, fbl::move(bc)) < 0) {
         return -1;
     }
 
     mx_handle_t h = mx_get_startup_handle(PA_HND(PA_USER0, 0));
     if (h == MX_HANDLE_INVALID) {
-        error("minfs: Could not access startup handle to mount point\n");
-        return ERR_BAD_STATE;
+        FS_TRACE_ERROR("minfs: Could not access startup handle to mount point\n");
+        return MX_ERR_BAD_STATE;
     }
 
-    vfs_rpc_server(h, vn);
+    async::Loop loop;
+    fs::AsyncDispatcher dispatcher(loop.async());
+    minfs::vfs.SetDispatcher(&dispatcher);
+    mx_status_t status;
+    if ((status = minfs::vfs.ServeDirectory(fbl::move(vn),
+                                            mx::channel(h))) != MX_OK) {
+        return status;
+    }
+    loop.Run();
     return 0;
 }
 #else
-int io_setup(mxtl::unique_ptr<minfs::Bcache> bc) {
-    mxtl::RefPtr<minfs::VnodeMinfs> vn;
-    if (minfs_mount(&vn, mxtl::move(bc)) < 0) {
+int io_setup(fbl::unique_ptr<minfs::Bcache> bc) {
+    fbl::RefPtr<minfs::VnodeMinfs> vn;
+    if (minfs_mount(&vn, fbl::move(bc)) < 0) {
         return -1;
     }
     fake_root = vn;
     return 0;
 }
 
-int do_minfs_test(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
-    if (io_setup(mxtl::move(bc))) {
+int do_minfs_test(fbl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
+    if (io_setup(fbl::move(bc))) {
         return -1;
     }
     return run_fs_tests(argc, argv);
 }
 
-int do_cp(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
+int do_cp(fbl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
     if (argc != 2) {
         fprintf(stderr, "cp requires two arguments\n");
         return -1;
     }
 
-    if (io_setup(mxtl::move(bc))) {
+    if (io_setup(fbl::move(bc))) {
         return -1;
     }
 
@@ -120,12 +133,12 @@ done:
     return r;
 }
 
-int do_mkdir(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
+int do_mkdir(fbl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
     if (argc != 1) {
         fprintf(stderr, "mkdir requires one argument\n");
         return -1;
     }
-    if (io_setup(mxtl::move(bc))) {
+    if (io_setup(fbl::move(bc))) {
         return -1;
     }
     // TODO(jpoichet) add support making parent directories when not present
@@ -137,12 +150,12 @@ int do_mkdir(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
     return emu_mkdir(path, 0);
 }
 
-int do_unlink(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
+int do_unlink(fbl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
     if (argc != 1) {
         fprintf(stderr, "unlink requires one argument\n");
         return -1;
     }
-    if (io_setup(mxtl::move(bc))) {
+    if (io_setup(fbl::move(bc))) {
         return -1;
     }
     const char* path = argv[0];
@@ -153,12 +166,12 @@ int do_unlink(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
     return emu_unlink(path);
 }
 
-int do_rename(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
+int do_rename(fbl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
     if (argc != 2) {
         fprintf(stderr, "rename requires two arguments\n");
         return -1;
     }
-    if (io_setup(mxtl::move(bc))) {
+    if (io_setup(fbl::move(bc))) {
         return -1;
     }
     const char* old_path = argv[0];
@@ -189,12 +202,12 @@ static const char* modestr(uint32_t mode) {
     }
 }
 
-int do_ls(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
+int do_ls(fbl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
     if (argc != 1) {
         fprintf(stderr, "ls requires one argument\n");
         return -1;
     }
-    if (io_setup(mxtl::move(bc))) {
+    if (io_setup(fbl::move(bc))) {
         return -1;
     }
     const char* path = argv[0];
@@ -227,13 +240,13 @@ int do_ls(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
 
 #endif
 
-int do_minfs_mkfs(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
-    return minfs_mkfs(mxtl::move(bc));
+int do_minfs_mkfs(fbl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
+    return minfs_mkfs(fbl::move(bc));
 }
 
 struct {
     const char* name;
-    int (*func)(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv);
+    int (*func)(fbl::unique_ptr<minfs::Bcache> bc, int argc, char** argv);
     uint32_t flags;
     const char* help;
 } CMDS[] = {
@@ -268,7 +281,7 @@ int usage() {
             "Try using the [mkfs,fsck,mount,umount] commands instead\n"
 #endif
             "\n");
-    for (unsigned n = 0; n < countof(CMDS); n++) {
+    for (unsigned n = 0; n < fbl::count_of(CMDS); n++) {
         fprintf(stderr, "%9s %-10s %s\n", n ? "" : "commands:",
                 CMDS[n].name, CMDS[n].help);
     }
@@ -277,12 +290,21 @@ int usage() {
 }
 
 off_t get_size(int fd) {
+#ifdef __Fuchsia__
+    block_info_t info;
+    if (ioctl_block_get_info(fd, &info) != sizeof(info)) {
+        fprintf(stderr, "error: minfs could not find size of device\n");
+        return 0;
+    }
+    return info.block_size * info.block_count;
+#else
     struct stat s;
     if (fstat(fd, &s) < 0) {
-        fprintf(stderr, "error: could not find end of file/device\n");
+        fprintf(stderr, "error: minfs could not find end of file/device\n");
         return 0;
     }
     return s.st_size;
+#endif
 }
 
 } // namespace anonymous
@@ -293,9 +315,9 @@ int main(int argc, char** argv) {
     // handle options
     while (argc > 1) {
         if (!strcmp(argv[1], "-v")) {
-            trace_on(TRACE_SOME);
+            fs_trace_on(FS_TRACE_SOME);
         } else if (!strcmp(argv[1], "-vv")) {
-            trace_on(TRACE_ALL);
+            fs_trace_on(FS_TRACE_ALL);
         } else {
             break;
         }
@@ -349,7 +371,7 @@ int main(int argc, char** argv) {
     fd = FS_FD_BLOCKDEVICE;
 #else
     uint32_t flags = O_RDWR;
-    for (unsigned i = 0; i < countof(CMDS); i++) {
+    for (unsigned i = 0; i < fbl::count_of(CMDS); i++) {
         if (!strcmp(cmd, CMDS[i].name)) {
             flags = CMDS[i].flags;
             goto found;
@@ -377,15 +399,15 @@ found:
     }
     size /= minfs::kMinfsBlockSize;
 
-    mxtl::unique_ptr<minfs::Bcache> bc;
+    fbl::unique_ptr<minfs::Bcache> bc;
     if (minfs::Bcache::Create(&bc, fd, (uint32_t) size) < 0) {
         fprintf(stderr, "error: cannot create block cache\n");
         return -1;
     }
 
-    for (unsigned i = 0; i < countof(CMDS); i++) {
+    for (unsigned i = 0; i < fbl::count_of(CMDS); i++) {
         if (!strcmp(cmd, CMDS[i].name)) {
-            return CMDS[i].func(mxtl::move(bc), argc - 3, argv + 3);
+            return CMDS[i].func(fbl::move(bc), argc - 3, argv + 3);
         }
     }
     return -1;

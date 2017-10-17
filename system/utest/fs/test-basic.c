@@ -29,6 +29,21 @@ bool test_basic(void) {
     ASSERT_EQ(close(fd1), 0, "");
     ASSERT_EQ(close(fd2), 0, "");
 
+    // test pipelined opens
+    // the open itself will always succeed if the remote side exists,
+    // but we'll get an error when we try to do an operation on the file
+    fd1 = open("::alpha/bravo/charlie/delta/echo/foxtrot", O_RDONLY | O_PIPELINE, 0644);
+    ASSERT_GT(fd1, 0, "");
+    char tmp[14];
+    ASSERT_EQ(read(fd1, tmp, 14), 14, "");
+    ASSERT_EQ(close(fd1), 0, "");
+    ASSERT_EQ(memcmp(tmp, "Hello, World!\n", 14), 0, "");
+
+    fd1 = open("::alpha/banana", O_RDONLY | O_PIPELINE, 0644);
+    ASSERT_GT(fd1, 0, "");
+    ASSERT_EQ(read(fd1, tmp, 14), -1, "");
+    ASSERT_EQ(close(fd1), -1, "");
+
     fd1 = open("::file.txt", O_CREAT | O_RDWR, 0644);
     ASSERT_GT(fd1, 0, "");
     ASSERT_EQ(close(fd1), 0, "");
@@ -38,7 +53,11 @@ bool test_basic(void) {
     fd1 = open("::emptydir", O_RDONLY, 0644);
     ASSERT_GT(fd1, 0, "");
 
-    ASSERT_EQ(read(fd1, NULL, 0), -1, "");
+    // Zero-sized reads should always succeed
+    ASSERT_EQ(read(fd1, NULL, 0), 0, "");
+    // But nonzero reads to directories should always fail
+    char buf;
+    ASSERT_EQ(read(fd1, &buf, 1), -1, "");
     ASSERT_EQ(write(fd1, "Don't write to directories", 26), -1, "");
     ASSERT_EQ(ftruncate(fd1, 0), -1, "");
     ASSERT_EQ(rmdir("::emptydir"), 0, "");

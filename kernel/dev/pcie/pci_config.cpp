@@ -5,12 +5,14 @@
 // https://opensource.org/licenses/MIT
 
 #include <dev/pci_config.h>
+#include <lib/pci/pio.h>
 
 #include <assert.h>
+#include <debug.h>
 #include <inttypes.h>
 #include <trace.h>
 
-#include <mxalloc/new.h>
+#include <fbl/alloc_checker.h>
 
 #define LOCAL_TRACE 0
 
@@ -76,22 +78,34 @@ private:
 };
 
 uint8_t PciPioConfig::Read(const PciReg8 addr) const {
-    PANIC_UNIMPLEMENTED;
+    uint32_t val;
+    mx_status_t status = Pci::PioCfgRead(static_cast<uint32_t>(base_ + addr.offset()), &val, 8u);
+    DEBUG_ASSERT(status == MX_OK);
+    return static_cast<uint8_t>(val & 0xFF);
 }
 uint16_t PciPioConfig::Read(const PciReg16 addr) const {
-    PANIC_UNIMPLEMENTED;
+    uint32_t val;
+    mx_status_t status = Pci::PioCfgRead(static_cast<uint32_t>(base_ + addr.offset()), &val, 16u);
+    DEBUG_ASSERT(status == MX_OK);
+    return static_cast<uint16_t>(val & 0xFFFF);
 }
 uint32_t PciPioConfig::Read(const PciReg32 addr) const {
-    PANIC_UNIMPLEMENTED;
+    uint32_t val;
+    mx_status_t status = Pci::PioCfgRead(static_cast<uint32_t>(base_ + addr.offset()), &val, 32u);
+    DEBUG_ASSERT(status == MX_OK);
+    return val;
 }
 void PciPioConfig::Write(const PciReg8 addr, uint8_t val) const {
-    PANIC_UNIMPLEMENTED;
+    mx_status_t status = Pci::PioCfgWrite(static_cast<uint32_t>(base_ + addr.offset()), val, 8u);
+    DEBUG_ASSERT(status == MX_OK);
 }
 void PciPioConfig::Write(const PciReg16 addr, uint16_t val) const {
-    PANIC_UNIMPLEMENTED;
+    mx_status_t status = Pci::PioCfgWrite(static_cast<uint32_t>(base_ + addr.offset()), val, 16u);
+    DEBUG_ASSERT(status == MX_OK);
 }
 void PciPioConfig::Write(const PciReg32 addr, uint32_t val) const {
-    PANIC_UNIMPLEMENTED;
+    mx_status_t status = Pci::PioCfgWrite(static_cast<uint32_t>(base_ + addr.offset()), val, 32u);
+    DEBUG_ASSERT(status == MX_OK);
 }
 
 class PciMmioConfig : public PciConfig {
@@ -142,21 +156,43 @@ void PciMmioConfig::Write(PciReg32 addr, uint32_t val) const {
 
 } // anon namespace
 
-mxtl::RefPtr<PciConfig> PciConfig::Create(uintptr_t base, PciAddrSpace addr_type) {
-    AllocChecker ac;
-    mxtl::RefPtr<PciConfig> cfg;
+fbl::RefPtr<PciConfig> PciConfig::Create(uintptr_t base, PciAddrSpace addr_type) {
+    fbl::AllocChecker ac;
+    fbl::RefPtr<PciConfig> cfg = nullptr;
 
     LTRACEF("base %#" PRIxPTR ", type %s\n", base, (addr_type == PciAddrSpace::PIO) ? "PIO" : "MIO");
 
-    if (addr_type == PciAddrSpace::PIO)
-        PANIC_UNIMPLEMENTED;
-    else
-        cfg = mxtl::AdoptRef(new (&ac) PciMmioConfig(base));
+    if (addr_type == PciAddrSpace::PIO) {
+        cfg = fbl::AdoptRef(new (&ac) PciPioConfig(base));
+    } else {
+        cfg = fbl::AdoptRef(new (&ac) PciMmioConfig(base));
+    }
 
     if (!ac.check()) {
         TRACEF("failed to allocate memory for PciConfig!\n");
-        return nullptr;
     }
 
     return cfg;
+}
+
+void PciConfig::DumpConfig(uint16_t len) const {
+    printf("%u bytes of raw config (base %s:%#" PRIxPTR ")\n",
+           len, (addr_space_ == PciAddrSpace::MMIO) ? "MMIO" : "PIO", base_);
+    if (addr_space_ == PciAddrSpace::MMIO) {
+        hexdump8(reinterpret_cast<const void*>(base_), len);
+    } else {
+        // PIO space can't be dumped directly so we read a row at a time
+        constexpr uint8_t row_len = 16;
+        uint32_t pos = 0;
+        uint8_t buf[row_len];
+
+        do {
+            for (uint16_t i = 0; i < row_len; i++) {
+                buf[i] = Read(PciReg8(static_cast<uint8_t>(pos + i)));
+            }
+
+            hexdump8_ex(buf, row_len, base_ + pos);
+            pos += row_len;
+        } while (pos < PCIE_BASE_CONFIG_SIZE);
+    }
 }

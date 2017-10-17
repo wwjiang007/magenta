@@ -5,8 +5,7 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-#ifndef __ERR_H
-#define __ERR_H
+#pragma once
 
 #ifndef ASSEMBLY
 #include <sys/types.h> // for status_t
@@ -16,9 +15,7 @@
 
 // TODO: This is used primarily by class drivers which are obsolete.
 // Re-examine when those are removed.
-#define ERR_NOT_CONFIGURED (-501)
+#define MX_ERR_NOT_CONFIGURED (-501)
 
 // MOVE to kernel internal used for thread teardown
-#define ERR_INTERRUPTED (-502)
-
-#endif
+#define MX_ERR_INTERNAL_INTR_KILLED (-502)

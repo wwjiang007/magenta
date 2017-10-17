@@ -12,19 +12,22 @@
 #include <trace.h>
 #include <arch/arch_ops.h>
 #include <arch/arm64.h>
+#include <arch/arm64/exceptions.h>
+#include <arch/exception.h>
+#include <arch/user_copy.h>
 #include <kernel/thread.h>
+#include <kernel/stats.h>
+#include <kernel/vm.h>
 #include <platform.h>
+#include <vm/fault.h>
 
-#if WITH_LIB_MAGENTA
-#include <lib/user_copy.h>
-#include <magenta/exception.h>
-#endif
+#include <magenta/syscalls/exception.h>
 
 #define LOCAL_TRACE 0
 
 #define DFSC_ALIGNMENT_FAULT 0b100001
 
-bool arm64_in_int_handler[SMP_MAX_CPUS];
+static void arm64_thread_process_pending_signals(struct arm64_iframe_long *iframe);
 
 static void dump_iframe(const struct arm64_iframe_long *iframe)
 {
@@ -46,9 +49,9 @@ __WEAK void arm64_syscall(struct arm64_iframe_long *iframe, bool is_64bit, uint6
     panic("unhandled syscall vector\n");
 }
 
-#if WITH_LIB_MAGENTA
-
-static status_t call_magenta_data_fault_exception_handler(mx_excp_type_t type, struct arm64_iframe_long *iframe, uint32_t esr, uint64_t far)
+static status_t try_dispatch_user_data_fault_exception(
+    mx_excp_type_t type, struct arm64_iframe_long *iframe,
+    uint32_t esr, uint64_t far)
 {
     thread_t *thread = get_current_thread();
     arch_exception_context_t context = {};
@@ -60,18 +63,17 @@ static status_t call_magenta_data_fault_exception_handler(mx_excp_type_t type, s
     arch_enable_ints();
     DEBUG_ASSERT(thread->arch.suspended_general_regs == nullptr);
     thread->arch.suspended_general_regs = iframe;
-    status_t status = magenta_exception_handler(type, &context, iframe->elr);
+    status_t status = dispatch_user_exception(type, &context);
     thread->arch.suspended_general_regs = nullptr;
     arch_disable_ints();
     return status;
 }
 
-static status_t call_magenta_exception_handler(mx_excp_type_t type, struct arm64_iframe_long *iframe, uint32_t esr)
+static status_t try_dispatch_user_exception(
+    mx_excp_type_t type, struct arm64_iframe_long *iframe, uint32_t esr)
 {
-    return call_magenta_data_fault_exception_handler(type, iframe, esr, 0);
+    return try_dispatch_user_data_fault_exception(type, iframe, esr, 0);
 }
-
-#endif
 
 __NO_RETURN static void exception_die(struct arm64_iframe_long *iframe, uint32_t esr)
 {
@@ -97,9 +99,7 @@ static void arm64_unknown_handler(struct arm64_iframe_long *iframe, uint excepti
         printf("unknown exception in kernel: PC at %#" PRIx64 "\n", iframe->elr);
         exception_die(iframe, esr);
     }
-#if WITH_LIB_MAGENTA
-    call_magenta_exception_handler (MX_EXCP_UNDEFINED_INSTRUCTION, iframe, esr);
-#endif
+    try_dispatch_user_exception(MX_EXCP_UNDEFINED_INSTRUCTION, iframe, esr);
 }
 
 static void arm64_brk_handler(struct arm64_iframe_long *iframe, uint exception_flags,
@@ -110,9 +110,7 @@ static void arm64_brk_handler(struct arm64_iframe_long *iframe, uint exception_f
         printf("BRK in kernel: PC at %#" PRIx64 "\n", iframe->elr);
         exception_die(iframe, esr);
     }
-#if WITH_LIB_MAGENTA
-    call_magenta_exception_handler (MX_EXCP_SW_BREAKPOINT, iframe, esr);
-#endif
+    try_dispatch_user_exception(MX_EXCP_SW_BREAKPOINT, iframe, esr);
 }
 
 static void arm64_fpu_handler(struct arm64_iframe_long *iframe, uint exception_flags,
@@ -149,6 +147,8 @@ static void arm64_instruction_abort_handler(struct arm64_iframe_long *iframe, ui
     uint32_t iss = BITS(esr, 24, 0);
     bool is_user = !BIT(ec, 0);
 
+    CPU_STATS_INC(page_faults);
+
     uint pf_flags = VMM_PF_FLAG_INSTRUCTION;
     pf_flags |= is_user ? VMM_PF_FLAG_USER : 0;
     /* Check if this was not permission fault */
@@ -166,13 +166,13 @@ static void arm64_instruction_abort_handler(struct arm64_iframe_long *iframe, ui
     if (err >= 0)
         return;
 
-#if WITH_LIB_MAGENTA
-    /* if this is from user space, let magenta get a shot at it */
+    // If this is from user space, let the user exception handler
+    // get a shot at it.
     if (is_user) {
-        if (call_magenta_data_fault_exception_handler (MX_EXCP_FATAL_PAGE_FAULT, iframe, esr, far) == NO_ERROR)
+        CPU_STATS_INC(exceptions);
+        if (try_dispatch_user_data_fault_exception(MX_EXCP_FATAL_PAGE_FAULT, iframe, esr, far) == MX_OK)
             return;
     }
-#endif
 
     printf("instruction abort: PC at %#" PRIx64 ", is_user %d, FAR %" PRIx64 "\n",
            iframe->elr, is_user, far);
@@ -202,6 +202,7 @@ static void arm64_data_abort_handler(struct arm64_iframe_long *iframe, uint exce
 
     uint32_t dfsc = BITS(iss, 5, 0);
     if (likely(dfsc != DFSC_ALIGNMENT_FAULT)) {
+        CPU_STATS_INC(page_faults);
         arch_enable_ints();
         status_t err = vmm_page_fault_handler(far, pf_flags);
         arch_disable_ints();
@@ -218,17 +219,17 @@ static void arm64_data_abort_handler(struct arm64_iframe_long *iframe, uint exce
         return;
     }
 
-#if WITH_LIB_MAGENTA
-    /* if this is from user space, let magenta get a shot at it */
+    // If this is from user space, let the user exception handler
+    // get a shot at it.
     if (is_user) {
+        CPU_STATS_INC(exceptions);
         mx_excp_type_t excp_type = MX_EXCP_FATAL_PAGE_FAULT;
         if (unlikely(dfsc == DFSC_ALIGNMENT_FAULT)) {
             excp_type = MX_EXCP_UNALIGNED_ACCESS;
         }
-        if (call_magenta_data_fault_exception_handler (excp_type, iframe, esr, far) == NO_ERROR)
+        if (try_dispatch_user_data_fault_exception(excp_type, iframe, esr, far) == MX_OK)
             return;
     }
-#endif
 
     /* decode the iss */
     if (BIT(iss, 24)) { /* ISV bit */
@@ -244,24 +245,33 @@ static void arm64_data_abort_handler(struct arm64_iframe_long *iframe, uint exce
     exception_die(iframe, esr);
 }
 
+static inline void arm64_restore_percpu_pointer() {
+    arm64_write_percpu_ptr(get_current_thread()->arch.current_percpu_ptr);
+}
+
 /* called from assembly */
 extern "C" void arm64_sync_exception(struct arm64_iframe_long *iframe, uint exception_flags)
 {
     uint32_t esr = (uint32_t)ARM64_READ_SYSREG(esr_el1);
     uint32_t ec = BITS_SHIFT(esr, 31, 26);
 
+    if (exception_flags & ARM64_EXCEPTION_FLAG_LOWER_EL) {
+        // if we came from a lower level, restore the per cpu pointer
+        arm64_restore_percpu_pointer();
+    }
+
     switch (ec) {
         case 0b000000: /* unknown reason */
-            THREAD_STATS_INC(exceptions);
+            CPU_STATS_INC(exceptions);
             arm64_unknown_handler(iframe, exception_flags, esr);
             break;
         case 0b111000: /* BRK from arm32 */
         case 0b111100: /* BRK from arm64 */
-            THREAD_STATS_INC(exceptions);
+            CPU_STATS_INC(exceptions);
             arm64_brk_handler(iframe, exception_flags, esr);
             break;
         case 0b000111: /* floating point */
-            THREAD_STATS_INC(exceptions);
+            CPU_STATS_INC(exceptions);
             arm64_fpu_handler(iframe, exception_flags, esr);
             break;
         case 0b010001: /* syscall from arm32 */
@@ -270,27 +280,23 @@ extern "C" void arm64_sync_exception(struct arm64_iframe_long *iframe, uint exce
             break;
         case 0b100000: /* instruction abort from lower level */
         case 0b100001: /* instruction abort from same level */
-            THREAD_STATS_INC(exceptions);
             arm64_instruction_abort_handler(iframe, exception_flags, esr);
             break;
         case 0b100100: /* data abort from lower level */
         case 0b100101: /* data abort from same level */
-            THREAD_STATS_INC(exceptions);
             arm64_data_abort_handler(iframe, exception_flags, esr);
             break;
         default: {
-            THREAD_STATS_INC(exceptions);
+            CPU_STATS_INC(exceptions);
             /* TODO: properly decode more of these */
             if (unlikely((exception_flags & ARM64_EXCEPTION_FLAG_LOWER_EL) == 0)) {
                 /* trapped inside the kernel, this is bad */
                 printf("unhandled exception in kernel: PC at %#" PRIx64 "\n", iframe->elr);
                 exception_die(iframe, esr);
             }
-#if WITH_LIB_MAGENTA
-            /* let magenta get a shot at it */
-            if (call_magenta_exception_handler (MX_EXCP_GENERAL, iframe, esr) == NO_ERROR)
+            /* let the user exception handler get a shot at it */
+            if (try_dispatch_user_exception(MX_EXCP_GENERAL, iframe, esr) == MX_OK)
                 break;
-#endif
             printf("unhandled synchronous exception\n");
             exception_die(iframe, esr);
         }
@@ -303,53 +309,93 @@ extern "C" void arm64_sync_exception(struct arm64_iframe_long *iframe, uint exce
          */
         arm64_thread_process_pending_signals(iframe);
     }
+
+    /* if we're returning to kernel space, make sure we restore the correct x18 */
+    if ((exception_flags & ARM64_EXCEPTION_FLAG_LOWER_EL) == 0) {
+        iframe->r[18] = (uint64_t)arm64_read_percpu_ptr();
+    }
 }
 
 /* called from assembly */
-extern "C" void arm64_irq(struct arm64_iframe_short *iframe, uint exception_flags)
+extern "C" uint32_t arm64_irq(struct arm64_iframe_short *iframe, uint exception_flags)
 {
+    if (exception_flags & ARM64_EXCEPTION_FLAG_LOWER_EL) {
+        // if we came from a lower level, restore the per cpu pointer
+        arm64_restore_percpu_pointer();
+    }
+
     LTRACEF("iframe %p, flags 0x%x\n", iframe, exception_flags);
 
-    uint32_t curr_cpu = arch_curr_cpu_num();
-    arm64_in_int_handler[curr_cpu] = true;
+    arch_set_in_int_handler(true);
 
     enum handler_return ret = platform_irq(iframe);
 
-    arm64_in_int_handler[curr_cpu] = false;
+    arch_set_in_int_handler(false);
 
     /* if we came from user space, check to see if we have any signals to handle */
     if (unlikely(exception_flags & ARM64_EXCEPTION_FLAG_LOWER_EL)) {
-        /* in the case of receiving a kill signal, this function may not return,
-         * but the scheduler would have been invoked so it's fine.
-         */
-        thread_process_pending_signals();
+        uint32_t exit_flags = 0;
+        if (thread_is_signaled(get_current_thread()))
+            exit_flags |= ARM64_IRQ_EXIT_THREAD_SIGNALED;
+        if (ret != INT_NO_RESCHEDULE)
+            exit_flags |= ARM64_IRQ_EXIT_RESCHEDULE;
+        return exit_flags;
     }
 
     /* preempt the thread if the interrupt has signaled it */
     if (ret != INT_NO_RESCHEDULE)
-        thread_preempt(true);
+        thread_preempt();
+
+    /* if we're returning to kernel space, make sure we restore the correct x18 */
+    if ((exception_flags & ARM64_EXCEPTION_FLAG_LOWER_EL) == 0) {
+        iframe->r[18] = (uint64_t)arm64_read_percpu_ptr();
+    }
+
+    return 0;
+}
+
+/* called from assembly */
+extern "C" void arm64_finish_user_irq(uint32_t exit_flags, struct arm64_iframe_long *iframe)
+{
+    // we came from a lower level, so restore the per cpu pointer
+    arm64_restore_percpu_pointer();
+
+    /* in the case of receiving a kill signal, this function may not return,
+     * but the scheduler would have been invoked so it's fine.
+     */
+    if (unlikely(exit_flags & ARM64_IRQ_EXIT_THREAD_SIGNALED)) {
+        DEBUG_ASSERT(iframe != nullptr);
+        arm64_thread_process_pending_signals(iframe);
+    }
+
+    /* preempt the thread if the interrupt has signaled it */
+    if (exit_flags & ARM64_IRQ_EXIT_RESCHEDULE)
+        thread_preempt();
 }
 
 /* called from assembly */
 extern "C" void arm64_invalid_exception(struct arm64_iframe_long *iframe, unsigned int which)
 {
+    // restore the percpu pointer (x18) unconditionally
+    arm64_restore_percpu_pointer();
+
     printf("invalid exception, which 0x%x\n", which);
     dump_iframe(iframe);
 
     platform_halt(HALT_ACTION_HALT, HALT_REASON_SW_PANIC);
 }
 
-void arm64_thread_process_pending_signals(struct arm64_iframe_long *iframe)
+static void arm64_thread_process_pending_signals(struct arm64_iframe_long *iframe)
 {
     thread_t *thread = get_current_thread();
     DEBUG_ASSERT(iframe != nullptr);
     DEBUG_ASSERT(thread->arch.suspended_general_regs == nullptr);
+
     thread->arch.suspended_general_regs = iframe;
     thread_process_pending_signals();
     thread->arch.suspended_general_regs = nullptr;
 }
 
-#if WITH_LIB_MAGENTA
 void arch_dump_exception_context(const arch_exception_context_t *context)
 {
     uint32_t ec = BITS_SHIFT(context->esr, 31, 26);
@@ -379,7 +425,7 @@ void arch_dump_exception_context(const arch_exception_context_t *context)
     // try to dump the user stack
     if (is_user_address(context->frame->usp)) {
         uint8_t buf[256];
-        if (copy_from_user_unsafe(buf, (void *)context->frame->usp, sizeof(buf)) == NO_ERROR) {
+        if (arch_copy_from_user(buf, (void *)context->frame->usp, sizeof(buf)) == MX_OK) {
             printf("bottom of user stack at 0x%lx:\n", (vaddr_t)context->frame->usp);
             hexdump_ex(buf, sizeof(buf), context->frame->usp);
         }
@@ -389,8 +435,6 @@ void arch_dump_exception_context(const arch_exception_context_t *context)
 void arch_fill_in_exception_context(const arch_exception_context_t *arch_context, mx_exception_report_t *report)
 {
     mx_exception_context_t* mx_context = &report->context;
-
-    mx_context->arch_id = ARCH_ID_ARM_64;
 
     mx_context->arch.u.arm_64.esr = arch_context->esr;
 
@@ -402,11 +446,10 @@ void arch_fill_in_exception_context(const arch_exception_context_t *arch_context
     }
 }
 
-void arch_fill_in_suspension_context(mx_exception_report_t *report)
+status_t arch_dispatch_user_policy_exception(void)
 {
-    mx_exception_context_t *mx_context = &report->context;
-
-    mx_context->arch_id = ARCH_ID_ARM_64;
+    struct arm64_iframe_long frame = {};
+    arch_exception_context_t context = {};
+    context.frame = &frame;
+    return dispatch_user_exception(MX_EXCP_POLICY_ERROR, &context);
 }
-
-#endif

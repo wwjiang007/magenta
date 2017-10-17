@@ -21,7 +21,7 @@ static bool test_futex_wait_value_mismatch() {
     int futex_value = 123;
     mx_status_t rc = mx_futex_wait(&futex_value, futex_value + 1,
                                          MX_TIME_INFINITE);
-    ASSERT_EQ(rc, ERR_BAD_STATE, "Futex wait should have reurned bad state");
+    ASSERT_EQ(rc, MX_ERR_BAD_STATE, "Futex wait should have reurned bad state");
     END_TEST;
 }
 
@@ -29,7 +29,7 @@ static bool test_futex_wait_timeout() {
     BEGIN_TEST;
     int futex_value = 123;
     mx_status_t rc = mx_futex_wait(&futex_value, futex_value, 0);
-    ASSERT_EQ(rc, ERR_TIMED_OUT, "Futex wait should have reurned timeout");
+    ASSERT_EQ(rc, MX_ERR_TIMED_OUT, "Futex wait should have reurned timeout");
     END_TEST;
 }
 
@@ -41,7 +41,7 @@ static bool test_futex_wait_timeout_elapsed() {
     for (int i = 0; i < 5; ++i) {
         mx_time_t now = mx_time_get(MX_CLOCK_MONOTONIC);
         mx_status_t rc = mx_futex_wait(&futex_value, 0, mx_deadline_after(kRelativeDeadline));
-        ASSERT_EQ(rc, ERR_TIMED_OUT, "wait should time out");
+        ASSERT_EQ(rc, MX_ERR_TIMED_OUT, "wait should time out");
         mx_time_t elapsed = mx_time_get(MX_CLOCK_MONOTONIC) - now;
         if (elapsed < kRelativeDeadline) {
             unittest_printf("\nelapsed %" PRIu64
@@ -58,7 +58,7 @@ static bool test_futex_wait_bad_address() {
     BEGIN_TEST;
     // Check that the wait address is checked for validity.
     mx_status_t rc = mx_futex_wait(nullptr, 123, MX_TIME_INFINITE);
-    ASSERT_EQ(rc, ERR_INVALID_ARGS, "Futex wait should have reurned invalid_arg");
+    ASSERT_EQ(rc, MX_ERR_INVALID_ARGS, "Futex wait should have reurned invalid_arg");
     END_TEST;
 }
 
@@ -93,9 +93,9 @@ public:
             // kill_thread() was used, so the thrd_t is in undefined state.
             // Use the kernel handle to ensure the thread has died.
             EXPECT_EQ(mx_object_wait_one(handle_, MX_THREAD_TERMINATED,
-                                         MX_TIME_INFINITE, NULL), NO_ERROR,
+                                         MX_TIME_INFINITE, NULL), MX_OK,
                       "mx_object_wait_one failed on killed thread");
-            EXPECT_EQ(mx_handle_close(handle_), NO_ERROR,
+            EXPECT_EQ(mx_handle_close(handle_), MX_OK,
                       "mx_handle_close failed on killed thread's handle");
             // The thrd_t and state associated with it is leaked at this point.
         } else {
@@ -129,8 +129,12 @@ public:
         EXPECT_EQ(handle_, MX_HANDLE_INVALID, "kill_thread called twice??");
         EXPECT_EQ(mx_handle_duplicate(thrd_get_mx_handle(thread_),
                                       MX_RIGHT_SAME_RIGHTS, &handle_),
-                  NO_ERROR, "mx_handle_duplicate failed on thread handle");
-        EXPECT_EQ(mx_task_kill(handle_), NO_ERROR, "mx_task_kill() failed");
+                  MX_OK, "mx_handle_duplicate failed on thread handle");
+        EXPECT_EQ(mx_task_kill(handle_), MX_OK, "mx_task_kill() failed");
+    }
+
+    mx_handle_t get_thread_handle() {
+        return thrd_get_mx_handle(thread_);
     }
 
 private:
@@ -142,9 +146,9 @@ private:
         mx_status_t rc = mx_futex_wait(const_cast<int*>(thread->futex_addr_),
                                        *thread->futex_addr_, deadline);
         if (thread->timeout_in_ns_ == MX_TIME_INFINITE) {
-            EXPECT_EQ(rc, NO_ERROR, "Error while wait");
+            EXPECT_EQ(rc, MX_OK, "Error while wait");
         } else {
-            EXPECT_EQ(rc, ERR_TIMED_OUT, "wait should have timedout");
+            EXPECT_EQ(rc, MX_ERR_TIMED_OUT, "wait should have timedout");
         }
         thread->state_ = STATE_WAIT_RETURNED;
         return 0;
@@ -170,7 +174,7 @@ void check_futex_wake(volatile int* futex_addr, int nwake) {
     (*futex_addr)++;
 
     mx_status_t rc = mx_futex_wake(const_cast<int*>(futex_addr), nwake);
-    EXPECT_EQ(rc, NO_ERROR, "error during futex wait");
+    EXPECT_EQ(rc, MX_OK, "error during futex wait");
 }
 
 // Test that we can wake up a single thread.
@@ -241,7 +245,7 @@ bool test_futex_unqueued_on_timeout() {
     volatile int futex_value = 1;
     mx_status_t rc = mx_futex_wait(const_cast<int*>(&futex_value),
                                    futex_value, mx_deadline_after(1));
-    ASSERT_EQ(rc, ERR_TIMED_OUT, "wait should have timedout");
+    ASSERT_EQ(rc, MX_ERR_TIMED_OUT, "wait should have timedout");
     TestThread thread(&futex_value);
     // If the earlier futex_wait() did not remove itself from the wait
     // queue properly, the following futex_wake() call will attempt to wake
@@ -258,7 +262,7 @@ bool test_futex_unqueued_on_timeout_2() {
     volatile int futex_value = 10;
     TestThread thread1(&futex_value);
     TestThread thread2(&futex_value, MX_MSEC(200));
-    ASSERT_TRUE(thread2.wait_for_timeout(), "");
+    ASSERT_TRUE(thread2.wait_for_timeout());
     // With the bug present, thread2 was removed but the futex wait queue's
     // tail pointer still points to thread2.  When another thread is
     // enqueued, it gets added to the thread2 node and lost.
@@ -277,7 +281,7 @@ bool test_futex_unqueued_on_timeout_3() {
     TestThread thread1(&futex_value, MX_MSEC(400));
     TestThread thread2(&futex_value);
     TestThread thread3(&futex_value);
-    ASSERT_TRUE(thread1.wait_for_timeout(), "");
+    ASSERT_TRUE(thread1.wait_for_timeout());
     // With the bug present, thread1 was removed but the futex wait queue
     // is set to the thread2 node, which has an invalid (null) tail
     // pointer.  When another thread is enqueued, we get a null pointer
@@ -297,7 +301,7 @@ bool test_futex_requeue_value_mismatch() {
     int futex_value2 = 200;
     mx_status_t rc = mx_futex_requeue(&futex_value1, 1, futex_value1 + 1,
                                             &futex_value2, 1);
-    ASSERT_EQ(rc, ERR_BAD_STATE, "requeue should have returned bad state");
+    ASSERT_EQ(rc, MX_ERR_BAD_STATE, "requeue should have returned bad state");
     END_TEST;
 }
 
@@ -306,7 +310,7 @@ bool test_futex_requeue_same_addr() {
     int futex_value = 100;
     mx_status_t rc = mx_futex_requeue(&futex_value, 1, futex_value,
                                             &futex_value, 1);
-    ASSERT_EQ(rc, ERR_INVALID_ARGS, "requeue should have returned invalid args");
+    ASSERT_EQ(rc, MX_ERR_INVALID_ARGS, "requeue should have returned invalid args");
     END_TEST;
 }
 
@@ -325,7 +329,7 @@ bool test_futex_requeue() {
     mx_status_t rc = mx_futex_requeue(
         const_cast<int*>(&futex_value1), 3, futex_value1,
         const_cast<int*>(&futex_value2), 2);
-    ASSERT_EQ(rc, NO_ERROR, "Error in requeue");
+    ASSERT_EQ(rc, MX_OK, "Error in requeue");
     // 3 of the threads should have been woken.
     thread1.assert_thread_woken();
     thread2.assert_thread_woken();
@@ -359,11 +363,11 @@ bool test_futex_requeue_unqueued_on_timeout() {
     mx_status_t rc = mx_futex_requeue(
         const_cast<int*>(&futex_value1), 0, futex_value1,
         const_cast<int*>(&futex_value2), INT_MAX);
-    ASSERT_EQ(rc, NO_ERROR, "Error in requeue");
+    ASSERT_EQ(rc, MX_OK, "Error in requeue");
     TestThread thread2(&futex_value2);
     // thread1 and thread2 should now both be waiting on futex_value2.
 
-    ASSERT_TRUE(thread1.wait_for_timeout(), "");
+    ASSERT_TRUE(thread1.wait_for_timeout());
     thread2.assert_thread_not_woken();
     // thread1 should have removed itself from futex_value2's wait queue,
     // so only thread2 should be waiting on futex_value2.  We can test that
@@ -394,33 +398,58 @@ bool test_futex_thread_killed() {
     END_TEST;
 }
 
+// Test that the futex_wait() syscall is restarted properly if the thread
+// calling it gets suspended and resumed.  (This tests for a bug where the
+// futex_wait() syscall would return MX_ERR_TIMED_OUT and not get restarted by
+// the syscall wrapper in the VDSO.)
+static bool test_futex_thread_suspended() {
+    BEGIN_TEST;
+    volatile int futex_value = 1;
+    TestThread thread(&futex_value);
+
+    ASSERT_EQ(mx_task_suspend(thread.get_thread_handle()), MX_OK);
+    // Wait some time for the thread suspension to take effect.
+    struct timespec wait_time = {0, 10 * 1000000 /* nanoseconds */};
+    ASSERT_EQ(nanosleep(&wait_time, NULL), 0, "Error during sleep");
+
+    ASSERT_EQ(mx_task_resume(thread.get_thread_handle(), 0), MX_OK);
+    // Wait some time for the thread to resume and execute.
+    ASSERT_EQ(nanosleep(&wait_time, NULL), 0, "Error during sleep");
+
+    thread.assert_thread_not_woken();
+    check_futex_wake(&futex_value, 1);
+    thread.assert_thread_woken();
+
+    END_TEST;
+}
+
 // Test that misaligned pointers cause futex syscalls to return a failure.
 static bool test_futex_misaligned() {
-  BEGIN_TEST;
+    BEGIN_TEST;
 
-  // Make sure the whole thing is aligned, so the 'futex' member will
-  // definitely be misaligned.
-  alignas(mx_futex_t) struct {
-      uint8_t misalign;
-      mx_futex_t futex[2];
-  } __attribute__((packed)) buffer;
-  mx_futex_t* const futex = &buffer.futex[0];
-  mx_futex_t* const futex_2 = &buffer.futex[1];
-  ASSERT_GT(alignof(mx_futex_t), 1, "");
-  ASSERT_NEQ((uintptr_t)futex % alignof(mx_futex_t), 0, "");
-  ASSERT_NEQ((uintptr_t)futex_2 % alignof(mx_futex_t), 0, "");
+    // Make sure the whole thing is aligned, so the 'futex' member will
+    // definitely be misaligned.
+    alignas(mx_futex_t) struct {
+        uint8_t misalign;
+        mx_futex_t futex[2];
+    } __attribute__((packed)) buffer;
+    mx_futex_t* const futex = &buffer.futex[0];
+    mx_futex_t* const futex_2 = &buffer.futex[1];
+    ASSERT_GT(alignof(mx_futex_t), 1);
+    ASSERT_NE((uintptr_t)futex % alignof(mx_futex_t), 0);
+    ASSERT_NE((uintptr_t)futex_2 % alignof(mx_futex_t), 0);
 
-  // mx_futex_requeue might check the waited-for value before it
-  // checks the second futex's alignment, so make sure the call is
-  // valid other than the alignment.  (Also don't ask anybody to
-  // look at uninitialized stack space!)
-  memset(&buffer, 0, sizeof(buffer));
+    // mx_futex_requeue might check the waited-for value before it
+    // checks the second futex's alignment, so make sure the call is
+    // valid other than the alignment.  (Also don't ask anybody to
+    // look at uninitialized stack space!)
+    memset(&buffer, 0, sizeof(buffer));
 
-  ASSERT_EQ(mx_futex_wait(futex, 0, MX_TIME_INFINITE), ERR_INVALID_ARGS, "");
-  ASSERT_EQ(mx_futex_wake(futex, 1), ERR_INVALID_ARGS, "");
-  ASSERT_EQ(mx_futex_requeue(futex, 1, 0, futex_2, 1), ERR_INVALID_ARGS, "");
+    ASSERT_EQ(mx_futex_wait(futex, 0, MX_TIME_INFINITE), MX_ERR_INVALID_ARGS);
+    ASSERT_EQ(mx_futex_wake(futex, 1), MX_ERR_INVALID_ARGS);
+    ASSERT_EQ(mx_futex_requeue(futex, 1, 0, futex_2, 1), MX_ERR_INVALID_ARGS);
 
-  END_TEST;
+    END_TEST;
 }
 
 static void log(const char* str) {
@@ -513,6 +542,7 @@ RUN_TEST(test_futex_requeue_same_addr);
 RUN_TEST(test_futex_requeue);
 RUN_TEST(test_futex_requeue_unqueued_on_timeout);
 RUN_TEST(test_futex_thread_killed);
+RUN_TEST(test_futex_thread_suspended);
 RUN_TEST(test_futex_misaligned);
 RUN_TEST(test_event_signaling);
 END_TEST_CASE(futex_tests)

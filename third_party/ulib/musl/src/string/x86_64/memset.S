@@ -6,7 +6,6 @@
 
 // %rax = memset(%rdi, %rsi, %rdx)
 ENTRY(memset)
-
     // Save return value.
     mov %rdi, %r11
 
@@ -16,5 +15,7 @@ ENTRY(memset)
 
     mov %r11, %rax
     ret
-
 END(memset)
+
+ALIAS(memset, __unsanitized_memset)
+ASAN_WEAK_ALIAS(memset)

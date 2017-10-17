@@ -29,27 +29,44 @@
 #define X86_EFER_LME                    0x00000100 /* long mode enable */
 #define X86_EFER_LMA                    0x00000400 /* long mode active */
 #define X86_EFER_NXE                    0x00000800 /* to enable execute disable bit */
-#define X86_MSR_IA32_APIC_BASE          0x0000001b /* APIC base physical address model-specific register */
-#define X86_MSR_IA32_TSC_ADJUST         0x0000003b /* TSC adjust model-specific register */
-#define X86_MSR_IA32_MTRRCAP            0x000000fe /* MTRR capability model-specific register */
-#define X86_MSR_IA32_MTRR_PHYSBASE0     0x00000200 /* MTRR PhysBase0 model-specific register */
-#define X86_MSR_IA32_MTRR_PHYSMASK0     0x00000201 /* MTRR PhysMask0 model-specific register */
-#define X86_MSR_IA32_MTRR_PHYSMASK9     0x00000213 /* MTRR PhysMask9 model-specific register */
-#define X86_MSR_IA32_MTRR_DEF_TYPE      0x000002ff /* MTRR default type model-specific register */
-#define X86_MSR_IA32_MTRR_FIX64K_00000  0x00000250 /* MTRR FIX64K_00000 model-specific register */
-#define X86_MSR_IA32_MTRR_FIX16K_80000  0x00000258 /* MTRR FIX16K_80000 model-specific register */
-#define X86_MSR_IA32_MTRR_FIX16K_A0000  0x00000259 /* MTRR FIX16K_A0000 model-specific register */
-#define X86_MSR_IA32_MTRR_FIX4K_C0000   0x00000268 /* MTRR FIX4K_C0000 model-specific register */
-#define X86_MSR_IA32_MTRR_FIX4K_F8000   0x0000026f /* MTRR FIX4K_F8000 model-specific register */
-#define X86_MSR_IA32_PAT                0x00000277 /* PAT model-specific register */
-#define X86_MSR_IA32_TSC_DEADLINE       0x000006e0 /* TSC deadline model-specific register */
-#define X86_MSR_IA32_EFER               0xc0000080 /* EFER model-specific register */
+#define X86_MSR_IA32_PLATFORM_ID        0x00000017 /* platform id */
+#define X86_MSR_IA32_APIC_BASE          0x0000001b /* APIC base physical address */
+#define X86_MSR_IA32_SMI_COUNT          0x00000034 /* SMI count */
+#define X86_MSR_IA32_TSC_ADJUST         0x0000003b /* TSC adjust */
+#define X86_MSR_IA32_PPERF              0x0000064e /* productive performance count */
+#define X86_MSR_IA32_BIOS_SIGN_ID       0x0000008b /* BIOS update signature */
+#define X86_MSR_IA32_MTRRCAP            0x000000fe /* MTRR capability */
+#define X86_MSR_IA32_SYSENTER_CS        0x00000174 /* SYSENTER CS */
+#define X86_MSR_IA32_SYSENTER_ESP       0x00000175 /* SYSENTER ESP */
+#define X86_MSR_IA32_SYSENTER_EIP       0x00000176 /* SYSENTER EIP */
+#define X86_MSR_IA32_MCG_CAP            0x00000179 /* global machine check capability */
+#define X86_MSR_IA32_MCG_STATUS         0x0000017a /* global machine check status */
+#define X86_MSR_IA32_MISC_ENABLE        0x000001a0 /* enable/disable misc processor features */
+#define X86_MSR_IA32_TEMPERATURE_TARGET 0x000001a2 /* temperature target and offset */
+#define X86_MSR_IA32_MTRR_PHYSBASE0     0x00000200 /* MTRR PhysBase0 */
+#define X86_MSR_IA32_MTRR_PHYSMASK0     0x00000201 /* MTRR PhysMask0 */
+#define X86_MSR_IA32_MTRR_PHYSMASK9     0x00000213 /* MTRR PhysMask9 */
+#define X86_MSR_IA32_MTRR_DEF_TYPE      0x000002ff /* MTRR default type */
+#define X86_MSR_IA32_MTRR_FIX64K_00000  0x00000250 /* MTRR FIX64K_00000 */
+#define X86_MSR_IA32_MTRR_FIX16K_80000  0x00000258 /* MTRR FIX16K_80000 */
+#define X86_MSR_IA32_MTRR_FIX16K_A0000  0x00000259 /* MTRR FIX16K_A0000 */
+#define X86_MSR_IA32_MTRR_FIX4K_C0000   0x00000268 /* MTRR FIX4K_C0000 */
+#define X86_MSR_IA32_MTRR_FIX4K_F8000   0x0000026f /* MTRR FIX4K_F8000 */
+#define X86_MSR_IA32_PAT                0x00000277 /* PAT */
+#define X86_MSR_IA32_RAPL_POWER_UNIT    0x00000606 /* unit multipliers in RAPL interfaces */
+#define X86_MSR_IA32_TSC_DEADLINE       0x000006e0 /* TSC deadline */
+#define X86_MSR_IA32_EFER               0xc0000080 /* EFER */
 #define X86_MSR_IA32_STAR               0xc0000081 /* system call address */
 #define X86_MSR_IA32_LSTAR              0xc0000082 /* long mode call address */
+#define X86_MSR_IA32_CSTAR              0xc0000083 /* ia32-e compat call address */
 #define X86_MSR_IA32_FMASK              0xc0000084 /* system call flag mask */
 #define X86_MSR_IA32_FS_BASE            0xc0000100 /* fs base address */
 #define X86_MSR_IA32_GS_BASE            0xc0000101 /* gs base address */
 #define X86_MSR_IA32_KERNEL_GS_BASE     0xc0000102 /* kernel gs base */
+#define X86_MSR_IA32_TSC_AUX            0xc0000103 /* TSC aux */
+#define X86_MSR_IA32_PM_ENABLE          0x00000770 /* enable/disable HWP */
+#define X86_MSR_IA32_HWP_CAPABILITIES   0x00000771 /* HWP performance range enumeration */
+#define X86_MSR_IA32_HWP_REQUEST        0x00000774 /* power manage control hints */
 #define X86_CR4_PSE                     0xffffffef /* Disabling PSE bit in the CR4 */
 
 /* EFLAGS/RFLAGS */
@@ -81,7 +98,10 @@
                                          X86_FLAGS_SF | \
                                          X86_FLAGS_TF | \
                                          X86_FLAGS_DF | \
-                                         X86_FLAGS_OF)
+                                         X86_FLAGS_OF | \
+                                         X86_FLAGS_NT | \
+                                         X86_FLAGS_AC | \
+                                         X86_FLAGS_ID)
 
 #ifndef ASSEMBLY
 

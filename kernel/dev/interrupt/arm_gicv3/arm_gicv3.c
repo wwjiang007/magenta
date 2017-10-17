@@ -11,6 +11,7 @@
 #include <string.h>
 #include <dev/interrupt/arm_gic.h>
 #include <kernel/thread.h>
+#include <kernel/stats.h>
 #include <kernel/vm.h>
 #include <lk/init.h>
 #include <dev/interrupt.h>
@@ -83,7 +84,7 @@ static void gic_set_enable(uint vector, bool enable)
 }
 
 static void gic_init_percpu_early(void)
-{   
+{
     uint cpu = arch_curr_cpu_num();
 
     // configure sgi/ppi as non-secure group 1
@@ -155,14 +156,14 @@ static void gic_init(void)
 static status_t arm_gic_sgi(u_int irq, u_int flags, u_int cpu_mask)
 {
     if (flags != ARM_GIC_SGI_FLAG_NS) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     if (irq >= 16) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
-    smp_wmb();
+    smp_mb();
 
     uint cpu = 0;
     uint cluster = 0;
@@ -185,27 +186,27 @@ static status_t arm_gic_sgi(u_int irq, u_int flags, u_int cpu_mask)
         cluster += 1;
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static status_t gic_mask_interrupt(unsigned int vector)
 {
     if (vector >= gic_max_int)
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     gic_set_enable(vector, false);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static status_t gic_unmask_interrupt(unsigned int vector)
 {
     if (vector >= gic_max_int)
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     gic_set_enable(vector, true);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static status_t gic_configure_interrupt(unsigned int vector,
@@ -213,12 +214,12 @@ static status_t gic_configure_interrupt(unsigned int vector,
                              enum interrupt_polarity pol)
 {
     if (vector <= 15 || vector >= gic_max_int) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     if (pol != IRQ_POLARITY_ACTIVE_HIGH) {
         // TODO: polarity should actually be configure through a GPIO controller
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 
     uint reg = vector / 16;
@@ -231,7 +232,7 @@ static status_t gic_configure_interrupt(unsigned int vector,
     }
     GICREG(0, GICD_ICFGR(reg)) = val;
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static status_t gic_get_interrupt_config(unsigned int vector,
@@ -239,12 +240,12 @@ static status_t gic_get_interrupt_config(unsigned int vector,
                               enum interrupt_polarity* pol)
 {
     if (vector >= gic_max_int)
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     if (tm)  *tm  = IRQ_TRIGGER_MODE_EDGE;
     if (pol) *pol = IRQ_POLARITY_ACTIVE_HIGH;
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static unsigned int gic_remap_interrupt(unsigned int vector) {
@@ -265,7 +266,7 @@ static enum handler_return gic_handle_irq(iframe* frame) {
 
     // tracking external hardware irqs in this variable
     if (vector >= 32)
-        THREAD_STATS_INC(interrupts);
+        CPU_STATS_INC(interrupts);
 
     uint cpu = arch_curr_cpu_num();
 
@@ -303,7 +304,7 @@ static status_t gic_send_ipi(mp_cpu_mask_t target, mp_ipi_t ipi) {
         arm_gic_sgi(gic_ipi_num, ARM_GIC_SGI_FLAG_NS, target);
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static enum handler_return arm_ipi_generic_handler(void *arg) {
@@ -365,19 +366,19 @@ static void arm_gic_v3_init(mdi_node_ref_t* node, uint level) {
     mdi_node_ref_t child;
     mdi_each_child(node, &child) {
         switch (mdi_id(&child)) {
-        case MDI_KERNEL_DRIVERS_ARM_GIC_V3_BASE_VIRT:
+        case MDI_BASE_VIRT:
             got_gic_base_virt = !mdi_node_uint64(&child, &gic_base_virt);
             break;
-        case MDI_KERNEL_DRIVERS_ARM_GIC_V3_GICD_OFFSET:
+        case MDI_ARM_GIC_V3_GICD_OFFSET:
             got_gicd_offset = !mdi_node_uint64(&child, &arm_gicv3_gicd_offset);
             break;
-        case MDI_KERNEL_DRIVERS_ARM_GIC_V3_GICR_OFFSET:
+        case MDI_ARM_GIC_V3_GICR_OFFSET:
             got_gicr_offset = !mdi_node_uint64(&child, &arm_gicv3_gicr_offset);
             break;
-        case MDI_KERNEL_DRIVERS_ARM_GIC_V3_GICR_STRIDE:
+        case MDI_ARM_GIC_V3_GICR_STRIDE:
             got_gicr_stride = !mdi_node_uint64(&child, &arm_gicv3_gicr_stride);
             break;
-        case MDI_KERNEL_DRIVERS_ARM_GIC_V3_IPI_BASE:
+        case MDI_ARM_GIC_V3_IPI_BASE:
             got_ipi_base = !mdi_node_uint32(&child, &ipi_base);
             break;
         }
@@ -415,4 +416,4 @@ static void arm_gic_v3_init(mdi_node_ref_t* node, uint level) {
     register_int_handler(MP_IPI_HALT + ipi_base, &arm_ipi_halt_handler, 0);
 }
 
-LK_PDEV_INIT(arm_gic_v3_init, MDI_KERNEL_DRIVERS_ARM_GIC_V3, arm_gic_v3_init, LK_INIT_LEVEL_PLATFORM_EARLY);
+LK_PDEV_INIT(arm_gic_v3_init, MDI_ARM_GIC_V3, arm_gic_v3_init, LK_INIT_LEVEL_PLATFORM_EARLY);

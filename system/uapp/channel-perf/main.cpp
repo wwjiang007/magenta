@@ -12,7 +12,8 @@
 
 #include <magenta/compiler.h>
 #include <magenta/syscalls.h>
-#include <mxtl/unique_ptr.h>
+#include <fbl/algorithm.h>
+#include <fbl/unique_ptr.h>
 
 namespace {
 
@@ -41,20 +42,20 @@ void do_test(uint32_t duration, const TestArgs& test_args) {
     // We'll write to mp[0] (and read from mp[1]).
     mx_handle_t mp[2] = {MX_HANDLE_INVALID, MX_HANDLE_INVALID};
     status = mx_channel_create(0u, &mp[0], &mp[1]);
-    assert(status == NO_ERROR);
+    assert(status == MX_OK);
 
     // We'll send/receive duplicates of this handle.
     mx_handle_t event;
-    assert(mx_event_create(0u, &event) == NO_ERROR);
+    assert(mx_event_create(0u, &event) == MX_OK);
 
     // Storage space for our messages' stuff.
-    mxtl::unique_ptr<uint8_t[]> data;
+    fbl::unique_ptr<uint8_t[]> data;
     if (test_args.size) {
         data.reset(new uint8_t[test_args.size]);
         for (uint32_t i = 0; i < test_args.size; i++)
             data[i] = static_cast<uint8_t>(i);
     }
-    mxtl::unique_ptr<mx_handle_t[]> handles;
+    fbl::unique_ptr<mx_handle_t[]> handles;
     if (test_args.handles)
         handles.reset(new mx_handle_t[test_args.handles]);
 
@@ -63,7 +64,7 @@ void do_test(uint32_t duration, const TestArgs& test_args) {
         duplicate_handles(test_args.handles, event, handles.get());
         status = mx_channel_write(mp[0], 0u, data.get(), test_args.size,
                                   handles.get(), test_args.handles);
-        assert(status == NO_ERROR);
+        assert(status == MX_OK);
     }
 
     duplicate_handles(test_args.handles, event, handles.get());
@@ -77,13 +78,13 @@ void do_test(uint32_t duration, const TestArgs& test_args) {
         for (uint32_t i = 0; i < big_it_size; i++) {
             status = mx_channel_write(mp[0], 0, data.get(), test_args.size,
                                       handles.get(), test_args.handles);
-            assert(status == NO_ERROR);
+            assert(status == MX_OK);
 
             uint32_t r_size = test_args.size;
             uint32_t r_handles = test_args.handles;
             status = mx_channel_read(mp[1], 0u, data.get(), handles.get(), r_size,
                                      r_handles, &r_size, &r_handles);
-            assert(status == NO_ERROR);
+            assert(status == MX_OK);
             assert(r_size == test_args.size);
             assert(r_handles == test_args.handles);
         }
@@ -95,14 +96,14 @@ void do_test(uint32_t duration, const TestArgs& test_args) {
 
     for (uint32_t i = 0; i < test_args.handles; i++) {
         status = mx_handle_close(handles[i]);
-        assert(status == NO_ERROR);
+        assert(status == MX_OK);
     }
     status = mx_handle_close(event);
-    assert(status == NO_ERROR);
+    assert(status == MX_OK);
     status = mx_handle_close(mp[0]);
-    assert(status == NO_ERROR);
+    assert(status == MX_OK);
     status = mx_handle_close(mp[1]);
-    assert(status == NO_ERROR);
+    assert(status == MX_OK);
 
     double real_duration = static_cast<double>(end_ns - start_ns) / 1000000000.0;
     double its_per_second = static_cast<double>(big_its) * big_it_size / real_duration;
@@ -214,7 +215,7 @@ int main(int argc, char** argv) {
                 {100, 0, 1},
                 {1000, 0, 1},
             };
-            for (size_t i = 0; i < countof(suite); i++)
+            for (size_t i = 0; i < fbl::count_of(suite); i++)
                 do_test(duration, suite[i]);
         } else {
             do_test(duration, test_args);

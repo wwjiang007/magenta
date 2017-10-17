@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,52 +10,55 @@
 
 #include <fs/trace.h>
 
-#include <mxalloc/new.h>
-#include <mxtl/ref_ptr.h>
-#include <mxtl/unique_ptr.h>
+#include <fbl/alloc_checker.h>
+#include <fbl/ref_ptr.h>
+#include <fbl/unique_ptr.h>
+#include <magenta/device/device.h>
 
 #include "minfs.h"
 #include "minfs-private.h"
 
 namespace minfs {
 
-mx_status_t Bcache::Readblk(uint32_t bno, void* data) {
+mx_status_t Bcache::Readblk(blk_t bno, void* data) {
     off_t off = bno * kMinfsBlockSize;
-    trace(IO, "readblk() bno=%u off=%#llx\n", bno, (unsigned long long)off);
+    assert(off / kMinfsBlockSize == bno); // Overflow
+    FS_TRACE(IO, "readblk() bno=%u off=%#llx\n", bno, (unsigned long long)off);
     if (lseek(fd_, off, SEEK_SET) < 0) {
-        error("minfs: cannot seek to block %u\n", bno);
-        return ERR_IO;
+        FS_TRACE_ERROR("minfs: cannot seek to block %u\n", bno);
+        return MX_ERR_IO;
     }
     if (read(fd_, data, kMinfsBlockSize) != kMinfsBlockSize) {
-        error("minfs: cannot read block %u\n", bno);
-        return ERR_IO;
+        FS_TRACE_ERROR("minfs: cannot read block %u\n", bno);
+        return MX_ERR_IO;
     }
-    return NO_ERROR;
+    return MX_OK;
 }
 
-mx_status_t Bcache::Writeblk(uint32_t bno, const void* data) {
+mx_status_t Bcache::Writeblk(blk_t bno, const void* data) {
     off_t off = bno * kMinfsBlockSize;
-    trace(IO, "writeblk() bno=%u off=%#llx\n", bno, (unsigned long long)off);
+    assert(off / kMinfsBlockSize == bno); // Overflow
+    FS_TRACE(IO, "writeblk() bno=%u off=%#llx\n", bno, (unsigned long long)off);
     if (lseek(fd_, off, SEEK_SET) < 0) {
-        error("minfs: cannot seek to block %u\n", bno);
-        return ERR_IO;
+        FS_TRACE_ERROR("minfs: cannot seek to block %u\n", bno);
+        return MX_ERR_IO;
     }
     if (write(fd_, data, kMinfsBlockSize) != kMinfsBlockSize) {
-        error("minfs: cannot write block %u\n", bno);
-        return ERR_IO;
+        FS_TRACE_ERROR("minfs: cannot write block %u\n", bno);
+        return MX_ERR_IO;
     }
-    return NO_ERROR;
+    return MX_OK;
 }
 
 int Bcache::Sync() {
     return fsync(fd_);
 }
 
-mx_status_t Bcache::Create(mxtl::unique_ptr<Bcache>* out, int fd, uint32_t blockmax) {
-    AllocChecker ac;
-    mxtl::unique_ptr<Bcache> bc(new (&ac) Bcache(fd, blockmax));
+mx_status_t Bcache::Create(fbl::unique_ptr<Bcache>* out, int fd, uint32_t blockmax) {
+    fbl::AllocChecker ac;
+    fbl::unique_ptr<Bcache> bc(new (&ac) Bcache(fd, blockmax));
     if (!ac.check()) {
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
 #ifdef __Fuchsia__
     mx_status_t status;
@@ -66,22 +70,26 @@ mx_status_t Bcache::Create(mxtl::unique_ptr<Bcache>* out, int fd, uint32_t block
     } else if ((r = ioctl_block_alloc_txn(fd, &bc->txnid_)) < 0) {
         mx_handle_close(fifo);
         return static_cast<mx_status_t>(r);
-    } else if ((status = block_fifo_create_client(fifo, &bc->fifo_client_)) != NO_ERROR) {
+    } else if ((status = block_fifo_create_client(fifo, &bc->fifo_client_)) != MX_OK) {
         ioctl_block_free_txn(fd, &bc->txnid_);
         mx_handle_close(fifo);
         return status;
     }
 #endif
 
-    *out = mxtl::move(bc);
-    return NO_ERROR;
+    *out = fbl::move(bc);
+    return MX_OK;
 }
 
 #ifdef __Fuchsia__
+ssize_t Bcache::GetDevicePath(char* out, size_t out_len) {
+    return ioctl_device_get_topo_path(fd_, out, out_len);
+}
+
 mx_status_t Bcache::AttachVmo(mx_handle_t vmo, vmoid_t* out) {
     mx_handle_t xfer_vmo;
     mx_status_t status = mx_handle_duplicate(vmo, MX_RIGHT_SAME_RIGHTS, &xfer_vmo);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         return status;
     }
     ssize_t r = ioctl_block_attach_vmo(fd_, &xfer_vmo, out);
@@ -89,7 +97,7 @@ mx_status_t Bcache::AttachVmo(mx_handle_t vmo, vmoid_t* out) {
         mx_handle_close(xfer_vmo);
         return static_cast<mx_status_t>(r);
     }
-    return NO_ERROR;
+    return MX_OK;
 }
 #endif
 

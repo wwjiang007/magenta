@@ -74,25 +74,24 @@ to verify it is that handler. Anyone with appropriate rights
 can resume a thread from an exception. It is up to exception
 handlers to not trip over each other, as well as all other
 software calling **mx_task_resume**() with **MX_RESUME_EXCEPTION**.
-
-[//]: MG-562 documents this issue
+(MG-562 documents this issue.)
 
 ## RETURN VALUE
 
-**task_resume**() returns **NO_ERROR** on success.
+**task_resume**() returns **MX_OK** on success.
 In the event of failure, a negative error value is returned.
 
 ## ERRORS
 
-**ERR_BAD_HANDLE** *handle* is not a valid handle.
+**MX_ERR_BAD_HANDLE** *handle* is not a valid handle.
 
-**ERR_WRONG_TYPE** *handle* is not a thread handle.
+**MX_ERR_WRONG_TYPE** *handle* is not a thread handle.
 
-**ERR_BAD_STATE**  The task is not in a state where resuming is possible (e.g.
+**MX_ERR_BAD_STATE**  The task is not in a state where resuming is possible (e.g.
 it is dead or **MX_RESUME_EXCEPTION** was passed but the thread is not in an
 exception).
 
-**ERR_INVALID_ARGS** *options* is not a valid combination.
+**MX_ERR_INVALID_ARGS** *options* is not a valid combination.
 
 ## LIMITATIONS
 

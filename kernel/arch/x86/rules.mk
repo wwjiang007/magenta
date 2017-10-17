@@ -19,9 +19,9 @@ KERNEL_ASPACE_BASE ?= 0xffffff8000000000UL # -512GB
 KERNEL_ASPACE_SIZE ?= 0x0000008000000000UL
 USER_ASPACE_BASE   ?= 0x0000000001000000UL # 16MB
 # We set the top of user address space to be (1 << 47) - 4k.  See
-# docs/magenta/sysret_problem.md for why we subtract 4k here.
-# Subtracting USER_ASPACE_BASE from that value gives the value for
-# USER_ASPACE_SIZE below.
+# docs/sysret_problem.md for why we subtract 4k here.  Subtracting
+# USER_ASPACE_BASE from that value gives the value for USER_ASPACE_SIZE
+# below.
 USER_ASPACE_SIZE   ?= 0x00007ffffefff000UL
 SUBARCH_DIR := $(LOCAL_DIR)/64
 
@@ -33,8 +33,7 @@ KERNEL_DEFINES += \
 	KERNEL_BASE=$(KERNEL_BASE) \
 	KERNEL_SIZE=$(KERNEL_SIZE) \
 	KERNEL_LOAD_OFFSET=$(KERNEL_LOAD_OFFSET) \
-	PHYS_HEADER_LOAD_OFFSET=$(PHYS_HEADER_LOAD_OFFSET) \
-	PLATFORM_HAS_DYNAMIC_TIMER=1
+	PHYS_HEADER_LOAD_OFFSET=$(PHYS_HEADER_LOAD_OFFSET)
 
 GLOBAL_DEFINES += \
 	KERNEL_ASPACE_BASE=$(KERNEL_ASPACE_BASE) \
@@ -46,23 +45,24 @@ MODULE_SRCS += \
 	$(SUBARCH_DIR)/start.S \
 	$(SUBARCH_DIR)/asm.S \
 	$(SUBARCH_DIR)/exceptions.S \
-	$(SUBARCH_DIR)/hypervisor.S \
 	$(SUBARCH_DIR)/ops.S \
+	$(SUBARCH_DIR)/mexec.S \
 	$(SUBARCH_DIR)/syscall.S \
 	$(SUBARCH_DIR)/user_copy.S \
 	$(SUBARCH_DIR)/uspace_entry.S \
 \
 	$(LOCAL_DIR)/arch.cpp \
+	$(LOCAL_DIR)/bp_percpu.c \
 	$(LOCAL_DIR)/cache.cpp \
 	$(LOCAL_DIR)/cpu_topology.cpp \
 	$(LOCAL_DIR)/debugger.cpp \
 	$(LOCAL_DIR)/descriptor.cpp \
+	$(LOCAL_DIR)/timer_freq.cpp \
 	$(LOCAL_DIR)/faults.cpp \
 	$(LOCAL_DIR)/feature.cpp \
 	$(LOCAL_DIR)/gdt.S \
-	$(LOCAL_DIR)/mexec.S \
 	$(LOCAL_DIR)/header.S \
-	$(LOCAL_DIR)/hypervisor.cpp \
+	$(LOCAL_DIR)/hwp.cpp \
 	$(LOCAL_DIR)/idt.cpp \
 	$(LOCAL_DIR)/ioapic.cpp \
 	$(LOCAL_DIR)/ioport.cpp \
@@ -76,28 +76,21 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/thread.cpp \
 	$(LOCAL_DIR)/tsc.cpp \
 	$(LOCAL_DIR)/user_copy.cpp \
-	$(LOCAL_DIR)/vmexit.cpp \
 
 MODULE_DEPS += \
 	kernel/lib/bitmap \
-	kernel/lib/hypervisor \
+	kernel/lib/fbl \
+	kernel/object
 
 include $(LOCAL_DIR)/toolchain.mk
 
-# enable more if smp is requested
-ifeq ($(call TOBOOL,$(WITH_SMP)),true)
-
-SMP_MAX_CPUS ?= 16
-KERNEL_DEFINES += \
-	WITH_SMP=1
 MODULE_SRCS += \
 	$(SUBARCH_DIR)/bootstrap16.cpp \
 	$(SUBARCH_DIR)/smp.cpp \
 	$(SUBARCH_DIR)/start16.S
 
-endif
-
-# always set this to something
+# default to 16 cpu max support
+SMP_MAX_CPUS ?= 16
 KERNEL_DEFINES += \
 	SMP_MAX_CPUS=$(SMP_MAX_CPUS)
 
@@ -116,6 +109,7 @@ cc-option = $(shell if test -z "`$(1) $(2) -S -o /dev/null -xc /dev/null 2>&1`";
 # disable SSP if the compiler supports it; it will break stuff
 GLOBAL_CFLAGS += $(call cc-option,$(CC),-fno-stack-protector,)
 
+CLANG_ARCH := x86_64
 ifeq ($(call TOBOOL,$(USE_CLANG)),true)
 GLOBAL_LDFLAGS += -m elf_x86_64
 GLOBAL_MODULE_LDFLAGS += -m elf_x86_64
@@ -132,13 +126,6 @@ KERNEL_COMPILEFLAGS += -mno-80387 -mno-fp-ret-in-387
 endif
 KERNEL_DEFINES += WITH_NO_FP=1
 
-ifeq ($(call TOBOOL,$(USE_CLANG)),true)
-ifndef ARCH_x86_64_CLANG_TARGET
-ARCH_x86_64_CLANG_TARGET := x86_64-fuchsia
-endif
-GLOBAL_COMPILEFLAGS += --target=$(ARCH_x86_64_CLANG_TARGET)
-endif
-
 KERNEL_COMPILEFLAGS += -mcmodel=kernel
 KERNEL_COMPILEFLAGS += -mno-red-zone
 
@@ -150,13 +137,6 @@ KERNEL_COMPILEFLAGS += $(SAFESTACK)
 ifeq ($(call TOBOOL,$(USE_CLANG)),false)
 KERNEL_COMPILEFLAGS += -mskip-rax-setup
 endif
-
-# Turn on -fasynchronous-unwind-tables to get .eh_frame.
-# [While this is the default on x86 we make this explicit.]
-# This is necessary for unwinding through optimized code.
-# Note: If you wish to turn off .eh_frame on x86 you need to both
-# -fno-exceptions and -fno-asynchronous-unwind-tables.
-GLOBAL_COMPILEFLAGS += -fasynchronous-unwind-tables
 
 ARCH_OPTFLAGS := -O2
 

@@ -21,13 +21,13 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/asm.S \
 	$(LOCAL_DIR)/cache-ops.S \
 	$(LOCAL_DIR)/debugger.cpp \
+	$(LOCAL_DIR)/efi.cpp \
 	$(LOCAL_DIR)/exceptions.S \
 	$(LOCAL_DIR)/exceptions_c.cpp \
 	$(LOCAL_DIR)/fpu.cpp \
-	$(LOCAL_DIR)/hypervisor.cpp \
 	$(LOCAL_DIR)/mexec.S \
 	$(LOCAL_DIR)/mmu.cpp \
-	$(LOCAL_DIR)/spinlock.S \
+	$(LOCAL_DIR)/spinlock.cpp \
 	$(LOCAL_DIR)/start.S \
 	$(LOCAL_DIR)/thread.cpp \
 	$(LOCAL_DIR)/user_copy.S \
@@ -35,6 +35,7 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/uspace_entry.S
 
 MODULE_DEPS += \
+	kernel/object \
 	third_party/lib/fdt \
 
 KERNEL_DEFINES += \
@@ -42,40 +43,21 @@ KERNEL_DEFINES += \
 	ARM_ISA_ARMV8=1 \
 	ARM_ISA_ARMV8A=1
 
-# if its requested we build with SMP, arm generically supports 4 cpus
-
-ifeq ($(call TOBOOL,$(WITH_SMP)),true)
-
 # unless otherwise specified, limit to 2 clusters and 8 CPUs per cluster
 SMP_CPU_MAX_CLUSTERS ?= 2
 SMP_CPU_MAX_CLUSTER_CPUS ?= 8
 
 SMP_MAX_CPUS ?= 16
-SMP_WITH_SMP ?= 1
 
 MODULE_SRCS += \
-    $(LOCAL_DIR)/mp.cpp
-
-else
-
-SMP_CPU_MAX_CLUSTERS ?= 1
-SMP_CPU_MAX_CLUSTER_CPUS ?= 1
-SMP_MAX_CPUS ?= 1
-SMP_WITH_SMP ?= 0
-
-endif
+	$(LOCAL_DIR)/mp.cpp
 
 KERNEL_DEFINES += \
-    WITH_SMP=$(SMP_WITH_SMP) \
-    SMP_MAX_CPUS=$(SMP_MAX_CPUS) \
-    SMP_CPU_MAX_CLUSTERS=$(SMP_CPU_MAX_CLUSTERS) \
-    SMP_CPU_MAX_CLUSTER_CPUS=$(SMP_CPU_MAX_CLUSTER_CPUS) \
+	SMP_MAX_CPUS=$(SMP_MAX_CPUS) \
+	SMP_CPU_MAX_CLUSTERS=$(SMP_CPU_MAX_CLUSTERS) \
+	SMP_CPU_MAX_CLUSTER_CPUS=$(SMP_CPU_MAX_CLUSTER_CPUS) \
 
 ARCH_OPTFLAGS := -O2
-
-# Turn on -fasynchronous-unwind-tables to get .eh_frame.
-# This is necessary for unwinding through optimized code.
-GLOBAL_COMPILEFLAGS += -fasynchronous-unwind-tables
 
 KERNEL_ASPACE_BASE ?= 0xffff000000000000
 KERNEL_ASPACE_SIZE ?= 0x0001000000000000
@@ -83,17 +65,17 @@ USER_ASPACE_BASE   ?= 0x0000000001000000
 USER_ASPACE_SIZE   ?= 0x0000fffffe000000
 
 GLOBAL_DEFINES += \
-    KERNEL_ASPACE_BASE=$(KERNEL_ASPACE_BASE) \
-    KERNEL_ASPACE_SIZE=$(KERNEL_ASPACE_SIZE) \
-    USER_ASPACE_BASE=$(USER_ASPACE_BASE) \
-    USER_ASPACE_SIZE=$(USER_ASPACE_SIZE)
+	KERNEL_ASPACE_BASE=$(KERNEL_ASPACE_BASE) \
+	KERNEL_ASPACE_SIZE=$(KERNEL_ASPACE_SIZE) \
+	USER_ASPACE_BASE=$(USER_ASPACE_BASE) \
+	USER_ASPACE_SIZE=$(USER_ASPACE_SIZE)
 
 KERNEL_BASE ?= $(KERNEL_ASPACE_BASE)
 KERNEL_LOAD_OFFSET ?= 0
 
 KERNEL_DEFINES += \
-    KERNEL_BASE=$(KERNEL_BASE) \
-    KERNEL_LOAD_OFFSET=$(KERNEL_LOAD_OFFSET)
+	KERNEL_BASE=$(KERNEL_BASE) \
+	KERNEL_LOAD_OFFSET=$(KERNEL_LOAD_OFFSET)
 
 KERNEL_DEFINES += \
 	MEMBASE=$(MEMBASE) \
@@ -105,6 +87,7 @@ TOOLCHAIN_PREFIX := $(ARCH_$(ARCH)_TOOLCHAIN_PREFIX)
 
 ARCH_COMPILEFLAGS += $(ARCH_$(ARCH)_COMPILEFLAGS)
 
+CLANG_ARCH := aarch64
 ifeq ($(call TOBOOL,$(USE_CLANG)),true)
 GLOBAL_LDFLAGS += -m aarch64elf
 GLOBAL_MODULE_LDFLAGS += -m aarch64elf
@@ -120,17 +103,16 @@ KEEP_FRAME_POINTER_COMPILEFLAGS += -mno-omit-leaf-frame-pointer
 
 ifeq ($(call TOBOOL,$(USE_CLANG)),true)
 
-ifndef ARCH_arm64_CLANG_TARGET
-ARCH_arm64_CLANG_TARGET := aarch64-fuchsia
-endif
-GLOBAL_COMPILEFLAGS += --target=$(ARCH_arm64_CLANG_TARGET)
-
 KERNEL_COMPILEFLAGS += -mcmodel=kernel
 
 # Clang now supports -fsanitize=safe-stack with -mcmodel=kernel.
 KERNEL_COMPILEFLAGS += $(SAFESTACK)
 
 endif
+
+# tell the compiler to leave x18 alone so we can use it to point
+# at the current cpu structure
+KERNEL_COMPILEFLAGS += -ffixed-x18
 
 # make sure some bits were set up
 MEMVARS_SET := 0

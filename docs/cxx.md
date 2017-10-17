@@ -35,42 +35,53 @@ allowed.
   - Global constructors
     - Currently we have these for global data structures.
 
-## mxtl
-We have built our own template library, called *mxtl*, to
+## fbl
+We have built our own template library, called *fbl*, to
 address our particular needs. This library is split into two parts:
 
-1. [system/ulib/mxtl](../system/ulib/mxtl) which is usable from both
+1. [system/ulib/fbl](../system/ulib/fbl) which is usable from both
    kernel and userspace.
-2. [kernel/lib/mxtl](../kernel/lib/mxtl) which is usable only from
+2. [kernel/lib/fbl](../kernel/lib/fbl) which is usable only from
     the kernel.
 
-*mxtl* provides
+*fbl* provides
 
 - utility code
-  - [basic algorithms](../system/ulib/mxtl/include/mxtl/algorithm.h)
-  - [integer type limits](../system/ulib/mxtl/include/mxtl/limits.h)
-  - [type traits](../system/ulib/mxtl/include/mxtl/type_support.h)
-  - [atomics](../system/ulib/mxtl/include/mxtl/atomic.h)
+  - [basic algorithms](../system/ulib/fbl/include/fbl/algorithm.h)
+  - [integer type limits](../system/ulib/fbl/include/fbl/limits.h)
+  - [type traits](../system/ulib/fbl/include/fbl/type_support.h)
+  - [atomics](../system/ulib/fbl/include/fbl/atomic.h)
+  - [alloc checking new](../system/ulib/fbl/include/fbl/alloc_checker.h)
 - allocators
-  - [slab allocation](../system/ulib/mxtl/include/mxtl/slab_allocator.h)
-  - [slab malloc](../system/ulib/mxtl/include/mxtl/slab_malloc.h)
+  - [slab allocation](../system/ulib/fbl/include/fbl/slab_allocator.h)
+  - [slab malloc](../system/ulib/fbl/include/fbl/slab_malloc.h)
 - arrays
-  - [fixed sized arrays](../system/ulib/mxtl/include/mxtl/array.h)
-  - [fixed sized arrays](../system/ulib/mxtl/include/mxtl/inline_array.h),
+  - [fixed sized arrays](../system/ulib/fbl/include/fbl/array.h)
+  - [fixed sized arrays](../system/ulib/fbl/include/fbl/inline_array.h),
     which stack allocates small arrays
 - inline containers
-  - [doubly linked list](../system/ulib/mxtl/include/mxtl/intrusive_double_list.h)
-  - [hash table](../system/ulib/mxtl/include/mxtl/intrusive_hash_table.h)
-  - [singly linked list](../system/ulib/mxtl/include/mxtl/intrusive_single_list.h)
-  - [wavl trees](../system/ulib/mxtl/include/mxtl/intrusive_wavl_tree.h)
+  - [doubly linked list](../system/ulib/fbl/include/fbl/intrusive_double_list.h)
+  - [hash table](../system/ulib/fbl/include/fbl/intrusive_hash_table.h)
+  - [singly linked list](../system/ulib/fbl/include/fbl/intrusive_single_list.h)
+  - [wavl trees](../system/ulib/fbl/include/fbl/intrusive_wavl_tree.h)
 - smart pointers
-  - [intrusive refcounting mixin](../system/ulib/mxtl/include/mxtl/ref_counted.h)
-  - [intrusive refcounted pointer](../system/ulib/mxtl/include/mxtl/ref_ptr.h)
-  - [unique pointer](../system/ulib/mxtl/include/mxtl/unique_ptr.h)
+  - [intrusive refcounting mixin](../system/ulib/fbl/include/fbl/ref_counted.h)
+  - [intrusive refcounted pointer](../system/ulib/fbl/include/fbl/ref_ptr.h)
+  - [unique pointer](../system/ulib/fbl/include/fbl/unique_ptr.h)
 - raii utilities
-  - [auto call](../system/ulib/mxtl/include/mxtl/auto_call.h) to run
+  - [auto call](../system/ulib/fbl/include/fbl/auto_call.h) to run
     code upon leaving scope
-  - [AutoLock](../system/ulib/mxtl/include/mxtl/auto_lock.h)
+  - [AutoLock](../system/ulib/fbl/include/fbl/auto_lock.h)
+
+The standard operator new is assumed to either return valid memory or
+to throw std::bad_alloc. This policy is not suitable for the
+kernel. We also want to dynamically enforce that returns are
+explicitly checked. As such, fbl introduces our own operator new
+overload which takes a reference to an `AllocChecker`. If the status
+of the `AllocChecker` is not queried after the new expression, an
+assertion is raised. This lets us enforce that the return value is
+checked without having to reason about optimizations of the standard
+operator new in the presence of -fno-exceptions and so on.
 
 ## mx
 
@@ -94,19 +105,3 @@ the libc. See extensive comments in musl's atexit implementation if
 you are curious.
 
 *This library is mutually exclusive of the standard C++ library.*
-
-## mxalloc
-
-The standard operator new is assumed to either return valid memory or
-to throw std::bad_alloc. This policy is not suitable for the
-kernel. We also want to dynamically enforce that returns are
-explicitly checked. As such, [the mxalloc
-library](../system/ulib/mxalloc) introduces our own operator new
-overload which takes a reference to an `AllocChecker`. If the status
-of the `AllocChecker` is not queried after the new expression, an
-assertion is raised. This lets us enforce that the return value is
-checked without having to reason about optimizations of the standard
-operator new in the presence of -fno-exceptions and so on.
-
-This library can be linked into programs that use the standard
-library, and also into programs that use `mxcpp`.

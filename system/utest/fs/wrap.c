@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -27,7 +28,7 @@
 
 int status_to_errno(mx_status_t status) {
     switch (status) {
-    case NO_ERROR:
+    case MX_OK:
         return 0;
     default:
         return EIO;
@@ -125,6 +126,13 @@ int FN(rmdir)(const char* path) {
     DO_REAL(rmdir, real_path);
 }
 
+int FL(remove)(const char* path);
+int FN(remove)(const char* path) {
+    char real_path[WPATH_MAX];
+    PATH_WRAP(path, real_path);
+    DO_REAL(remove, real_path);
+}
+
 int FL(truncate)(const char* path, off_t len);
 int FN(truncate)(const char* path, off_t len) {
     char real_path[WPATH_MAX];
@@ -139,6 +147,15 @@ int FN(rename)(const char* oldpath, const char* newpath) {
     PATH_WRAP(oldpath, real_oldpath);
     PATH_WRAP(newpath, real_newpath);
     DO_REAL(rename, real_oldpath, real_newpath);
+}
+
+char* FL(realpath)(const char* path, char* resolved_path);
+char* FN(realpath)(const char* path, char* resolved_path) {
+    char real_path[WPATH_MAX];
+    if (wrap_path(path, real_path)) {
+        return NULL;
+    }
+    return __real_realpath(real_path, resolved_path);
 }
 
 int FL(renameat)(int olddirfd, const char* oldpath, int newdirfd, const char* newpath);

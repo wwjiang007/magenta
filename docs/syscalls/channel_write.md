@@ -30,40 +30,48 @@ remain accessible to the caller's process and are not transferred.
 It is invalid to include *handle* (the handle of the channel being written
 to) in the *handles* array (the handles being sent in the message).
 
+The maximum number of handles which may be sent in a message is
+*MX_CHANNEL_MAX_MSG_HANDLES*, which is 64.
+
+The maximum number of bytes which may be sent in a message is
+*MX_CHANNEL_MAX_MSG_BYTES*, which is 65536.
+
 
 ## RETURN VALUE
 
-**channel_write**() returns **NO_ERROR** on success.
+**channel_write**() returns **MX_OK** on success.
 
 ## ERRORS
 
-**ERR_BAD_HANDLE**  *handle* is not a valid handle or any of *handles*
-are not a valid handle.
+**MX_ERR_BAD_HANDLE**  *handle* is not a valid handle or any element in
+*handles* is not a valid handle.
 
-**ERR_WRONG_TYPE**  *handle* is not a channel handle.
+**MX_ERR_WRONG_TYPE**  *handle* is not a channel handle.
 
-**ERR_INVALID_ARGS**  *bytes* is an invalid pointer, or *handles*
+**MX_ERR_INVALID_ARGS**  *bytes* is an invalid pointer, or *handles*
 is an invalid pointer, or if there are duplicates among the handles
 in the *handles* array, or *options* is nonzero.
 
-**ERR_NOT_SUPPORTED** *handle* was found in the *handles* array, or
+**MX_ERR_NOT_SUPPORTED** *handle* was found in the *handles* array, or
 one of the handles in *handles* was *handle* (the handle to the
 channel being written to).
 
-**ERR_ACCESS_DENIED**  *handle* does not have **MX_RIGHT_WRITE** or
-any of *handles* do not have **MX_RIGHT_TRANSFER**.
+**MX_ERR_ACCESS_DENIED**  *handle* does not have **MX_RIGHT_WRITE** or
+any element in *handles* does not have **MX_RIGHT_TRANSFER**.
 
-**ERR_PEER_CLOSED**  The other side of the channel is closed.
+**MX_ERR_PEER_CLOSED**  The other side of the channel is closed.
 
-**ERR_NO_MEMORY**  (Temporary) Failure due to lack of memory.
+**MX_ERR_NO_MEMORY**  (Temporary) Failure due to lack of memory.
 
-**ERR_OUT_OF_RANGE**  *num_bytes* or *num_handles* are larger than the
+**MX_ERR_OUT_OF_RANGE**  *num_bytes* or *num_handles* are larger than the
 largest allowable size for channel messages.
 
 ## NOTES
 
 *num_handles* is a count of the number of elements in the *handles*
 array, not its size in bytes.
+
+The byte size limitation on messages is not yet finalized.
 
 ## SEE ALSO
 

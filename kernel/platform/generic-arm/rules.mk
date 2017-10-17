@@ -8,14 +8,9 @@ LOCAL_DIR := $(GET_LOCAL_DIR)
 
 MODULE := $(LOCAL_DIR)
 
-WITH_SMP := 1
-
 MODULE_SRCS += \
 	$(LOCAL_DIR)/platform.cpp \
 	$(LOCAL_DIR)/bcm28xx-spin.S \
-
-GLOBAL_DEFINES += \
-	ARM_ARCH_WAIT_FOR_SECONDARIES=1
 
 LINKER_SCRIPT += \
 	$(BUILDDIR)/system-onesegment.ld
@@ -36,6 +31,7 @@ MODULE_DEPS += \
 	kernel/dev/interrupt/bcm28xx \
 	kernel/dev/psci \
 	kernel/dev/qemu \
+	kernel/dev/uart/amlogic_s905 \
 	kernel/dev/uart/bcm28xx \
 	kernel/dev/uart/pl011 \
 

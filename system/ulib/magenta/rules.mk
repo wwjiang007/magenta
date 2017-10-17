@@ -9,13 +9,14 @@ MODULE := $(LOCAL_DIR)
 MODULE_TYPE := userlib
 
 # This library should not depend on libc.
-MODULE_COMPILEFLAGS := -ffreestanding
+MODULE_COMPILEFLAGS := -ffreestanding $(NO_SAFESTACK) $(NO_SANITIZERS)
 
 MODULE_HEADER_DEPS := kernel/lib/vdso
 
 MODULE_SRCS := \
-    $(LOCAL_DIR)/data.cpp \
+    $(LOCAL_DIR)/data.S \
     $(LOCAL_DIR)/mx_cache_flush.cpp \
+    $(LOCAL_DIR)/mx_channel_call.cpp \
     $(LOCAL_DIR)/mx_deadline_after.cpp \
     $(LOCAL_DIR)/mx_status_get_string.cpp \
     $(LOCAL_DIR)/mx_system_get_num_cpus.cpp \
@@ -46,7 +47,7 @@ MODULE_SO_INSTALL_NAME := -
 # All the code this DSO is pure read-only/reentrant code that
 # does not need any writable data (except its caller's stack).
 # Make it use a simplified, hardened memory layout.
-MODULE_LDFLAGS := -T scripts/rodso.ld
+MODULE_LDFLAGS := $(RODSO_LDFLAGS)
 
 # Explicit dependency to make sure the file gets generated first.
 # MODULE_SRCDEPS is overkill for this since only one file uses it.

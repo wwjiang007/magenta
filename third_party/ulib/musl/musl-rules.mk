@@ -30,10 +30,7 @@ LOCAL_CFLAGS := \
     -D_XOPEN_SOURCE=700 \
     -U_ALL_SOURCE \
     -Wno-sign-compare \
-    -Wno-parentheses \
     -Wno-missing-braces \
-    -Werror=strict-prototypes \
-    -Werror=incompatible-pointer-types \
 
 ifeq ($(call TOBOOL,$(USE_CLANG)),true)
 LOCAL_COMPILEFLAGS += -fno-stack-protector
@@ -267,7 +264,6 @@ LOCAL_SRCS := \
     $(LOCAL_DIR)/src/internal/floatscan.c \
     $(LOCAL_DIR)/src/internal/intscan.c \
     $(LOCAL_DIR)/src/internal/libc.c \
-    $(LOCAL_DIR)/src/internal/procfdname.c \
     $(LOCAL_DIR)/src/internal/shgetc.c \
     $(LOCAL_DIR)/src/ipc/ftok.c \
     $(LOCAL_DIR)/src/ipc/msgctl.c \
@@ -470,7 +466,6 @@ LOCAL_SRCS := \
     $(LOCAL_DIR)/src/misc/openpty.c \
     $(LOCAL_DIR)/src/misc/ptsname.c \
     $(LOCAL_DIR)/src/misc/pty.c \
-    $(LOCAL_DIR)/src/misc/realpath.c \
     $(LOCAL_DIR)/src/misc/setdomainname.c \
     $(LOCAL_DIR)/src/misc/setpriority.c \
     $(LOCAL_DIR)/src/misc/setrlimit.c \
@@ -646,7 +641,6 @@ LOCAL_SRCS := \
     $(LOCAL_DIR)/src/sched/sched_yield.c \
     $(LOCAL_DIR)/src/setjmp/longjmp.c \
     $(LOCAL_DIR)/src/setjmp/setjmp.c \
-    $(LOCAL_DIR)/src/signal/block.c \
     $(LOCAL_DIR)/src/signal/getitimer.c \
     $(LOCAL_DIR)/src/signal/kill.c \
     $(LOCAL_DIR)/src/signal/killpg.c \
@@ -680,7 +674,6 @@ LOCAL_SRCS := \
     $(LOCAL_DIR)/src/signal/sigtimedwait.c \
     $(LOCAL_DIR)/src/signal/sigwait.c \
     $(LOCAL_DIR)/src/signal/sigwaitinfo.c \
-    $(LOCAL_DIR)/src/stat/futimens.c \
     $(LOCAL_DIR)/src/stat/futimesat.c \
     $(LOCAL_DIR)/src/stat/lchmod.c \
     $(LOCAL_DIR)/src/stat/mkfifoat.c \
@@ -856,6 +849,7 @@ LOCAL_SRCS := \
     $(LOCAL_DIR)/src/thread/mtx_unlock.c \
     $(LOCAL_DIR)/src/thread/safestack.c \
     $(LOCAL_DIR)/src/thread/thrd_create.c \
+    $(LOCAL_DIR)/src/thread/thrd_detach.c \
     $(LOCAL_DIR)/src/thread/thrd_exit.c \
     $(LOCAL_DIR)/src/thread/thrd_join.c \
     $(LOCAL_DIR)/src/thread/thrd_sleep.c \
@@ -1014,7 +1008,7 @@ LOCAL_SRCS := \
 
 ifeq ($(ARCH),arm64)
 LOCAL_SRCS += \
-    $(LOCAL_DIR)/src/fenv/aarch64/fenv.S \
+    $(LOCAL_DIR)/src/fenv/aarch64/fenv.c \
     $(LOCAL_DIR)/src/ldso/aarch64/tlsdesc.S \
     $(LOCAL_DIR)/src/math/aarch64/fabs.S \
     $(LOCAL_DIR)/src/math/aarch64/fabsf.S \
@@ -1036,7 +1030,6 @@ LOCAL_SRCS += \
     $(LOCAL_DIR)/src/math/truncl.c \
     $(LOCAL_DIR)/src/setjmp/aarch64/longjmp.S \
     $(LOCAL_DIR)/src/setjmp/aarch64/setjmp.S \
-    $(LOCAL_DIR)/src/signal/aarch64/restore.S \
     $(LOCAL_DIR)/third_party/math/acosl.c \
     $(LOCAL_DIR)/third_party/math/asinl.c \
     $(LOCAL_DIR)/third_party/math/atan2l.c \
@@ -1051,7 +1044,7 @@ LOCAL_SRCS += \
 
 else ifeq ($(SUBARCH),x86-64)
 LOCAL_SRCS += \
-    $(LOCAL_DIR)/src/fenv/x86_64/fenv.S \
+    $(LOCAL_DIR)/src/fenv/x86_64/fenv.c \
     $(LOCAL_DIR)/src/ldso/x86_64/tlsdesc.S \
     $(LOCAL_DIR)/src/math/x86_64/__invtrigl.S \
     $(LOCAL_DIR)/src/math/x86_64/acosl.S \
@@ -1085,7 +1078,6 @@ LOCAL_SRCS += \
     $(LOCAL_DIR)/src/math/x86_64/truncl.S \
     $(LOCAL_DIR)/src/setjmp/x86_64/longjmp.S \
     $(LOCAL_DIR)/src/setjmp/x86_64/setjmp.S \
-    $(LOCAL_DIR)/src/signal/x86_64/restore.S \
 
 else
 error Unsupported architecture for musl build!
@@ -1121,8 +1113,20 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/stubs/socketstubs.c \
     $(LOCAL_DIR)/arch/$(MUSL_ARCH)/dl-entry.S \
     $(LOCAL_DIR)/ldso/dlstart.c \
-    $(LOCAL_DIR)/ldso/dynlink.c
+    $(LOCAL_DIR)/ldso/dynlink.c \
+    $(LOCAL_DIR)/ldso/dynlink-sancov.S \
 
+MODULE_SRCS += \
+    $(LOCAL_DIR)/sanitizers/__asan_early_init.c \
+    $(LOCAL_DIR)/sanitizers/asan-stubs.c \
+    $(LOCAL_DIR)/sanitizers/hooks.c \
+    $(LOCAL_DIR)/sanitizers/log.c \
+
+# There is no '#if __has_feature(coverage)', so this file has to be
+# excluded from the build entirely when not in use.
+ifeq ($(call TOBOOL,$(USE_SANCOV)),true)
+MODULE_SRCS += $(LOCAL_DIR)/sanitizers/sancov-stubs.S
+endif
 
 include make/module.mk
 

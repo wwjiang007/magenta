@@ -15,8 +15,9 @@
 
 #include <magenta/device/vfs.h>
 #include <magenta/syscalls.h>
-#include <mxalloc/new.h>
-#include <mxtl/unique_ptr.h>
+#include <fbl/alloc_checker.h>
+#include <fbl/string_piece.h>
+#include <fbl/unique_ptr.h>
 #include <unittest/unittest.h>
 
 #define MOUNT_POINT "/benchmark"
@@ -28,12 +29,17 @@ constexpr uint8_t kMagicByte = 0xee;
 // Return "true" if the fs matches the 'banned' criteria.
 template <size_t len>
 bool benchmark_banned(int fd, const char (&banned_fs)[len]) {
-    char out[len];
-    ssize_t r = ioctl_vfs_query_fs(fd, out, sizeof(out));
-    if (r != static_cast<ssize_t>(len - 1)) {
+    char buf[sizeof(vfs_query_info_t) + MAX_FS_NAME_LEN + 1];
+    vfs_query_info_t* info = reinterpret_cast<vfs_query_info_t*>(buf);
+    ssize_t r = ioctl_vfs_query_fs(fd, info, sizeof(buf) - 1);
+
+    if (r != static_cast<ssize_t>(sizeof(vfs_query_info_t) + len)) {
         return false;
     }
-    return strncmp(banned_fs, out, len - 1) == 0;
+
+    buf[r] = '\0';
+    const char* name = reinterpret_cast<const char*>(buf + sizeof(vfs_query_info_t));
+    return strncmp(banned_fs, name, len - 1) == 0;
 }
 
 inline void time_end(const char *str, uint64_t start) {
@@ -60,9 +66,9 @@ bool benchmark_write_read(void) {
     }
     printf("\nBenchmarking Write + Read (%lu MB)\n", size_mb);
 
-    AllocChecker ac;
-    mxtl::unique_ptr<uint8_t[]> data(new (&ac) uint8_t[DataSize]);
-    ASSERT_EQ(ac.check(), true, "");
+    fbl::AllocChecker ac;
+    fbl::unique_ptr<uint8_t[]> data(new (&ac) uint8_t[DataSize]);
+    ASSERT_EQ(ac.check(), true);
     memset(data.get(), kMagicByte, DataSize);
 
     uint64_t start;
@@ -75,37 +81,33 @@ bool benchmark_write_read(void) {
         start = mx_ticks_get();
         count = NumOps;
         while (count--) {
-            ASSERT_EQ(write(fd, data.get(), DataSize), DataSize, "");
+            ASSERT_EQ(write(fd, data.get(), DataSize), DataSize);
         }
         time_end(str, start);
 
-        ASSERT_EQ(lseek(fd, 0, SEEK_SET), 0, "");
+        ASSERT_EQ(lseek(fd, 0, SEEK_SET), 0);
         snprintf(str, sizeof(str), "read %d", i);
 
         start = mx_ticks_get();
         count = NumOps;
         while (count--) {
-            ASSERT_EQ(read(fd, data.get(), DataSize), DataSize, "");
-            ASSERT_EQ(data[0], kMagicByte, "");
+            ASSERT_EQ(read(fd, data.get(), DataSize), DataSize);
+            ASSERT_EQ(data[0], kMagicByte);
         }
         time_end(str, start);
 
-        ASSERT_EQ(lseek(fd, 0, SEEK_SET), 0, "");
+        ASSERT_EQ(lseek(fd, 0, SEEK_SET), 0);
     }
 
-    ASSERT_EQ(close(fd), 0, "");
-    ASSERT_EQ(unlink(MOUNT_POINT "/bigfile"), 0, "");
+    ASSERT_EQ(close(fd), 0);
+    ASSERT_EQ(unlink(MOUNT_POINT "/bigfile"), 0);
 
     END_TEST;
 }
 
 #define START_STRING "/aaa"
 
-size_t constexpr cStrlen(const char* str) {
-    return *str ? 1 + cStrlen(str + 1) : 0;
-}
-
-size_t constexpr kComponentLength = cStrlen(START_STRING);
+size_t constexpr kComponentLength = fbl::constexpr_strlen(START_STRING);
 
 template <size_t len>
 void increment_str(char* str) {
@@ -123,7 +125,7 @@ void increment_str(char* str) {
 
 template <size_t MaxComponents>
 bool walk_down_path_components(char* path, bool (*cb)(const char* path)) {
-    static_assert(MaxComponents * kComponentLength + cStrlen(MOUNT_POINT) < PATH_MAX,
+    static_assert(MaxComponents * kComponentLength + fbl::constexpr_strlen(MOUNT_POINT) < PATH_MAX,
                   "Path depth is too long");
     size_t path_len = strlen(path);
     char path_component[kComponentLength + 1];
@@ -142,7 +144,7 @@ bool walk_down_path_components(char* path, bool (*cb)(const char* path)) {
 bool walk_up_path_components(char* path, bool (*cb)(const char* path)) {
     size_t path_len = strlen(path);
 
-    while (path_len != cStrlen(MOUNT_POINT)) {
+    while (path_len != fbl::constexpr_strlen(MOUNT_POINT)) {
         ASSERT_TRUE(cb(path), "Callback failure");
         path[path_len - kComponentLength] = 0;
         path_len -= kComponentLength;
@@ -175,16 +177,16 @@ bool benchmark_path_walk(void) {
     uint64_t start;
 
     start = mx_ticks_get();
-    ASSERT_TRUE(walk_down_path_components<MaxComponents>(path, mkdir_callback), "");
+    ASSERT_TRUE(walk_down_path_components<MaxComponents>(path, mkdir_callback));
     time_end("mkdir", start);
 
     strcpy(path, MOUNT_POINT);
     start = mx_ticks_get();
-    ASSERT_TRUE(walk_down_path_components<MaxComponents>(path, stat_callback), "");
+    ASSERT_TRUE(walk_down_path_components<MaxComponents>(path, stat_callback));
     time_end("stat", start);
 
     start = mx_ticks_get();
-    ASSERT_TRUE(walk_up_path_components(path, unlink_callback), "");
+    ASSERT_TRUE(walk_up_path_components(path, unlink_callback));
     time_end("unlink", start);
     END_TEST;
 }

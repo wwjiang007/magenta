@@ -3,6 +3,7 @@
 // Use of this source code is governed by a MIT-style
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
+
 #include <lib/dpc.h>
 
 #include <assert.h>
@@ -18,13 +19,13 @@ static spin_lock_t dpc_lock = SPIN_LOCK_INITIAL_VALUE;
 static struct list_node dpc_list = LIST_INITIAL_VALUE(dpc_list);
 static event_t dpc_event = EVENT_INITIAL_VALUE(dpc_event, false, 0);
 
-status_t dpc_queue(dpc_t *dpc, bool reschedule)
+mx_status_t dpc_queue(dpc_t *dpc, bool reschedule)
 {
     DEBUG_ASSERT(dpc);
     DEBUG_ASSERT(dpc->func);
 
     if (list_in_list(&dpc->node))
-        return NO_ERROR;
+        return MX_OK;
 
     spin_lock_saved_state_t state;
     spin_lock_irqsave(&dpc_lock, state);
@@ -37,18 +38,18 @@ status_t dpc_queue(dpc_t *dpc, bool reschedule)
 
     // reschedule here if asked to
     if (reschedule)
-        thread_preempt(false);
+        thread_reschedule();
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
-status_t dpc_queue_thread_locked(dpc_t *dpc)
+mx_status_t dpc_queue_thread_locked(dpc_t *dpc)
 {
     DEBUG_ASSERT(dpc);
     DEBUG_ASSERT(dpc->func);
 
     if (list_in_list(&dpc->node))
-        return NO_ERROR;
+        return MX_OK;
 
     spin_lock_saved_state_t state;
     spin_lock_irqsave(&dpc_lock, state);
@@ -59,15 +60,33 @@ status_t dpc_queue_thread_locked(dpc_t *dpc)
 
     spin_unlock_irqrestore(&dpc_lock, state);
 
-    return NO_ERROR;
+    return MX_OK;
+}
+
+bool dpc_cancel(dpc_t *dpc)
+{
+    DEBUG_ASSERT(dpc);
+
+    spin_lock_saved_state_t state;
+    spin_lock_irqsave(&dpc_lock, state);
+
+    bool callback_not_running = false;
+
+    if (list_in_list(&dpc->node)) {
+        list_delete(&dpc->node);
+        callback_not_running = true;
+    }
+
+    spin_unlock_irqrestore(&dpc_lock, state);
+    return callback_not_running;
 }
 
 static int dpc_thread(void *arg)
 {
     for (;;) {
         // wait for a dpc to fire
-        __UNUSED status_t err = event_wait(&dpc_event);
-        DEBUG_ASSERT(err == NO_ERROR);
+        __UNUSED mx_status_t err = event_wait(&dpc_event);
+        DEBUG_ASSERT(err == MX_OK);
 
         spin_lock_saved_state_t state;
         spin_lock_irqsave(&dpc_lock, state);
@@ -92,7 +111,7 @@ static int dpc_thread(void *arg)
 
 static void dpc_init(unsigned int level)
 {
-    thread_t *t = thread_create("dpc", &dpc_thread, NULL, HIGH_PRIORITY, DEFAULT_STACK_SIZE);
+    thread_t *t = thread_create("dpc", &dpc_thread, NULL, DPC_THREAD_PRIORITY, DEFAULT_STACK_SIZE);
     thread_detach_and_resume(t);
 }
 

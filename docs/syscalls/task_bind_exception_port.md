@@ -3,7 +3,7 @@
 ## NAME
 
 task_bind_exception_port - Bind to, or unbind from, the exception port
-corresponding to a given process or thread or the system exception port.
+corresponding to a given job, process, thread, or the system exception port.
 
 ## SYNOPSIS
 
@@ -17,7 +17,7 @@ mx_status_t mx_task_bind_exception_port(mx_handle_t object, mx_handle_t eport,
 ## DESCRIPTION
 
 **task_bind_exception_port**() is used to bind (or unbind) a port to
-the exception port of a process or thread, or the system exception port.
+the exception port of a job, process, thread, or the system exception port.
 
 To bind to the system exception port pass **MX_HANDLE_INVALID** for *object*.
 
@@ -93,6 +93,12 @@ There is only one thread exception port per thread.
 - Process - This is for exception ports bound directly to the process.
 There is only one process exception port per process.
 
+- Job - This is for exception ports bound to the process's job. Note that jobs
+have a hierarchy. First the process's job is searched. If it has a bound
+exception port then the exception is delivered to that port. If it does not
+have a bound exception port, or if the handler returns **MX_RESUME_TRY_NEXT**,
+then that job's parent job is searched, and so on right up to the root job.
+
 - System - This is the last port searched and gives the system a chance to
 process the exception before the kernel kills the process.
 
@@ -111,24 +117,24 @@ in magenta/syscalls/exception.h.
 
 ## RETURN VALUE
 
-**task_bind_exception_port**() returns **NO_ERROR** on success.
+**task_bind_exception_port**() returns **MX_OK** on success.
 In the event of failure, a negative error value is returned.
 
 ## ERRORS
 
-**ERR_BAD_HANDLE** *object* is not a valid handle,
+**MX_ERR_BAD_HANDLE** *object* is not a valid handle,
 or *eport* is not a valid handle. Note that when binding/unbinding
 to the system exception port *object* is **MX_HANDLE_INVALID**.
 Also note that when unbinding from an exception port *eport* is
 **MX_HANDLE_INVALID**.
 
-**ERR_WRONG_TYPE**  *object* is not that of a thread or process,
+**MX_ERR_WRONG_TYPE**  *object* is not that of a job, process, or thread,
 and is not **MX_HANDLE_INVALID**,
 or *eport* is not that of a port and is not **MX_HANDLE_INVALID**.
 
-**ERR_INVALID_ARGS** A bad value has been passed in *options*.
+**MX_ERR_INVALID_ARGS** A bad value has been passed in *options*.
 
-**ERR_NO_MEMORY**  (temporary) out of memory failure.
+**MX_ERR_NO_MEMORY**  (temporary) out of memory failure.
 
 ## SEE ALSO
 

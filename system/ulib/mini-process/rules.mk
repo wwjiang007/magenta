@@ -9,12 +9,15 @@ MODULE := $(LOCAL_DIR)
 MODULE_TYPE := userlib
 
 MODULE_SRCS += \
-    $(LOCAL_DIR)/mini-process.c
+    $(LOCAL_DIR)/mini-process.c \
+    $(LOCAL_DIR)/subprocess.c \
 
 MODULE_SO_NAME := mini-process
 
 MODULE_STATIC_LIBS := system/ulib/elfload
 
 MODULE_LIBS := system/ulib/magenta system/ulib/c
+
+MODULE_COMPILEFLAGS += $(NO_SANCOV)
 
 include make/module.mk

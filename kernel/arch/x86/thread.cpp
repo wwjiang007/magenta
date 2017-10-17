@@ -44,7 +44,6 @@ void arch_thread_initialize(thread_t *t, vaddr_t entry_point)
     memset(frame, 0, sizeof(*frame));
 
     frame->rip = entry_point;
-    frame->rflags = 0x3002; /* IF = 0, NT = 0, IOPL = 3 */
 
     // initialize the saved extended register state
     vaddr_t buf = ROUNDUP(((vaddr_t)t->arch.extended_register_buffer), 64);
@@ -87,9 +86,6 @@ void arch_context_switch(thread_t *oldthread, thread_t *newthread)
 
     /* set the tss SP0 value to point at the top of our stack */
     x86_set_tss_sp(newthread->stack_top);
-
-    /* set the kernel sp in our per cpu gs: structure */
-    x86_set_percpu_kernel_sp(newthread->stack_top);
 
     /* user and kernel gs have been swapped, so unswap them when loading
      * from the msrs

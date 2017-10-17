@@ -11,7 +11,7 @@
 #include <mx/handle.h>
 #include <mx/port.h>
 
-#include <mxtl/type_support.h>
+#include <fbl/type_support.h>
 
 #include <magenta/syscalls/port.h>
 
@@ -27,24 +27,24 @@ static bool basic_test() {
 
     BEGIN_TEST;
     mx::event event;
-    ASSERT_EQ(mx::event::create(0u, &event), NO_ERROR, "");
+    ASSERT_EQ(mx::event::create(0u, &event), MX_OK);
     mx_signals_t observed = 0u;
     EXPECT_EQ(
-        event.wait_one(MX_SIGNAL_LAST_HANDLE, MX_TIME_INFINITE, &observed), NO_ERROR, "");
-    EXPECT_EQ(observed, MX_SIGNAL_LAST_HANDLE, "");
+        event.wait_one(MX_SIGNAL_LAST_HANDLE, MX_TIME_INFINITE, &observed), MX_OK);
+    EXPECT_EQ(observed, MX_SIGNAL_LAST_HANDLE);
 
     mx::event dup;
-    EXPECT_EQ(event.duplicate(MX_RIGHT_SAME_RIGHTS, &dup), NO_ERROR, "");
+    EXPECT_EQ(event.duplicate(MX_RIGHT_SAME_RIGHTS, &dup), MX_OK);
 
-    EXPECT_EQ(event.wait_one(MX_SIGNAL_LAST_HANDLE, 0u, &observed), ERR_TIMED_OUT, "");
-    EXPECT_EQ(observed, 0u, "");
+    EXPECT_EQ(event.wait_one(MX_SIGNAL_LAST_HANDLE, 0u, &observed), MX_ERR_TIMED_OUT);
+    EXPECT_EQ(observed, 0u);
 
     dup.reset();
     EXPECT_EQ(
-        event.wait_one(MX_SIGNAL_LAST_HANDLE, MX_TIME_INFINITE, &observed), NO_ERROR, "");
-    EXPECT_EQ(observed, MX_SIGNAL_LAST_HANDLE, "");
+        event.wait_one(MX_SIGNAL_LAST_HANDLE, MX_TIME_INFINITE, &observed), MX_OK);
+    EXPECT_EQ(observed, MX_SIGNAL_LAST_HANDLE);
 
-    EXPECT_EQ(event.signal(MX_SIGNAL_LAST_HANDLE, 0), ERR_INVALID_ARGS, "");
+    EXPECT_EQ(event.signal(MX_SIGNAL_LAST_HANDLE, 0), MX_ERR_INVALID_ARGS);
     END_TEST;
 }
 
@@ -57,36 +57,36 @@ static bool replace_test() {
 
     BEGIN_TEST;
     mx::event old_ev;
-    ASSERT_EQ(mx::event::create(0u, &old_ev), NO_ERROR, "");
+    ASSERT_EQ(mx::event::create(0u, &old_ev), MX_OK);
 
     mx::event new_ev;
-    EXPECT_EQ(old_ev.replace(MX_RIGHT_SAME_RIGHTS, &new_ev), NO_ERROR, "");
+    EXPECT_EQ(old_ev.replace(MX_RIGHT_SAME_RIGHTS, &new_ev), MX_OK);
 
     mx_signals_t observed = 0u;
     EXPECT_EQ(
-        new_ev.wait_one(MX_SIGNAL_LAST_HANDLE, MX_TIME_INFINITE, &observed), NO_ERROR, "");
-    EXPECT_EQ(observed, MX_SIGNAL_LAST_HANDLE, "");
+        new_ev.wait_one(MX_SIGNAL_LAST_HANDLE, MX_TIME_INFINITE, &observed), MX_OK);
+    EXPECT_EQ(observed, MX_SIGNAL_LAST_HANDLE);
 
     mx::event dup;
-    EXPECT_EQ(new_ev.duplicate(MX_RIGHT_SAME_RIGHTS, &dup), NO_ERROR, "");
+    EXPECT_EQ(new_ev.duplicate(MX_RIGHT_SAME_RIGHTS, &dup), MX_OK);
 
     mx::port port;
-    ASSERT_EQ(mx::port::create(MX_PORT_OPT_V2, &port), NO_ERROR, "");
+    ASSERT_EQ(mx::port::create(0, &port), MX_OK);
 
     EXPECT_EQ(new_ev.wait_async(
-        port, 1u, MX_SIGNAL_LAST_HANDLE, MX_WAIT_ASYNC_ONCE), NO_ERROR, "");
+        port, 1u, MX_SIGNAL_LAST_HANDLE, MX_WAIT_ASYNC_ONCE), MX_OK);
 
     mx_port_packet_t packet = {};
-    EXPECT_EQ(port.wait(0ull, &packet, 0u), ERR_TIMED_OUT, "");
+    EXPECT_EQ(port.wait(0ull, &packet, 0u), MX_ERR_TIMED_OUT);
 
     mx::event new_dup;
-    EXPECT_EQ(dup.replace(MX_RIGHT_SAME_RIGHTS, &new_dup), NO_ERROR, "");
-    EXPECT_EQ(port.wait(0ull, &packet, 0u), ERR_TIMED_OUT, "");
+    EXPECT_EQ(dup.replace(MX_RIGHT_SAME_RIGHTS, &new_dup), MX_OK);
+    EXPECT_EQ(port.wait(0ull, &packet, 0u), MX_ERR_TIMED_OUT);
 
     new_dup.reset();
-    EXPECT_EQ(port.wait(MX_TIME_INFINITE, &packet, 0u), NO_ERROR, "");
-    EXPECT_EQ(packet.type, MX_PKT_TYPE_SIGNAL_ONE, "");
-    EXPECT_EQ(packet.signal.observed, MX_SIGNAL_LAST_HANDLE, "");
+    EXPECT_EQ(port.wait(MX_TIME_INFINITE, &packet, 0u), MX_OK);
+    EXPECT_EQ(packet.type, MX_PKT_TYPE_SIGNAL_ONE);
+    EXPECT_EQ(packet.signal.observed, MX_SIGNAL_LAST_HANDLE);
 
     END_TEST;
 }
@@ -102,45 +102,45 @@ static bool channel_test() {
 
     BEGIN_TEST;
     mx::event event;
-    ASSERT_EQ(mx::event::create(0u, &event), NO_ERROR, "");
+    ASSERT_EQ(mx::event::create(0u, &event), MX_OK);
 
     mx::channel channel[2];
-    ASSERT_EQ(mx::channel::create(0u, &channel[0], &channel[1]), NO_ERROR, "");
+    ASSERT_EQ(mx::channel::create(0u, &channel[0], &channel[1]), MX_OK);
 
     mx::port port;
-    ASSERT_EQ(mx::port::create(MX_PORT_OPT_V2, &port), NO_ERROR, "");
+    ASSERT_EQ(mx::port::create(0, &port), MX_OK);
 
     mx_handle_t dup_ev;
-    EXPECT_EQ(mx_handle_duplicate(event.get(), MX_RIGHT_SAME_RIGHTS, &dup_ev), NO_ERROR, "");
+    EXPECT_EQ(mx_handle_duplicate(event.get(), MX_RIGHT_SAME_RIGHTS, &dup_ev), MX_OK);
 
     ASSERT_EQ(event.wait_async(
-        port, 1u, MX_SIGNAL_LAST_HANDLE, MX_WAIT_ASYNC_ONCE), NO_ERROR, "");
+        port, 1u, MX_SIGNAL_LAST_HANDLE, MX_WAIT_ASYNC_ONCE), MX_OK);
 
     uint32_t actual_b;
     uint32_t actual_h;
     mx_port_packet_t packet = {};
 
     for (int ix = 0; ix != 4; ++ix) {
-        ASSERT_EQ(channel[0].write(0u, nullptr, 0u, &dup_ev, 1u), NO_ERROR, "");
+        ASSERT_EQ(channel[0].write(0u, nullptr, 0u, &dup_ev, 1u), MX_OK);
         dup_ev = 0u;
 
-        EXPECT_EQ(port.wait(0ull, &packet, 0u), ERR_TIMED_OUT, "");
+        EXPECT_EQ(port.wait(0ull, &packet, 0u), MX_ERR_TIMED_OUT);
 
         ASSERT_EQ(channel[1].read(
-            0u, nullptr, 0, &actual_b, &dup_ev, 1u, &actual_h), NO_ERROR, "");
+            0u, nullptr, 0, &actual_b, &dup_ev, 1u, &actual_h), MX_OK);
 
-        EXPECT_EQ(port.wait(0ull, &packet, 0u), ERR_TIMED_OUT, "");
+        EXPECT_EQ(port.wait(0ull, &packet, 0u), MX_ERR_TIMED_OUT);
     }
 
-    ASSERT_EQ(channel[0].write(0u, nullptr, 0u, &dup_ev, 1u), NO_ERROR, "");
+    ASSERT_EQ(channel[0].write(0u, nullptr, 0u, &dup_ev, 1u), MX_OK);
 
     channel[0].reset();
-    EXPECT_EQ(port.wait(0ull, &packet, 0u), ERR_TIMED_OUT, "");
+    EXPECT_EQ(port.wait(0ull, &packet, 0u), MX_ERR_TIMED_OUT);
 
     channel[1].reset();
-    EXPECT_EQ(port.wait(MX_TIME_INFINITE, &packet, 0u), NO_ERROR, "");
-    EXPECT_EQ(packet.type, MX_PKT_TYPE_SIGNAL_ONE, "");
-    EXPECT_EQ(packet.signal.observed, MX_SIGNAL_LAST_HANDLE, "");
+    EXPECT_EQ(port.wait(MX_TIME_INFINITE, &packet, 0u), MX_OK);
+    EXPECT_EQ(packet.type, MX_PKT_TYPE_SIGNAL_ONE);
+    EXPECT_EQ(packet.signal.observed, MX_SIGNAL_LAST_HANDLE);
 
     END_TEST;
 }

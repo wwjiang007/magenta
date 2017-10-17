@@ -49,8 +49,8 @@ static bool pt_dump_enabled = false;
 // Return true if the thread is to be resumed "successfully" (meaning the o/s
 // won't kill it, and thus the kill process).
 
-static bool is_resumable_swbreak(const mx_exception_report_t* report) {
-    if (report->header.type == MX_EXCP_SW_BREAKPOINT && swbreak_backtrace_enabled)
+static bool is_resumable_swbreak(uint32_t excp_type) {
+    if (excp_type == MX_EXCP_SW_BREAKPOINT && swbreak_backtrace_enabled)
         return true;
     return false;
 }
@@ -76,7 +76,6 @@ int have_swbreak_magic(const gregs_type* regs) {
 #endif
 
 const char* excp_type_to_str(uint32_t type) {
-    MX_DEBUG_ASSERT(MX_EXCP_IS_ARCH(type));
     switch (type) {
     case MX_EXCP_GENERAL:
         return "general fault";
@@ -90,6 +89,8 @@ const char* excp_type_to_str(uint32_t type) {
         return "hw breakpoint";
     case MX_EXCP_UNALIGNED_ACCESS:
         return "alignment fault";
+    case MX_EXCP_POLICY_ERROR:
+        return "policy error";
     default:
         // Note: To get a compilation failure when a new exception type has
         // been added without having also updated this function, compile with
@@ -112,7 +113,7 @@ constexpr size_t kMemoryDumpSize = 256;
 mx_handle_t crashed_thread = MX_HANDLE_INVALID;
 
 // The exception that |crashed_thread| got.
-mx_exception_report_t crashed_thread_report;
+uint32_t crashed_thread_excp_type;
 
 void output_frame_x86_64(const x86_64_exc_data_t& exc_data,
                          const mx_x86_64_general_regs_t& regs) {
@@ -197,17 +198,18 @@ void resume_thread(mx_handle_t thread, bool handled) {
     if (!handled)
         options |= MX_RESUME_TRY_NEXT;
     auto status = mx_task_resume(thread, options);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         print_mx_error("unable to \"resume\" thread", status);
-        // This shouldn't ever happen. The task is now effectively hung.
-        // TODO: Try to forcefully kill it?
+        // This shouldn't happen (unless someone killed it already).
+        // The task is now effectively hung (until someone kills it).
+        // TODO: Try to forcefully kill it ourselves?
     }
 }
 
 void resume_thread_from_exception(mx_handle_t thread,
-                                  const mx_exception_report_t* report,
+                                  uint32_t excp_type,
                                   const gregs_type* gregs) {
-    if (is_resumable_swbreak(report) &&
+    if (is_resumable_swbreak(excp_type) &&
         gregs != nullptr && have_swbreak_magic(gregs)) {
 #if defined(__x86_64__)
         // On x86, the pc is left at one past the s/w break insn,
@@ -225,35 +227,36 @@ void resume_thread_from_exception(mx_handle_t thread,
         return;
     }
 
+    // For now, we turn policy exceptions into non-fatal warnings, by
+    // resuming the thread when these exceptions occur.  TODO(MG-922):
+    // Remove this and make these exceptions fatal after the system has
+    // received some amount of testing with MX_POL_BAD_HANDLE enabled as a
+    // warning.
+    if (excp_type == MX_EXCP_POLICY_ERROR) {
+        resume_thread(thread, true);
+        return;
+    }
+
   Fail:
     // Tell the o/s to "resume" the thread by killing the process, the
     // exception has not been handled.
     resume_thread(thread, false);
 }
 
-void process_report(const mx_exception_report_t* report, bool use_libunwind) {
-    if (!MX_EXCP_IS_ARCH(report->header.type))
+void process_report(uint64_t pid, uint64_t tid, uint32_t type, bool use_libunwind) {
+    if (!MX_EXCP_IS_ARCH(type) && type != MX_EXCP_POLICY_ERROR)
         return;
 
-    auto context = report->context;
-    const char* fatal = "fatal ";
-    // This won't print "fatal" in the case where this is a s/w bkpt but
-    // CRASHLOGGER_RESUME_MAGIC isn't set. Big deal.
-    if (is_resumable_swbreak(report))
-        fatal = "";
-    printf("<== %sexception: process [%" PRIu64 "] thread [%" PRIu64 "]\n", fatal, context.pid, context.tid);
-    printf("<== %s, PC at 0x%" PRIxPTR "\n", excp_type_to_str(report->header.type), context.arch.pc);
-
     mx_handle_t process;
-    mx_status_t status = mx_object_get_child(0, context.pid, MX_RIGHT_SAME_RIGHTS, &process);
+    mx_status_t status = mx_object_get_child(0, pid, MX_RIGHT_SAME_RIGHTS, &process);
     if (status < 0) {
-        printf("failed to get a handle to [%" PRIu64 "] : error %d\n", context.pid, status);
+        printf("failed to get a handle to [%" PRIu64 "] : error %d\n", pid, status);
         return;
     }
     mx_handle_t thread;
-    status = mx_object_get_child(process, context.tid, MX_RIGHT_SAME_RIGHTS, &thread);
+    status = mx_object_get_child(process, tid, MX_RIGHT_SAME_RIGHTS, &thread);
     if (status < 0) {
-        printf("failed to get a handle to [%" PRIu64 ".%" PRIu64 "] : error %d\n", context.pid, context.tid, status);
+        printf("failed to get a handle to [%" PRIu64 ".%" PRIu64 "] : error %d\n", pid, tid, status);
         mx_handle_close(process);
         return;
     }
@@ -261,53 +264,89 @@ void process_report(const mx_exception_report_t* report, bool use_libunwind) {
     // Record the crashed thread so that if we crash then self_dump_func
     // can (try to) "resume" the thread so that it's not left hanging.
     crashed_thread = thread;
-    crashed_thread_report = *report;
+    crashed_thread_excp_type = type;
+
+    mx_exception_report_t report;
+    status = mx_object_get_info(thread, MX_INFO_THREAD_EXCEPTION_REPORT,
+                                &report, sizeof(report), NULL, NULL);
+    if (status < 0) {
+        printf("failed to get exception report for [%" PRIu64 ".%" PRIu64 "] : error %d\n", pid, tid, status);
+        mx_handle_close(process);
+        mx_handle_close(thread);
+        return;
+    }
+    auto context = report.context;
 
     gregs_type reg_buf;
     gregs_type *regs = nullptr;
     mx_vaddr_t pc = 0, sp = 0, fp = 0;
     const char* arch = "unknown";
+    const char* fatal = "fatal ";
 
     if (!read_general_regs(thread, &reg_buf, sizeof(reg_buf)))
         goto Fail;
     // Delay setting this until here so Fail will know we now have the regs.
     regs = &reg_buf;
 
-    if (context.arch_id == ARCH_ID_X86_64) {
 #if defined(__x86_64__)
-        arch = "x86_64";
-        output_frame_x86_64(context.arch.u.x86_64, *regs);
-        pc = regs->rip;
-        sp = regs->rsp;
-        fp = regs->rbp;
+    arch = "x86_64";
+    pc = regs->rip;
+    sp = regs->rsp;
+    fp = regs->rbp;
+#elif defined(__aarch64__)
+    arch = "aarch64";
+    pc = regs->pc;
+    sp = regs->sp;
+    fp = regs->r[29];
+#else
+    // It's unlikely we'll get here as trying to read the regs will likely
+    // fail, but we don't assume that.
+    printf("unsupported architecture .. coming soon.\n");
+    goto Fail;
 #endif
-    } else if (context.arch_id == ARCH_ID_ARM_64) {
-#if defined(__aarch64__)
-        arch = "aarch64";
-        output_frame_arm64(context.arch.u.arm_64, *regs);
 
-        // Only output the Fault address register if there's a data fault.
-        if (MX_EXCP_FATAL_PAGE_FAULT == report->header.type)
-            printf(" far %#18" PRIx64 "\n", context.arch.u.arm_64.far);
+    // This won't print "fatal" in the case where this is a s/w bkpt but
+    // CRASHLOGGER_RESUME_MAGIC isn't set. Big deal.
+    if (is_resumable_swbreak(type))
+        fatal = "";
+    // TODO(MA-922): Remove this and make policy exceptions fatal.
+    if (type == MX_EXCP_POLICY_ERROR)
+        fatal = "";
 
-        pc = regs->pc;
-        sp = regs->sp;
-        fp = regs->r[29];
-#endif
-    } else {
-        // TODO: support other architectures. It's unlikely we'll get here as
-        // trying to read the regs will likely fail, but we don't assume that.
-        printf("unsupported architecture .. coming soon.\n");
-        goto Fail;
+    char process_name[MX_MAX_NAME_LEN];
+    status = mx_object_get_property(process, MX_PROP_NAME, process_name, sizeof(process_name));
+    if (status < 0) {
+        strlcpy(process_name, "unknown", sizeof(process_name));
     }
+
+    char thread_name[MX_MAX_NAME_LEN];
+    status = mx_object_get_property(thread, MX_PROP_NAME, thread_name, sizeof(thread_name));
+    if (status < 0) {
+        strlcpy(thread_name, "unknown", sizeof(thread_name));
+    }
+
+    printf("<== %sexception: process %s[%" PRIu64 "] thread %s[%" PRIu64 "]\n", fatal,
+           process_name, pid, thread_name, tid);
+    printf("<== %s, PC at 0x%" PRIxPTR "\n", excp_type_to_str(report.header.type), pc);
+
+#if defined(__x86_64__)
+    output_frame_x86_64(context.arch.u.x86_64, *regs);
+#elif defined(__aarch64__)
+    output_frame_arm64(context.arch.u.arm_64, *regs);
+
+    // Only output the Fault address register if there's a data fault.
+    if (MX_EXCP_FATAL_PAGE_FAULT == report.header.type)
+        printf(" far %#18" PRIx64 "\n", context.arch.u.arm_64.far);
+#else
+    __UNREACHABLE;
+#endif
 
     printf("bottom of user stack:\n");
     dump_memory(process, sp, kMemoryDumpSize);
     printf("arch: %s\n", arch);
     backtrace(process, thread, pc, sp, fp, use_libunwind);
 
-    // TODO(dje): Print a backtrace of all other threads in the process.
-    // Need to be able to suspend/resume threads first. MG-588
+    // TODO(MG-588): Print a backtrace of all other threads in the process.
 
 #ifdef __x86_64__
     if (pt_dump_enabled) {
@@ -320,9 +359,9 @@ Fail:
 
     // allow the thread (and then process) to die, unless the exception is
     // to just trigger a backtrace (if enabled)
-    resume_thread_from_exception(thread, report, regs);
+    resume_thread_from_exception(thread, type, regs);
     crashed_thread = MX_HANDLE_INVALID;
-    crashed_thread_report = { };
+    crashed_thread_excp_type = 0u;
 
     mx_handle_close(thread);
     mx_handle_close(process);
@@ -349,9 +388,9 @@ int self_dump_func(void* arg) {
     // TODO: There may be exceptions we can recover from, but for now KISS
     // and just terminate on any exception.
 
-    mx_exception_packet_t packet;
-    mx_port_wait(ex_port, MX_TIME_INFINITE, &packet, sizeof(packet));
-    if (packet.hdr.key != kSelfExceptionKey) {
+    mx_port_packet_t packet;
+    mx_port_wait(ex_port, MX_TIME_INFINITE, &packet, 0);
+    if (packet.key != kSelfExceptionKey) {
         print_error("invalid crash key");
         return 1;
     }
@@ -371,14 +410,14 @@ int self_dump_func(void* arg) {
     // If this was a resumable exception we'll instead kill the process,
     // but we only get here if crashlogger itself crashed.
     if (crashed_thread != MX_HANDLE_INVALID) {
-        resume_thread_from_exception(crashed_thread, &crashed_thread_report, nullptr);
+        resume_thread_from_exception(crashed_thread, crashed_thread_excp_type, nullptr);
     }
 
     // Now we can check the return code of the unbinding. We don't want to
     // terminate until the original crashing thread is "resumed".
     // This could be an assert, but we don't want the check disabled in
     // release builds.
-    if (unbind_status != NO_ERROR) {
+    if (unbind_status != MX_OK) {
         print_mx_error("WARNING: unable to unbind system exception port", unbind_status);
         // This "shouldn't happen", safer to just terminate.
         exit(1);
@@ -390,7 +429,7 @@ int self_dump_func(void* arg) {
     // situation crashlogger,libunwind,libbacktrace are compiled with frame
     // pointers. This decision needs to be revisited if/when we need/want
     // to compile any of these without frame pointers.
-    process_report(&packet.report, false);
+    process_report(packet.exception.pid, packet.exception.tid, packet.type, false);
 
     exit(1);
 }
@@ -407,6 +446,10 @@ void usage() {
     fprintf(stderr, "  -n = do not use libunwind\n");
     fprintf(stderr, "  -s[on|off] = enable s/w breakpoints to trigger\n");
     fprintf(stderr, "      a backtrace without terminating the process\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "The exception port may be passed in as an argument, "
+            "as PA_HND(PA_USER0, 0).  (Note that the port key value must "
+            "match the one used by crashlogger.)\n");
 }
 
 int main(int argc, char** argv) {
@@ -472,20 +515,20 @@ int main(int argc, char** argv) {
     // an existing crashlogger with this one.
     if (force) {
         status = unbind_system_exception_port();
-        if (status != NO_ERROR) {
+        if (status != MX_OK) {
             print_mx_error("unable to unbind system exception port", status);
             return 1;
         }
     }
 
     mx_handle_t thread_self = thrd_get_mx_handle(thrd_current());
-    if (thread_self < 0) {
+    if (thread_self == MX_HANDLE_INVALID) {
         print_mx_error("unable to get thread self", thread_self);
         return 1;
     }
 
     mx_handle_t self_dump_port;
-    if ((status = mx_port_create(0u, &self_dump_port)) < 0) {
+    if ((status = mx_port_create(0, &self_dump_port)) < 0) {
         print_mx_error("mx_port_create failed", status);
         return 1;
     }
@@ -513,29 +556,33 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    mx_handle_t ex_port;
-    if ((status = mx_port_create(0u, &ex_port)) < 0) {
-        print_mx_error("mx_port_create failed", status);
-        return 1;
-    }
+    // The exception port may be passed in from the parent process.  If it
+    // wasn't, we bind the system exception port.
+    mx_handle_t ex_port = mx_get_startup_handle(PA_HND(PA_USER0, 0));
+    if (ex_port == MX_HANDLE_INVALID) {
+        if ((status = mx_port_create(0, &ex_port)) < 0) {
+            print_mx_error("mx_port_create failed", status);
+            return 1;
+        }
 
-    status = bind_system_exception_port(ex_port);
-    if (status < 0) {
-        print_mx_error("unable to bind system exception port", status);
-        return 1;
+        status = bind_system_exception_port(ex_port);
+        if (status < 0) {
+            print_mx_error("unable to bind system exception port", status);
+            return 1;
+        }
     }
 
     printf("crashlogger service ready\n");
 
     while (true) {
-        mx_exception_packet_t packet;
-        mx_port_wait(ex_port, MX_TIME_INFINITE, &packet, sizeof(packet));
-        if (packet.hdr.key != kSysExceptionKey) {
+        mx_port_packet_t packet;
+        mx_port_wait(ex_port, MX_TIME_INFINITE, &packet, 0);
+        if (packet.key != kSysExceptionKey) {
             print_error("invalid crash key");
             return 1;
         }
 
-        process_report(&packet.report, use_libunwind);
+        process_report(packet.exception.pid, packet.exception.tid, packet.type, use_libunwind);
     }
 
     return 0;

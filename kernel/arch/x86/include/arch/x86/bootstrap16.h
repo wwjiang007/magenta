@@ -24,7 +24,7 @@
 #ifndef ASSEMBLY
 #include <assert.h>
 #include <magenta/compiler.h>
-#include <kernel/vm/vm_aspace.h>
+#include <vm/vm_aspace.h>
 
 __BEGIN_CDECLS
 
@@ -86,7 +86,7 @@ struct __PACKED x86_ap_bootstrap_data {
 status_t x86_bootstrap16_prep(
         paddr_t bootstrap_phys_addr,
         uintptr_t entry64,
-        mxtl::RefPtr<VmAspace> *temp_aspace,
+        fbl::RefPtr<VmAspace> *temp_aspace,
         void **bootstrap_aperature);
 
 static_assert(sizeof(struct x86_ap_bootstrap_data) <= PAGE_SIZE, "");

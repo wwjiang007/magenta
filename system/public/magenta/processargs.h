@@ -121,12 +121,17 @@ struct mx_proc_args {
 // Used by kernel and userboot during startup
 #define PA_VMO_BOOTFS            0x1B
 
+// Used by the kernel to export debug information as a file in bootfs.  When
+// devmgr starts, it looks for handles of this type, and adds them as files in
+// /boot/kernel/<vmo-name>.
+#define PA_VMO_KERNEL_FILE        0x1C
+
 
 // --- Namespace Handles ---
 
 // A handle which will handle OPEN requests relative
 // to a particular path which is specified by the
-// nametable entry refereed to by the "arg" field
+// nametable entry referred to by the "arg" field
 #define PA_NS_DIR                0x20
 
 
@@ -134,17 +139,12 @@ struct mx_proc_args {
 // Used by libmxio for passing fdtable, fsroot, etc
 
 // Handle types the mxio library uses
-#define PA_MXIO_ROOT             0x30
 #define PA_MXIO_CWD              0x31
 #define PA_MXIO_REMOTE           0x32
 #define PA_MXIO_PIPE             0x33
 #define PA_MXIO_EVENT            0x34
 #define PA_MXIO_LOGGER           0x35
 #define PA_MXIO_SOCKET           0x36
-
-// Client endpoint for remoteio "/svc" directory provided
-// to enable outbound connections to services.
-#define PA_SERVICE_ROOT          0x3A
 
 // Server endpoint for remoteio "/svc" directory provided
 // to enable handling of inbound connections to services
@@ -157,7 +157,6 @@ struct mx_proc_args {
 // --- Various ---
 
 // Handle types used by the application model
-#define PA_APP_LAUNCHER          0x41
 #define PA_APP_SERVICES          0x43
 
 // Handle types for one-off use and prototyping
@@ -195,17 +194,21 @@ struct mx_loader_svc_msg {
 // arg=0, data[] object name (asciiz)
 // reply includes vmo handle on success
 
+#define LOADER_SVC_OP_PUBLISH_DATA_SINK 5
+// arg=0, data[] sink name (asciiz)
+// Request includes a VMO handle.
 
-// --- Compatibility Defines ---
-// TODO: remove once Fuchsia deps are resolved
-#define MX_HND_INFO(type, arg) (((type)&0xFF)| (((arg)&0xFFFF)<<16))
-#define MX_HND_INFO_TYPE(n) ((n) & 0xFF)
+#define LOADER_SVC_OP_LOAD_DEBUG_CONFIG 6
+// arg=0, data[] configuration (file) name (asciiz)
+// reply includes vmo handle on success
 
-#define MX_HND_TYPE_USER1 PA_USER1
-#define MX_HND_TYPE_MXIO_PIPE PA_MXIO_PIPE
-#define MX_HND_TYPE_JOB PA_JOB_DEFAULT
-#define MX_HND_TYPE_MXIO_ROOT PA_MXIO_ROOT
-#define MX_HND_TYPE_MXIO_LOGGER PA_MXIO_LOGGER
+#define LOADER_SVC_OP_CONFIG 7
+// arg=0, data[] configuration string to affect later loading (asciiz)
+// e.g. "asan"
+
+#define LOADER_SVC_OP_CLONE 8
+// obtain a new loader service connection/context
+// arg=0, data[] empty, request includes channel for new connection
 
 #ifdef __cplusplus
 }

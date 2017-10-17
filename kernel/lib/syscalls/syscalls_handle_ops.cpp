@@ -8,62 +8,66 @@
 #include <inttypes.h>
 #include <trace.h>
 
-#include <kernel/auto_lock.h>
-
-#include <magenta/handle_owner.h>
-#include <magenta/magenta.h>
-#include <magenta/process_dispatcher.h>
+#include <object/handle_owner.h>
+#include <object/handles.h>
+#include <object/process_dispatcher.h>
+#include <fbl/auto_lock.h>
 
 #include "syscalls_priv.h"
 
 #define LOCAL_TRACE 0
 
 mx_status_t sys_handle_close(mx_handle_t handle_value) {
-    LTRACEF("handle %d\n", handle_value);
+    LTRACEF("handle %x\n", handle_value);
+
+    // Closing the "never a handle" invalid handle is not an error
+    // It's like free(NULL).
+    if (handle_value == MX_HANDLE_INVALID)
+        return MX_OK;
     auto up = ProcessDispatcher::GetCurrent();
     HandleOwner handle(up->RemoveHandle(handle_value));
     if (!handle)
-        return ERR_BAD_HANDLE;
-    return NO_ERROR;
+        return MX_ERR_BAD_HANDLE;
+    return MX_OK;
 }
 
 static mx_status_t handle_dup_replace(
     bool is_replace, mx_handle_t handle_value, mx_rights_t rights, user_ptr<mx_handle_t> _out) {
-    LTRACEF("handle %d\n", handle_value);
+    LTRACEF("handle %x\n", handle_value);
 
     auto up = ProcessDispatcher::GetCurrent();
 
     {
-        AutoLock lock(up->handle_table_lock());
+        fbl::AutoLock lock(up->handle_table_lock());
         auto source = up->GetHandleLocked(handle_value);
         if (!source)
-            return ERR_BAD_HANDLE;
+            return MX_ERR_BAD_HANDLE;
 
         if (!is_replace) {
-            if (!magenta_rights_check(source, MX_RIGHT_DUPLICATE))
-                return ERR_ACCESS_DENIED;
+            if (!source->HasRights(MX_RIGHT_DUPLICATE))
+                return MX_ERR_ACCESS_DENIED;
         }
 
         if (rights == MX_RIGHT_SAME_RIGHTS) {
             rights = source->rights();
         } else if ((source->rights() & rights) != rights) {
-            return ERR_INVALID_ARGS;
+            return MX_ERR_INVALID_ARGS;
         }
 
         HandleOwner dest(DupHandle(source, rights, is_replace));
         if (!dest)
-            return ERR_NO_MEMORY;
+            return MX_ERR_NO_MEMORY;
 
-        if (_out.copy_to_user(up->MapHandleToValue(dest)) != NO_ERROR)
-            return ERR_INVALID_ARGS;
+        if (_out.copy_to_user(up->MapHandleToValue(dest)) != MX_OK)
+            return MX_ERR_INVALID_ARGS;
 
         if (is_replace)
             up->RemoveHandleLocked(handle_value);
 
-        up->AddHandleLocked(mxtl::move(dest));
+        up->AddHandleLocked(fbl::move(dest));
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 mx_status_t sys_handle_duplicate(

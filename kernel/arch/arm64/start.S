@@ -9,7 +9,8 @@
 #include <arch/arm64.h>
 #include <arch/asm_macros.h>
 #include <arch/defines.h>
-#include <kernel/vm.h>
+#include <arch/efi.h>
+#include <vm/initial_map.h>
 #include <magenta/tls.h>
 
 #ifndef __has_feature
@@ -42,11 +43,49 @@ size                    .req x26
 attr                    .req x27
 
 .section .text.boot, "ax", @progbits
-FUNCTION(_start)
+FUNCTION_LABEL(_start)
 #if FASTBOOT_HEADER
 #include "fastboot-header.S"
 #endif
 FUNCTION(arm_reset)
+    movlit  x9, EFI_BOOT_SIGNATURE
+    ldr     x10, [x1]
+    cmp     x9,x10
+    bne     .Lno_efi
+/* We were launched by EFI with x1 containing system table
+     mmu is on, dcache is on, icache is on
+*/
+    adr_global    x2, _start
+    push_regs     x29, x30
+    bl            efi_boot
+    mov           x20, x0
+    pop_regs      x29, x30
+
+        /* Turn off Dcache and MMU */
+    mrs    x0, CurrentEL
+    cmp    x0, #0x04
+    b.ne   1f
+    mrs    x0, sctlr_el2
+    bic    x0, x0, #1 << 0    // clear SCTLR.M
+    bic    x0, x0, #1 << 2    // clear SCTLR.C
+    msr    sctlr_el2, x0
+    isb
+    b      2f
+1:
+    mrs    x0, sctlr_el1
+    bic    x0, x0, #1 << 0    // clear SCTLR.M
+    bic    x0, x0, #1 << 2    // clear SCTLR.C
+    msr    sctlr_el1, x0
+    isb
+2:
+    mov     x0, x20
+    mov     x1, xzr
+    mov     x2, xzr
+    mov     x3, xzr
+    movlit  x20, (MEMBASE + KERNEL_LOAD_OFFSET)
+    br      x20
+.Lno_efi:
+
     adrp    tmp, boot_structure_paddr
     adrp    tmp2, arch_boot_el
     mrs     x2, CurrentEL
@@ -71,11 +110,9 @@ FUNCTION(arm_reset)
     /* Calculate pagetable physical addresses */
     adr_global page_table0, tt_trampoline
 
-#if WITH_SMP
     mrs     cpuid, mpidr_el1
     ubfx    cpuid, cpuid, #0, #15 /* mask Aff0 and Aff1 fields */
     cbnz    cpuid, .Lmmu_enable_secondary
-#endif
 
     mov     tmp, #0
 
@@ -282,7 +319,6 @@ FUNCTION(arm_reset)
 
     str     tmp2, [page_table0, tmp, lsl #3]     /* tt_trampoline[paddr index] = pt entry */
 
-#if WITH_SMP
     adr_global tmp, page_tables_not_ready
     str     wzr, [tmp]
     b       .Lpage_tables_ready
@@ -293,7 +329,6 @@ FUNCTION(arm_reset)
     ldr     wtmp2, [tmp]
     cbnz    wtmp2, .Lpage_tables_not_ready
 .Lpage_tables_ready:
-#endif
 
     /* set up the mmu */
 
@@ -346,9 +381,7 @@ FUNCTION(arm_reset)
     tlbi    vmalle1
     isb
 
-#if WITH_SMP
     cbnz    cpuid, .Lsecondary_boot
-#endif
 
     // Clear out the bss excluding the kernel translation table ("prebss").
     // NOTE: Relies on __post_prebss_bss_start and __bss_end
@@ -377,6 +410,9 @@ FUNCTION(arm_reset)
     adr_global tmp, boot_cpu_fake_thread_pointer_location
     msr     tpidr_el1, tmp
 
+    // set the per cpu pointer for cpu 0
+    adr_global x18, arm64_percpu_array
+
     // Choose a good (ideally random) stack-guard value as early as possible.
     bl      choose_stack_guard
     str	    x0, [tmp, #MX_TLS_STACK_GUARD_OFFSET]
@@ -386,7 +422,6 @@ FUNCTION(arm_reset)
     bl  lk_main
     b   .
 
-#if WITH_SMP
 .Lsecondary_boot:
     bl      arm64_get_secondary_sp
     cbz     x0, .Lunsupported_cpu_trap
@@ -398,8 +433,7 @@ FUNCTION(arm_reset)
 .Lunsupported_cpu_trap:
     wfe
     b       .Lunsupported_cpu_trap
-#endif
-END(arm_reset)
+END_FUNCTION(arm_reset)
 
 .ltorg
 
@@ -409,16 +443,14 @@ END(arm_reset)
     .balign 64
 DATA(arch_boot_el)
     .quad 0xdeadbeef00ff00ff
-END(arch_boot_el)
+END_DATA(arch_boot_el)
 DATA(boot_structure_paddr)
     .quad 0x00ff00ffdeadbeef
-END(boot_structure_paddr)
+END_DATA(boot_structure_paddr)
 
-#if WITH_SMP
 DATA(page_tables_not_ready)
     .long       1
-END(page_tables_not_ready)
-#endif
+END_DATA(page_tables_not_ready)
 
     .balign 8
 LOCAL_DATA(boot_cpu_fake_arch_thread)
@@ -429,25 +461,25 @@ LOCAL_DATA(boot_cpu_fake_arch_thread)
     .quad 0
 #endif
 LOCAL_DATA(boot_cpu_fake_thread_pointer_location)
-END(boot_cpu_fake_arch_thread)
+END_DATA(boot_cpu_fake_arch_thread)
 
 .bss
 LOCAL_DATA(boot_cpu_kstack)
     .skip ARCH_DEFAULT_STACK_SIZE
     .balign 16
 LOCAL_DATA(boot_cpu_kstack_end)
-END(boot_cpu_kstack)
+END_DATA(boot_cpu_kstack)
 
 #if __has_feature(safe_stack)
 LOCAL_DATA(boot_cpu_unsafe_kstack)
     .skip ARCH_DEFAULT_STACK_SIZE
     .balign 16
 LOCAL_DATA(boot_cpu_unsafe_kstack_end)
-END(boot_cpu_unsafe_kstack)
+END_DATA(boot_cpu_unsafe_kstack)
 #endif
 
 .section .bss.prebss.translation_table, "aw", @nobits
 .align 3 + MMU_PAGE_TABLE_ENTRIES_IDENT_SHIFT
 DATA(tt_trampoline)
     .skip 8 * MMU_PAGE_TABLE_ENTRIES_IDENT
-END(tt_trampoline)
+END_DATA(tt_trampoline)

@@ -8,125 +8,54 @@
 #include <err.h>
 
 /* Register use in this code:
- * Callee save:
- * %rbx = smap_avail
- * %r12 = dst
- * %r13 = src
- * %r14 = len
- * %r15 = fault_return
+ * %rdi = argument 1, void* dst
+ * %rsi = argument 2, const void* src
+ * %rdx = argument 3, size_t len
+ *   - moved to %rcx
+ * %rcx = argument 4, void** fault_return
+ *   - moved to %r10
  */
 
-.macro begin_usercopy
-    push %r12
-    push %r13
-    push %r14
-    push %r15
-    push %rbx
-
-    # shift all of the arguments into callee save registers
-    mov %rdi, %r12
-    mov %rsi, %r13
-    mov %rdx, %r14
-    mov %r8, %r15
-    mov %rcx, %rbx
+# status_t _x86_copy_to_or_from_user(void *dst, const void *src, size_t len, void **fault_return)
+FUNCTION(_x86_copy_to_or_from_user)
+    # Copy fault_return out of %rcx, because %rcx is used by "rep movsb" later.
+    movq %rcx, %r10
 
     # Check if SMAP is enabled
-    cmp $0, %rbx
+    cmpb $0, g_x86_feature_smap(%rip)
     # Disable SMAP protection if SMAP is enabled
     jz 0f
     stac
 0:
-.endm
 
-.macro end_usercopy
+    # Setup page fault return
+    movq $.Lfault_copy, (%r10)
+
+    # Between now and the reset of the fault return, we cannot make a function
+    # call or manipulate the stack.  We need to be able to restore all callee
+    # registers, without any knowledge of where between these two points we
+    # faulted.
+
+    # Perform the actual copy
+    cld
+    # %rdi and %rsi already contain the destination and source addresses.
+    movq %rdx, %rcx
+    rep movsb  # while (rcx-- > 0) *rdi++ = *rsi++;
+
+    mov $MX_OK, %rax
+
+.Lcleanup_copy:
+    # Reset fault return
+    movq $0, (%r10)
+
     # Re-enable SMAP protection
-    cmp $0, %rbx
+    cmpb $0, g_x86_feature_smap(%rip)
     jz 0f
     clac
 0:
-    pop %rbx
-    pop %r15
-    pop %r14
-    pop %r13
-    pop %r12
-.endm
-
-# status_t _x86_copy_from_user(void *dst, const void *src, size_t len, bool smap, void **fault_return)
-FUNCTION(_x86_copy_from_user)
-    begin_usercopy
-
-    # Check that userspace has access to the [src, src+len) buffer
-    mov %r13, %rdi
-    mov %r14, %rsi
-    call _x86_usercopy_can_read
-    cmp $0, %rax
-    jnz 0f
-    mov $ERR_INVALID_ARGS, %rax
-    jmp .Lcleanup_copy_from
-0:
-    # Setup page fault return
-    movq $.Lfault_copy_from, (%r15)
-
-    # Between now and the reset of the fault return, we cannot make a function
-    # call or manipulate the stack.  We need to be able to restore all callee
-    # registers, without any knowledge of where between these two points we
-    # faulted.
-
-    # Perform the actual copy
-    cld
-    mov %r12, %rdi
-    mov %r13, %rsi
-    mov %r14, %rcx
-    rep movsb
-
-    mov $NO_ERROR, %rax
-    jmp .Lcleanup_copy_from
-
-.Lfault_copy_from:
-    mov $ERR_INVALID_ARGS, %rax
-.Lcleanup_copy_from:
-    # Reset fault return
-    movq $0, (%r15)
-
-    end_usercopy
     ret
 
-# status_t _x86_copy_to_user(void *dst, const void *src, size_t len, bool smap, void **fault_return)
-FUNCTION(_x86_copy_to_user)
-    begin_usercopy
-
-    # Check that userspace has access to the [dst, dst+len) buffer
-    mov %r12, %rdi
-    mov %r14, %rsi
-    call _x86_usercopy_can_write
-    cmp $0, %rax
-    jnz 0f
-    mov $ERR_INVALID_ARGS, %rax
-    jmp .Lcleanup_copy_to
-0:
-    # Setup page fault return
-    movq $.Lfault_copy_to, (%r15)
-
-    # Between now and the reset of the fault return, we cannot make a function
-    # call or manipulate the stack.  We need to be able to restore all callee
-    # registers, without any knowledge of where between these two points we
-    # faulted.
-
-    # Perform the actual copy
-    cld
-    mov %r12, %rdi
-    mov %r13, %rsi
-    mov %r14, %rcx
-    rep movsb
-
-    mov $NO_ERROR, %rax
-    jmp .Lcleanup_copy_to
-
-.Lfault_copy_to:
-    mov $ERR_INVALID_ARGS, %rax
-.Lcleanup_copy_to:
-    # Reset fault return
-    movq $0, (%r15)
-
-    end_usercopy
-    ret
+.Lfault_copy:
+    mov $MX_ERR_INVALID_ARGS, %rax
+    jmp .Lcleanup_copy
+END_FUNCTION(_x86_copy_to_or_from_user)

@@ -17,8 +17,8 @@
 #include <dev/pcie_bridge.h>
 #include <dev/pcie_bus_driver.h>
 #include <dev/pcie_device.h>
-
-static constexpr unsigned int kPciDumpRowLen = 0x10u;
+#include <fbl/algorithm.h>
+#include <fbl/auto_lock.h>
 
 class PcieDebugConsole {
 public:
@@ -255,7 +255,7 @@ static const char* pci_device_type(const PcieDevice& dev)
         default: break;
     }
 
-    for (size_t i = 0; i < countof(PCI_DEV_TYPE_LUT); ++i) {
+    for (size_t i = 0; i < fbl::count_of(PCI_DEV_TYPE_LUT); ++i) {
         const pci_dev_type_lut_entry_t* entry = PCI_DEV_TYPE_LUT + i;
 
         if ((dev.class_id() == entry->class_code)    &&
@@ -278,45 +278,6 @@ static void do_lspci_indent(uint level) {
         printf(_fmt, ##__VA_ARGS__);           \
     } while (0)
 
-/*
- * PCI address spaces are not necessarily mapped in a manner such that
- * the address hexdump8 uses is useful, so implement one that supports
- * PIO and MMIO.
- */
-static void pci_cfg_hexdump8(const PciConfig* cfg, uint16_t off, uint amt)
-{
-    uint8_t buf[kPciDumpRowLen];
-    for (uint buf_off = off; buf_off < amt; buf_off += kPciDumpRowLen) {
-        uint len = MIN(amt - buf_off, kPciDumpRowLen);
-
-        printf("%#" PRIxPTR ": ", cfg->base() + buf_off);
-        for (uint i = 0; i < len; i++)
-            buf[i] = cfg->Read(PciReg8(static_cast<uint16_t>(buf_off + i)));
-
-        for (uint i = 0; i < kPciDumpRowLen; i++ ) {
-            if (i < len) {
-                printf("%02x ", buf[i]);
-            } else {
-                printf("   ");
-            }
-        }
-
-        printf("|");
-
-        for (uint i = 0; i < len; i++) {
-            if (i < len) {
-                if (isgraph(buf[i]))
-                    printf("%c", buf[i]);
-                else
-                    printf(".");
-            } else {
-                printf(" ");
-            }
-        }
-
-        printf("\n");
-    }
-}
 
 static void dump_pcie_hdr(const PcieDevice& dev, lspci_params_t* params)
 {
@@ -328,9 +289,6 @@ static void dump_pcie_hdr(const PcieDevice& dev, lspci_params_t* params)
 
     if (dev.disabled())
         printf(" [DISABLED]");
-
-    if (dev.claimed())
-        printf(" [CLAIMED]");
 
     printf("\n");
 }
@@ -357,10 +315,6 @@ static void dump_pcie_bars(const PcieDevice& dev,
                 info->is_mmio ? (info->is_64bit ? " 64-bit" : " 32-bit") : "",
                 info->is_mmio ? "MMIO" : "PIO",
                 info->allocation == nullptr ? "" : " (allocated)");
-        if (info->vmo) {
-            LSPCI_PRINTF("                               :: ");
-            info->vmo->Dump(0, false);
-        }
     }
 }
 
@@ -443,10 +397,7 @@ static void dump_pcie_bridge(const PcieBridge& bridge, lspci_params_t* params)
 static void dump_pcie_raw_config(uint amt, const PciConfig* cfg)
 {
     DEBUG_ASSERT(amt == PCIE_BASE_CONFIG_SIZE || amt == PCIE_EXTENDED_CONFIG_SIZE);
-    printf("%u bytes of raw config (base %s:%#" PRIxPTR ")\n",
-           amt, (cfg->addr_space() == PciAddrSpace::MMIO) ? "MMIO" : "PIO", cfg->base());
-
-    pci_cfg_hexdump8(cfg, 0, amt);
+    cfg->DumpConfig(static_cast<uint16_t>(amt & 0xFFFF));
 }
 
 #define CAP_TBL_ENTRY(s) (s, #s)
@@ -485,7 +436,7 @@ static inline const char* get_cap_str(uint8_t id) {
     return "<Unknown>";
 }
 
-static void dump_pcie_capabilities(mxtl::RefPtr<PcieDevice> dev, void *ctx)
+static void dump_pcie_capabilities(fbl::RefPtr<PcieDevice> dev, void *ctx)
 {
     bool is_first = true;
     lspci_params_t* params = static_cast<lspci_params_t*>(ctx);
@@ -508,7 +459,7 @@ static void dump_pcie_capabilities(mxtl::RefPtr<PcieDevice> dev, void *ctx)
     params->indent_level = initial_indent;
 }
 
-static bool dump_pcie_device(const mxtl::RefPtr<PcieDevice>& dev, void* ctx, uint level)
+static bool dump_pcie_device(const fbl::RefPtr<PcieDevice>& dev, void* ctx, uint level)
 {
     DEBUG_ASSERT(dev && ctx);
     lspci_params_t* params = (lspci_params_t*)ctx;
@@ -517,7 +468,7 @@ static bool dump_pcie_device(const mxtl::RefPtr<PcieDevice>& dev, void* ctx, uin
 
     /* Grab the device's lock so it cannot be unplugged out from under us while
      * we print details. */
-    AutoLock lock(dev->dev_lock());
+    fbl::AutoLock lock(dev->dev_lock());
 
     /* If the device has already been unplugged, just skip it */
     if (!dev->plugged_in())
@@ -547,11 +498,6 @@ static bool dump_pcie_device(const mxtl::RefPtr<PcieDevice>& dev, void* ctx, uin
      * filter */
     if (params->verbose) {
         params->indent_level += 2;
-
-        if (dev->config_vmo()) {
-            LSPCI_PRINTF("Config VMO        : ");
-            dev->config_vmo()->Dump(0, false);
-        }
 
         dump_pcie_common(*dev, params);
         dump_pcie_bars(*dev, params);
@@ -670,13 +616,13 @@ int PcieDebugConsole::CmdLsPci(int argc, const cmd_args *argv, uint32_t flags) {
             printf("       -e : Dump raw extended config (implies -l -c)\n");
             printf("       -f : Force dump at least standard config, even if the device didn't "
                                "enumerate (requires a full BDF address)\n");
-            return NO_ERROR;
+            return MX_OK;
         }
     }
 
     auto bus_drv = PcieBusDriver::GetDriver();
     if (bus_drv == nullptr)
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
 
     bus_drv->ForeachDevice(dump_pcie_device, &params);
 
@@ -697,7 +643,7 @@ int PcieDebugConsole::CmdLsPci(int argc, const cmd_args *argv, uint32_t flags) {
         printf("PCIe scan discovered %u device%s\n", params.found, (params.found == 1) ? "" : "s");
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 int PcieDebugConsole::CmdPciUnplug(int argc, const cmd_args *argv, uint32_t flags) {
@@ -719,14 +665,14 @@ int PcieDebugConsole::CmdPciUnplug(int argc, const cmd_args *argv, uint32_t flag
 
     if (confused) {
         printf("usage: %s <bus_id> <dev_id> <func_id>\n", argv[0].str);
-        return NO_ERROR;
+        return MX_OK;
     }
 
     auto bus_drv = PcieBusDriver::GetDriver();
     if (bus_drv == nullptr)
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
 
-    mxtl::RefPtr<PcieDevice> dev = bus_drv->GetRefedDevice(bus_id, dev_id, func_id);
+    fbl::RefPtr<PcieDevice> dev = bus_drv->GetRefedDevice(bus_id, dev_id, func_id);
 
     if (!dev) {
         printf("Failed to find PCI device %02x:%02x.%01x\n", bus_id, dev_id, func_id);
@@ -738,7 +684,7 @@ int PcieDebugConsole::CmdPciUnplug(int argc, const cmd_args *argv, uint32_t flag
         printf("done\n");
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 int PcieDebugConsole::CmdPciReset(int argc, const cmd_args *argv, uint32_t flags) {
@@ -760,14 +706,14 @@ int PcieDebugConsole::CmdPciReset(int argc, const cmd_args *argv, uint32_t flags
 
     if (confused) {
         printf("usage: %s <bus_id> <dev_id> <func_id>\n", argv[0].str);
-        return NO_ERROR;
+        return MX_OK;
     }
 
     auto bus_drv = PcieBusDriver::GetDriver();
     if (bus_drv == nullptr)
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
 
-    mxtl::RefPtr<PcieDevice> dev = bus_drv->GetRefedDevice(bus_id, dev_id, func_id);
+    fbl::RefPtr<PcieDevice> dev = bus_drv->GetRefedDevice(bus_id, dev_id, func_id);
 
     if (!dev) {
         printf("Failed to find PCI device %02x:%02x.%01x\n", bus_id, dev_id, func_id);
@@ -775,19 +721,19 @@ int PcieDebugConsole::CmdPciReset(int argc, const cmd_args *argv, uint32_t flags
         printf("Attempting reset of device %02x:%02x.%01x...\n", bus_id, dev_id, func_id);
         status_t res = dev->DoFunctionLevelReset();
         dev = nullptr;
-        if (res != NO_ERROR)
+        if (res != MX_OK)
             printf("Reset attempt failed (res = %d).\n", res);
         else
             printf("Success, device %02x:%02x.%01x has been reset.\n", bus_id, dev_id, func_id);
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 int PcieDebugConsole::CmdPciRescan(int argc, const cmd_args *argv, uint32_t flags) {
     auto bus_drv = PcieBusDriver::GetDriver();
     if (bus_drv == nullptr)
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
 
     return bus_drv->RescanDevices();
 }

@@ -3,25 +3,30 @@
 // found in the LICENSE file.
 
 #include <launchpad/vmo.h>
+#include <magenta/syscalls.h>
 #include <mxio/io.h>
 
 #include <fcntl.h>
+#include <string.h>
 #include <unistd.h>
 
-// TODO(mcgrathr): Drop this interface altogether, since mxio_get_vmo
-// is the same thing.  At that point, perhaps drop launchpad_vmo_from_file
-// too, since it's so thin.
-mx_handle_t launchpad_vmo_from_fd(int fd) {
-    mx_handle_t vmo;
-    mx_status_t status = mxio_get_vmo(fd, &vmo);
-    return status == NO_ERROR ? vmo : status;
-}
-
-mx_handle_t launchpad_vmo_from_file(const char* filename) {
+mx_status_t launchpad_vmo_from_file(const char* filename, mx_handle_t* out) {
     int fd = open(filename, O_RDONLY);
     if (fd < 0)
-        return ERR_IO;
-    mx_handle_t vmo = launchpad_vmo_from_fd(fd);
+        return MX_ERR_IO;
+    mx_status_t status = mxio_get_vmo(fd, out);
     close(fd);
-    return vmo;
+
+    if (status == MX_OK) {
+        if (strlen(filename) >= MX_MAX_NAME_LEN) {
+            const char* p = strrchr(filename, '/');
+            if (p != NULL) {
+                filename = p + 1;
+            }
+        }
+
+        mx_object_set_property(*out, MX_PROP_NAME, filename, strlen(filename));
+    }
+
+    return status;
 }

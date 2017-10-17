@@ -9,6 +9,7 @@
 #include <trace.h>
 #include <assert.h>
 #include <magenta/compiler.h>
+#include <magenta/types.h>
 #include <err.h>
 #include <string.h>
 #include <ctype.h>
@@ -556,7 +557,9 @@ static void convert_args(int argc, cmd_args *argv)
 }
 
 
-static status_t command_loop(int (*get_line)(const char **, void *), void *get_line_cookie, bool showprompt, bool locked) TA_NO_THREAD_SAFETY_ANALYSIS
+static mx_status_t command_loop(int (*get_line)(const char **, void *),
+                                void *get_line_cookie, bool showprompt,
+                                bool locked) TA_NO_THREAD_SAFETY_ANALYSIS
 {
     bool exit;
 #if WITH_LIB_ENV
@@ -656,7 +659,7 @@ static status_t command_loop(int (*get_line)(const char **, void *), void *get_l
 
     free(outbuf);
     free(args);
-    return NO_ERROR;
+    return MX_OK;
 
 no_mem_error:
     if (outbuf)
@@ -666,7 +669,7 @@ no_mem_error:
         free(args);
 
     dprintf(INFO, "%s: not enough memory\n", __func__);
-    return ERR_NO_MEMORY;
+    return MX_ERR_NO_MEMORY;
 }
 
 void console_abort_script(void)
@@ -681,7 +684,7 @@ void console_start(void)
     dprintf(INFO, "entering main console loop\n");
 
 
-    while (command_loop(&read_debug_line, NULL, true, false) == NO_ERROR)
+    while (command_loop(&read_debug_line, NULL, true, false) == MX_OK)
         ;
 
     dprintf(INFO, "exiting main console loop\n");
@@ -798,7 +801,7 @@ static int cmd_echo(int argc, const cmd_args *argv, uint32_t flags)
 {
     if (argc > 1)
         echo = argv[1].b;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static void panic_putc(char c) {

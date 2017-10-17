@@ -59,10 +59,11 @@ struct Syscall {
 
     bool is_vdso() const;
     bool is_noreturn() const;
-    bool is_no_wrap() const;
     bool is_blocking() const;
+    bool is_internal() const;
     size_t num_kernel_args() const;
     void for_each_kernel_arg(const std::function<void(const TypeSpec&)>& cb) const;
+    void for_each_return(const std::function<void(const TypeSpec&)>& cb) const;
     bool validate() const;
     void assign_index(int* next_index);
     bool valid_array_count(const TypeSpec& ts) const;

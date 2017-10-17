@@ -34,13 +34,13 @@ bool address_space_limits_test() {
 #if defined(__x86_64__)
     size_t page_size = getpagesize();
     mx_handle_t vmo;
-    EXPECT_EQ(mx_vmo_create(page_size, 0, &vmo), NO_ERROR, "");
+    EXPECT_EQ(mx_vmo_create(page_size, 0, &vmo), MX_OK);
     EXPECT_LT(0, vmo, "vm_object_create");
 
     // This is the lowest non-canonical address on x86-64.  We want to
     // make sure that userland cannot map a page immediately below
-    // this address.  See docs/magenta/sysret_problem.md for an
-    // explanation of the reason.
+    // this address.  See docs/sysret_problem.md for an explanation of
+    // the reason.
     uintptr_t noncanon_addr =
         ((uintptr_t) 1) << (x86_linear_address_width() - 1);
 
@@ -48,7 +48,7 @@ bool address_space_limits_test() {
     mx_status_t status = mx_object_get_info(mx_vmar_root_self(), MX_INFO_VMAR,
                                             &vmar_info, sizeof(vmar_info),
                                             NULL, NULL);
-    EXPECT_EQ(NO_ERROR, status, "get_info");
+    EXPECT_EQ(MX_OK, status, "get_info");
 
     // Check that we cannot map a page ending at |noncanon_addr|.
     size_t offset = noncanon_addr - page_size - vmar_info.base;
@@ -57,7 +57,7 @@ bool address_space_limits_test() {
         mx_vmar_root_self(), offset, vmo, 0, page_size,
         MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE | MX_VM_FLAG_SPECIFIC,
         &addr);
-    EXPECT_EQ(ERR_INVALID_ARGS, status, "vm_map");
+    EXPECT_EQ(MX_ERR_INVALID_ARGS, status, "vm_map");
 
     // Check that we can map at the next address down.  This helps to
     // verify that the previous check didn't fail for some unexpected
@@ -67,7 +67,7 @@ bool address_space_limits_test() {
         mx_vmar_root_self(), offset, vmo, 0, page_size,
         MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE | MX_VM_FLAG_SPECIFIC,
         &addr);
-    EXPECT_EQ(NO_ERROR, status, "vm_map");
+    EXPECT_EQ(MX_OK, status, "vm_map");
 
     // Check that MX_VM_FLAG_SPECIFIC fails on already-mapped locations.
     // Otherwise, the previous mapping could have overwritten
@@ -76,13 +76,13 @@ bool address_space_limits_test() {
         mx_vmar_root_self(), offset, vmo, 0, page_size,
         MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE | MX_VM_FLAG_SPECIFIC,
         &addr);
-    EXPECT_EQ(ERR_NO_MEMORY, status, "vm_map");
+    EXPECT_EQ(MX_ERR_NO_MEMORY, status, "vm_map");
 
     // Clean up.
     status = mx_vmar_unmap(mx_vmar_root_self(), addr, page_size);
-    EXPECT_EQ(NO_ERROR, status, "vm_unmap");
+    EXPECT_EQ(MX_OK, status, "vm_unmap");
     status = mx_handle_close(vmo);
-    EXPECT_EQ(NO_ERROR, status, "handle_close");
+    EXPECT_EQ(MX_OK, status, "handle_close");
 #endif
 
     END_TEST;
@@ -119,20 +119,17 @@ bool mmap_prot_test() {
     BEGIN_TEST;
 
     volatile uint32_t* addr = (uint32_t*)mmap(NULL, sizeof(uint32_t), PROT_NONE, MAP_PRIVATE|MAP_ANON, -1, 0);
-    auto test_errno = errno;
-    // PROT_NONE is not supported yet.
-    EXPECT_EQ(MAP_FAILED, addr, "mmap should have failed for PROT_NONE");
-    EXPECT_EQ(EINVAL, test_errno, "mmap errno should be EINVAL for PROT_NONE");
+    EXPECT_NE(MAP_FAILED, addr, "mmap should have succeeded for PROT_NONE");
 
     addr = (uint32_t*)mmap(NULL, sizeof(uint32_t), PROT_READ, MAP_PRIVATE|MAP_ANON, -1, 0);
-    EXPECT_NEQ(MAP_FAILED, addr, "mmap failed for read-only alloc");
+    EXPECT_NE(MAP_FAILED, addr, "mmap failed for read-only alloc");
 
     // This is somewhat pointless, to have a private read-only mapping, but we
     // should be able to read it.
     EXPECT_EQ(*addr, *addr, "could not read from mmaped address");
 
     addr = (uint32_t*)mmap(NULL, sizeof(uint32_t), PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
-    EXPECT_NEQ(MAP_FAILED, addr, "mmap failed for read-write alloc");
+    EXPECT_NE(MAP_FAILED, addr, "mmap failed for read-write alloc");
 
     // Now we test writing to the mapped memory, and verify that we can read it
     // back.
@@ -158,10 +155,10 @@ bool mmap_flags_test() {
     EXPECT_EQ(EINVAL, test_errno, "mmap errno should be EINVAL with bad flags");
 
     addr = (uint32_t*)mmap(NULL, sizeof(uint32_t), PROT_READ, MAP_PRIVATE|MAP_ANON, -1, 0);
-    EXPECT_NEQ(MAP_FAILED, addr, "mmap failed with MAP_PRIVATE flags");
+    EXPECT_NE(MAP_FAILED, addr, "mmap failed with MAP_PRIVATE flags");
 
     addr = (uint32_t*)mmap(NULL, sizeof(uint32_t), PROT_READ, MAP_SHARED|MAP_ANON, -1, 0);
-    EXPECT_NEQ(MAP_FAILED, addr, "mmap failed with MAP_SHARED flags");
+    EXPECT_NE(MAP_FAILED, addr, "mmap failed with MAP_SHARED flags");
 
     END_TEST;
 }
@@ -170,7 +167,7 @@ bool mprotect_test() {
     BEGIN_TEST;
 
     uint32_t* addr = (uint32_t*)mmap(NULL, sizeof(uint32_t), PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
-    ASSERT_NEQ(MAP_FAILED, addr, "mmap failed to map");
+    ASSERT_NE(MAP_FAILED, addr, "mmap failed to map");
 
     int page_size = getpagesize();
     // Should be able to write.
@@ -191,8 +188,7 @@ bool mprotect_test() {
 
     status = mprotect(addr, page_size, PROT_NONE);
     test_errno = errno;
-    EXPECT_EQ(-1, status, "mprotect should fail for PROT_NONE");
-    EXPECT_EQ(ENOTSUP, test_errno, "mprotect should return ENOTSUP for PROT_NONE");
+    EXPECT_EQ(0, status, "mprotect should succeed for PROT_NONE");
 
     END_TEST;
 }

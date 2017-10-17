@@ -17,42 +17,12 @@
 
 #define LOCAL_TRACE 0
 
-// called from assembly
-extern "C" bool _x86_usercopy_can_read(const void *base, size_t len);
-extern "C" bool _x86_usercopy_can_write(const void *base, size_t len);
-
 static inline bool ac_flag(void)
 {
     return x86_save_flags() & X86_FLAGS_AC;
 }
 
-status_t arch_copy_from_user(void *dst, const void *src, size_t len)
-{
-    DEBUG_ASSERT(!ac_flag());
-
-    bool smap_avail = x86_feature_test(X86_FEATURE_SMAP);
-    thread_t *thr = get_current_thread();
-    status_t status = _x86_copy_from_user(dst, src, len, smap_avail,
-                                          &thr->arch.page_fault_resume);
-
-    DEBUG_ASSERT(!ac_flag());
-    return status;
-}
-
-status_t arch_copy_to_user(void *dst, const void *src, size_t len)
-{
-    DEBUG_ASSERT(!ac_flag());
-
-    bool smap_avail = x86_feature_test(X86_FEATURE_SMAP);
-    thread_t *thr = get_current_thread();
-    status_t status = _x86_copy_to_user(dst, src, len, smap_avail,
-                                        &thr->arch.page_fault_resume);
-
-    DEBUG_ASSERT(!ac_flag());
-    return status;
-}
-
-static bool can_access(const void *base, size_t len, bool for_write)
+static bool can_access(const void *base, size_t len)
 {
     LTRACEF("can_access: base %p, len %zu\n", base, len);
 
@@ -63,12 +33,32 @@ static bool can_access(const void *base, size_t len, bool for_write)
     return is_user_address_range((vaddr_t)base, len);
 }
 
-bool _x86_usercopy_can_read(const void *base, size_t len)
+status_t arch_copy_from_user(void *dst, const void *src, size_t len)
 {
-    return can_access(base, len, false);
+    DEBUG_ASSERT(!ac_flag());
+
+    if (!can_access(src, len))
+        return MX_ERR_INVALID_ARGS;
+
+    thread_t *thr = get_current_thread();
+    status_t status = _x86_copy_to_or_from_user(dst, src, len,
+                                                &thr->arch.page_fault_resume);
+
+    DEBUG_ASSERT(!ac_flag());
+    return status;
 }
 
-bool _x86_usercopy_can_write(const void *base, size_t len)
+status_t arch_copy_to_user(void *dst, const void *src, size_t len)
 {
-    return can_access(base, len, true);
+    DEBUG_ASSERT(!ac_flag());
+
+    if (!can_access(dst, len))
+        return MX_ERR_INVALID_ARGS;
+
+    thread_t *thr = get_current_thread();
+    status_t status = _x86_copy_to_or_from_user(dst, src, len,
+                                                &thr->arch.page_fault_resume);
+
+    DEBUG_ASSERT(!ac_flag());
+    return status;
 }

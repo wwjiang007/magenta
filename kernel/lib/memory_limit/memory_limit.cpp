@@ -12,7 +12,7 @@
 #include <iovec.h>
 #include <kernel/cmdline.h>
 #include <kernel/vm.h>
-#include <mxtl/algorithm.h>
+#include <fbl/algorithm.h>
 #include <platform.h>
 #include <stdio.h>
 #include <string.h>
@@ -20,9 +20,9 @@
 
 #define LOCAL_TRACE 0
 
-status_t mem_limit_init(mem_limit_ctx_t* ctx) {
+mx_status_t mem_limit_init(mem_limit_ctx_t* ctx) {
     if (!ctx) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     uint64_t limit = cmdline_get_uint64("kernel.memory-limit-mb", 0u);
@@ -31,14 +31,14 @@ status_t mem_limit_init(mem_limit_ctx_t* ctx) {
         ctx->memory_limit = limit * MB;
         ctx->found_kernel = 0;
         ctx->found_ramdisk = 0;
-        return NO_ERROR;
+        return MX_OK;
     }
 
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
-status_t mem_limit_get_iovs(mem_limit_ctx_t* ctx, uintptr_t range_base, size_t range_size,
-                         iovec_t iovs[], size_t* used_cnt) {
+mx_status_t mem_limit_get_iovs(mem_limit_ctx_t* ctx, uintptr_t range_base, size_t range_size,
+                               iovec_t iovs[], size_t* used_cnt) {
     DEBUG_ASSERT(ctx);
     DEBUG_ASSERT(iovs);
     DEBUG_ASSERT(used_cnt);
@@ -46,7 +46,7 @@ status_t mem_limit_get_iovs(mem_limit_ctx_t* ctx, uintptr_t range_base, size_t r
     if (range_size == 0 || ctx->memory_limit == 0) {
         /* If our limit has been reached this range can be skipped */
         *used_cnt = 0;
-        return NO_ERROR;
+        return MX_OK;
     }
 
     LTRACEF("scanning range %" PRIxPTR " of size %zu, (kernel start %#" PRIxPTR " limit %zu\n",
@@ -97,7 +97,7 @@ status_t mem_limit_get_iovs(mem_limit_ctx_t* ctx, uintptr_t range_base, size_t r
             uintptr_t r_base = ctx->ramdisk_base;
             uintptr_t r_end = r_base + ctx->ramdisk_size;
             LTRACEF("ramdisk base %" PRIxPTR " size %" PRIxPTR "\n", r_base, ctx->ramdisk_size);
-            tmp = mxtl::min(ctx->memory_limit, ctx->ramdisk_size);
+            tmp = fbl::min(ctx->memory_limit, ctx->ramdisk_size);
             if (tmp != ctx->ramdisk_size) {
                 size_t diff = ctx->ramdisk_size - ctx->memory_limit;
                 printf("WARNING: ramdisk forces the system to exceed the system memory limit"
@@ -123,7 +123,7 @@ status_t mem_limit_get_iovs(mem_limit_ctx_t* ctx, uintptr_t range_base, size_t r
         // We've created our kernel and ramdisk vecs, and now we expand them as
         // much as possible within the imposed limit, starting with the k_high
         // gap between the kernel and ramdisk_iov.
-        tmp = mxtl::min(ctx->memory_limit, k_high);
+        tmp = fbl::min(ctx->memory_limit, k_high);
         if (tmp) {
             LTRACEF("growing low iov by %zu bytes.\n", tmp);
             low_len += tmp;
@@ -131,7 +131,7 @@ status_t mem_limit_get_iovs(mem_limit_ctx_t* ctx, uintptr_t range_base, size_t r
         }
 
         // Handle space between the start of the range and the kernel base
-        tmp = mxtl::min(ctx->memory_limit, k_low);
+        tmp = fbl::min(ctx->memory_limit, k_low);
         if (tmp) {
             low_base -= tmp;
             low_len += tmp;
@@ -146,7 +146,7 @@ status_t mem_limit_get_iovs(mem_limit_ctx_t* ctx, uintptr_t range_base, size_t r
         // limit. If we still have any memory left that we're allowed to use and
         // there's space between the end of the ramdisk and end of the range,
         // then we can attempt to grow that the high vector by the difference.
-        tmp = mxtl::min(ctx->memory_limit, r_high);
+        tmp = fbl::min(ctx->memory_limit, r_high);
         if (tmp) {
             LTRACEF("growing high iov by %zu bytes.\n", tmp);
             high_len += tmp;
@@ -172,15 +172,15 @@ status_t mem_limit_get_iovs(mem_limit_ctx_t* ctx, uintptr_t range_base, size_t r
         size_t adjusted_limit = ctx->memory_limit;
 
         if (!ctx->found_kernel) {
-            adjusted_limit -= mxtl::min(ctx->kernel_size, adjusted_limit);
+            adjusted_limit -= fbl::min(ctx->kernel_size, adjusted_limit);
             if (ctx->ramdisk_size) {
-                adjusted_limit -= mxtl::min(ctx->ramdisk_size, adjusted_limit);
+                adjusted_limit -= fbl::min(ctx->ramdisk_size, adjusted_limit);
             }
         }
 
         LTRACEF("adjusted limit of %zu being used (found_kernel: %d, found_ramdisk: %d)\n", adjusted_limit, ctx->found_kernel, ctx->found_ramdisk);
         // No kernel here, presumably no ramdisk. Just add what we can.
-        uint64_t tmp = mxtl::min(adjusted_limit, range_size);
+        uint64_t tmp = fbl::min(adjusted_limit, range_size);
         low_base = range_base;
         low_len = tmp;
         ctx->memory_limit -= tmp;
@@ -203,16 +203,16 @@ status_t mem_limit_get_iovs(mem_limit_ctx_t* ctx, uintptr_t range_base, size_t r
     *used_cnt = !!(iovs[0].iov_len) + !!(iovs[1].iov_len);
 
     LTRACEF("used %zu iov%s remaining memory %zu bytes\n", *used_cnt, (*used_cnt == 1) ? "," : "s,", ctx->memory_limit);
-    return NO_ERROR;
+    return MX_OK;
 }
 
-status_t mem_limit_add_arenas_from_range(mem_limit_ctx_t* ctx, uintptr_t range_base,
-                                 size_t range_size, pmm_arena_info_t arena_template) {
+mx_status_t mem_limit_add_arenas_from_range(mem_limit_ctx_t* ctx, uintptr_t range_base,
+                                            size_t range_size, pmm_arena_info_t arena_template) {
     size_t used;
     iovec_t vecs[2];
-    status_t status = mem_limit_get_iovs(ctx, range_base, range_size, vecs, &used);
+    mx_status_t status = mem_limit_get_iovs(ctx, range_base, range_size, vecs, &used);
 
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         return status;
     }
 
@@ -226,7 +226,7 @@ status_t mem_limit_add_arenas_from_range(mem_limit_ctx_t* ctx, uintptr_t range_b
 
         // If either vector failed then abort the rest of the operation. There is no
         // valid situation where only the second vector is used.
-        if (status != NO_ERROR) {
+        if (status != MX_OK) {
             break;
         }
     }

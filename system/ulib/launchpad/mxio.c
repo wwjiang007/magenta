@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "launch.h"
+#include <launchpad/launchpad.h>
 #include <launchpad/vmo.h>
 
 #include <magenta/process.h>
@@ -19,10 +19,10 @@ static mx_status_t add_mxio(launchpad_t* lp,
                             mx_handle_t handles[MXIO_MAX_HANDLES],
                             uint32_t types[MXIO_MAX_HANDLES],
                             mx_status_t status) {
-    if (status == ERR_BAD_HANDLE)
-        return NO_ERROR;
-    if (status == ERR_NOT_SUPPORTED)
-        return NO_ERROR;
+    if (status == MX_ERR_BAD_HANDLE)
+        return MX_OK;
+    if (status == MX_ERR_NOT_SUPPORTED)
+        return MX_OK;
     if (status > 0) {
         return launchpad_add_handles(lp, status, handles, types);
     } else {
@@ -34,27 +34,22 @@ static mx_status_t add_mxio(launchpad_t* lp,
 mx_status_t launchpad_clone(launchpad_t* lp, uint32_t what) {
     mx_handle_t handles[MXIO_MAX_HANDLES];
     uint32_t types[MXIO_MAX_HANDLES];
+    mx_status_t status;
 
-    if (what & LP_CLONE_MXIO_ROOT) {
+    if (what & LP_CLONE_MXIO_NAMESPACE) {
         mxio_flat_namespace_t* flat;
-        mx_status_t status = mxio_ns_export_root(&flat);
-        if (status == NO_ERROR) {
+        status = mxio_ns_export_root(&flat);
+        if (status == MX_OK) {
             launchpad_set_nametable(lp, flat->count, flat->path);
             launchpad_add_handles(lp, flat->count, flat->handle, flat->type);
             free(flat);
-        } else {
-            if (status == ERR_NOT_FOUND) {
-                // if there's no root namespace, fail back to the legacy handles
-                add_mxio(lp, handles, types, mxio_clone_root(handles, types));
-                add_mxio(lp, handles, types, mxio_clone_svcroot(handles, types));
-            } else {
-                launchpad_abort(lp, status, "clone: error cloning namespace");
-                return status;
-            }
+        } else if (status != MX_ERR_NOT_FOUND) {
+            launchpad_abort(lp, status, "clone: error cloning namespace");
+            return status;
         }
     }
-    if (what & LP_CLONE_MXIO_CWD) {
-        add_mxio(lp, handles, types, mxio_clone_cwd(handles, types));
+    if (what & LP_CLONE_MXIO_CWD && (status = mxio_clone_cwd(handles, types)) > 0) {
+        add_mxio(lp, handles, types, status);
     }
     if (what & LP_CLONE_MXIO_STDIO) {
         for (int fd = 0; fd < 3; fd++) {
@@ -66,7 +61,7 @@ mx_status_t launchpad_clone(launchpad_t* lp, uint32_t what) {
     }
     if (what & LP_CLONE_DEFAULT_JOB) {
         mx_handle_t job;
-        if (mx_handle_duplicate(mx_job_default(), MX_RIGHT_SAME_RIGHTS, &job) == NO_ERROR) {
+        if (mx_handle_duplicate(mx_job_default(), MX_RIGHT_SAME_RIGHTS, &job) == MX_OK) {
             launchpad_add_handle(lp, job, PA_HND(PA_JOB_DEFAULT, 0));
         }
     }

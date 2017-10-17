@@ -10,7 +10,7 @@
 #include <err.h>
 #include <kernel/mp.h>
 #include <kernel/spinlock.h>
-#include <kernel/thread.h>
+#include <kernel/stats.h>
 #include <dev/bcm28xx.h>
 #include <trace.h>
 #include <arch/arm64.h>
@@ -58,7 +58,7 @@ static status_t bcm28xx_mask_interrupt(unsigned int vector) {
 
     spin_unlock_irqrestore(&lock, state);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static status_t bcm28xx_unmask_interrupt(unsigned int vector) {
@@ -98,7 +98,7 @@ static status_t bcm28xx_unmask_interrupt(unsigned int vector) {
 
     spin_unlock_irqrestore(&lock, state);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static bool bcm28xx_is_valid_interrupt(unsigned int vector, uint32_t flags) {
@@ -116,7 +116,7 @@ static status_t bcm28xx_configure_interrupt(unsigned int vector,
                                             enum interrupt_trigger_mode tm,
                                             enum interrupt_polarity pol)
 {
-    return NO_ERROR;
+    return MX_OK;
 }
 
 /*
@@ -128,7 +128,7 @@ static status_t bcm28xx_get_interrupt_config(unsigned int vector,
 {
     if (tm)  *tm  = IRQ_TRIGGER_MODE_EDGE;
     if (pol) *pol = IRQ_POLARITY_ACTIVE_HIGH;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static enum handler_return bcm28xx_handle_irq(struct arm64_iframe_short* frame) {
@@ -186,7 +186,6 @@ decoded:
     // dispatch the irq
     enum handler_return ret = INT_NO_RESCHEDULE;
 
-#if WITH_SMP
     if (vector == INTERRUPT_ARM_LOCAL_MAILBOX0) {
         pend = *REG32(INTC_LOCAL_MAILBOX0_CLR0 + 0x10 * cpu);
         LTRACEF("mailbox0 clr 0x%x\n", pend);
@@ -200,15 +199,13 @@ decoded:
         if (pend & (1 << MP_IPI_RESCHEDULE)) {
             ret = mp_mbx_reschedule_irq();
         }
-    } else
-#endif // WITH_SMP
-    if (vector == 0xffffffff) {
+    } else if (vector == 0xffffffff) {
         ret = INT_NO_RESCHEDULE;
     } else {
         struct int_handler_struct* handler = pdev_get_int_handler(vector);
         if (handler && handler->handler) {
             if (vector < ARM_IRQ_LOCAL_BASE) {
-                THREAD_STATS_INC(interrupts);
+                CPU_STATS_INC(interrupts);
             }
             ret = handler->handler(handler->arg);
         } else {
@@ -238,7 +235,7 @@ static status_t bcm28xx_send_ipi(mp_cpu_mask_t target, mp_ipi_t ipi) {
         }
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static void bcm28xx_init_percpu_early(void) {
@@ -282,4 +279,4 @@ static void bcm28xx_intc_init(mdi_node_ref_t* node, uint level) {
     pdev_register_interrupts(&intc_ops);
 }
 
-LK_PDEV_INIT(bcm28xx_intc_init, MDI_KERNEL_DRIVERS_BCM28XX_INTERRUPT, bcm28xx_intc_init, LK_INIT_LEVEL_PLATFORM_EARLY);
+LK_PDEV_INIT(bcm28xx_intc_init, MDI_BCM28XX_INTERRUPT, bcm28xx_intc_init, LK_INIT_LEVEL_PLATFORM_EARLY);

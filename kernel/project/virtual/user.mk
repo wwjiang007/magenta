@@ -15,19 +15,23 @@ MODULES += \
     kernel/lib/debuglog \
     kernel/lib/ktrace \
     kernel/lib/mtrace \
+    kernel/object
 
-# include all core, uapp, udev, ulib and utest from system/...
+# include all core, dev, uapp, ulib and utest from system/...
 MODULES += $(patsubst %/rules.mk,%,$(wildcard system/core/*/rules.mk))
+MODULES += $(patsubst %/rules.mk,%,$(wildcard system/dev/*/*/rules.mk))
 MODULES += $(patsubst %/rules.mk,%,$(wildcard system/uapp/*/rules.mk))
-MODULES += $(patsubst %/rules.mk,%,$(wildcard system/udev/*/rules.mk))
 MODULES += $(patsubst %/rules.mk,%,$(wildcard system/ulib/*/rules.mk))
+ifeq ($(call TOBOOL,$(DISABLE_UTEST)),false)
 MODULES += $(patsubst %/rules.mk,%,$(wildcard system/utest/*/rules.mk))
+endif
 
 # include all uapp, udev, ulib and utest from third_party/...
 MODULES += $(patsubst %/rules.mk,%,$(wildcard third_party/uapp/*/rules.mk))
 MODULES += $(patsubst %/rules.mk,%,$(wildcard third_party/udev/*/rules.mk))
 MODULES += $(patsubst %/rules.mk,%,$(wildcard third_party/ulib/*/rules.mk))
+ifeq ($(call TOBOOL,$(DISABLE_UTEST)),false)
 MODULES += $(patsubst %/rules.mk,%,$(wildcard third_party/utest/*/rules.mk))
+endif
 
 EXTRA_BUILDDEPS += $(USER_BOOTDATA)
-

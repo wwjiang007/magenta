@@ -14,9 +14,10 @@
 #include <magenta/types.h>
 #include <math.h>
 #include <mxio/io.h>
-#include <mxtl/array.h>
-#include <mxtl/auto_call.h>
-#include <mxtl/unique_ptr.h>
+#include <fbl/algorithm.h>
+#include <fbl/array.h>
+#include <fbl/auto_call.h>
+#include <fbl/unique_ptr.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,12 +37,12 @@ namespace {
 
 static const char* kBinName = "/boot/bin/aslr-analysis";
 
-int GatherReports(const char* test_bin, mxtl::Array<ReportInfo>* reports);
-unsigned int AnalyzeField(const mxtl::Array<ReportInfo>& reports,
+int GatherReports(const char* test_bin, fbl::Array<ReportInfo>* reports);
+unsigned int AnalyzeField(const fbl::Array<ReportInfo>& reports,
                           uintptr_t ReportInfo::*field);
 double ApproxBinomialCdf(double p, double N, double n);
 int TestRunMain(int argc, char** argv);
-mx_handle_t LaunchTestRun(const char* bin, mx_handle_t h);
+mx_status_t LaunchTestRun(const char* bin, mx_handle_t h, mx_handle_t* out);
 int JoinProcess(mx_handle_t proc);
 } // namespace
 
@@ -60,7 +61,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    mxtl::Array<ReportInfo> reports(new ReportInfo[kNumRuns], kNumRuns);
+    fbl::Array<ReportInfo> reports(new ReportInfo[kNumRuns], kNumRuns);
     if (!reports) {
         printf("Failed to allocate reports\n");
         return 1;
@@ -109,7 +110,7 @@ double ApproxBinomialCdf(double p, double N, double n) {
 // TODO: Investigate if there are better approaches than the two-sided binomial
 // test.
 // TODO: Do further analysis to account for potential non-independence of bits
-unsigned int AnalyzeField(const mxtl::Array<ReportInfo>& reports,
+unsigned int AnalyzeField(const fbl::Array<ReportInfo>& reports,
                           uintptr_t ReportInfo::*field) {
     int good_bits = 0;
 
@@ -151,20 +152,20 @@ unsigned int AnalyzeField(const mxtl::Array<ReportInfo>& reports,
     return good_bits;
 }
 
-int GatherReports(const char* test_bin, mxtl::Array<ReportInfo>* reports) {
+int GatherReports(const char* test_bin, fbl::Array<ReportInfo>* reports) {
     const size_t count = reports->size();
     for (unsigned int run = 0; run < count; ++run) {
         mx_handle_t handles[2];
         mx_status_t status = mx_channel_create(0, &handles[0], &handles[1]);
-        if (status != NO_ERROR) {
+        if (status != MX_OK) {
             printf("Failed to create channel for test run\n");
             return -1;
         }
 
-        mx_handle_t proc = LaunchTestRun(test_bin, handles[1]);
-        if (proc < 0) {
+        mx_handle_t proc;
+        if ((status = LaunchTestRun(test_bin, handles[1], &proc)) != MX_OK) {
             mx_handle_close(handles[0]);
-            printf("Failed to launch testrun: %d\n", proc);
+            printf("Failed to launch testrun: %d\n", status);
             return -1;
         }
 
@@ -208,7 +209,7 @@ int TestRunMain(int argc, char** argv) {
 
     mx_status_t status =
         mx_channel_write(report_pipe, 0, &report, sizeof(report), NULL, 0);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         return status;
     }
 
@@ -216,7 +217,7 @@ int TestRunMain(int argc, char** argv) {
 }
 
 // This function unconditionally consumes the handle h.
-mx_handle_t LaunchTestRun(const char* bin, mx_handle_t h) {
+mx_status_t LaunchTestRun(const char* bin, mx_handle_t h, mx_handle_t* out) {
     launchpad_t* lp;
     mx_handle_t proc;
     mx_handle_t hnd[1];
@@ -226,7 +227,7 @@ mx_handle_t LaunchTestRun(const char* bin, mx_handle_t h) {
     const char* errmsg;
 
     mx_status_t status = mx_handle_duplicate(mx_job_default(), MX_RIGHT_SAME_RIGHTS, &job);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         return status;
     }
 
@@ -234,22 +235,23 @@ mx_handle_t LaunchTestRun(const char* bin, mx_handle_t h) {
     hnd[0] = h;
     launchpad_create(job, "testrun", &lp);
     launchpad_load_from_file(lp, bin);
-    launchpad_set_args(lp, countof(args), args);
-    launchpad_add_handles(lp, countof(hnd), hnd, ids);
+    launchpad_set_args(lp, fbl::count_of(args), args);
+    launchpad_add_handles(lp, fbl::count_of(hnd), hnd, ids);
 
     status = launchpad_go(lp, &proc, &errmsg);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         printf("launch failed (%d): %s\n", status, errmsg);
         return status;
     }
 
-    return proc;
+    *out = proc;
+    return MX_OK;
 }
 
 int JoinProcess(mx_handle_t proc) {
     mx_status_t status =
         mx_object_wait_one(proc, MX_PROCESS_TERMINATED, MX_TIME_INFINITE, NULL);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         printf("join failed? %d\n", status);
         return -1;
     }

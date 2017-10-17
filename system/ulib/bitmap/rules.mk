@@ -16,9 +16,8 @@ MODULE_SO_NAME := bitmap
 
 MODULE_STATIC_LIBS := \
     system/ulib/mx \
-    system/ulib/mxalloc \
     system/ulib/mxcpp \
-    system/ulib/mxtl \
+    system/ulib/fbl \
 
 MODULE_LIBS := \
     system/ulib/magenta \

@@ -13,7 +13,7 @@ class eventpair : public object<eventpair> {
 public:
     static constexpr mx_obj_type_t TYPE = MX_OBJ_TYPE_EVENT_PAIR;
 
-    eventpair() = default;
+    constexpr eventpair() = default;
 
     explicit eventpair(mx_handle_t value) : object(value) {}
 
@@ -29,5 +29,7 @@ public:
     static mx_status_t create(uint32_t options, eventpair* endpoint0,
                               eventpair* endpoint1);
 };
+
+using unowned_eventpair = const unowned<eventpair>;
 
 } // namespace mx

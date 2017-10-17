@@ -12,9 +12,12 @@ namespace mx {
 
 class port;
 
+// Wraps and takes ownership of a handle to an object to provide type-safe
+// access to its operations.  The handle is automatically closed when the
+// wrapper is destroyed.
 template <typename T> class object {
 public:
-    object() : value_(MX_HANDLE_INVALID) {}
+    constexpr object() : value_(MX_HANDLE_INVALID) {}
 
     explicit object(mx_handle_t value) : value_(value) {}
 
@@ -55,7 +58,7 @@ public:
         mx_status_t status = mx_handle_replace(value_, rights, &h);
         // We store MX_HANDLE_INVALID to value_ before calling reset on result
         // in case result == this.
-        if (status == NO_ERROR)
+        if (status == MX_OK)
             value_ = MX_HANDLE_INVALID;
         result->reset(h);
         return status;
@@ -121,7 +124,7 @@ public:
         return mx_object_get_cookie(get(), scope, cookie);
     }
 
-    mx_status_t set_cookie(mx_handle_t scope, uint64_t cookie) {
+    mx_status_t set_cookie(mx_handle_t scope, uint64_t cookie) const {
         return mx_object_set_cookie(get(), scope, cookie);
     }
 
@@ -130,17 +133,16 @@ public:
 
     mx_handle_t get() const { return value_; }
 
-    // Get the address of the underling internal handle storage.
+    // Reset the underlying handle, and then get the address of the
+    // underlying internal handle storage.
     //
-    // Note: The intended purpose is to facilitate interactions with C APIs
-    // which expect to be provided a pointer to a handle used as an out
-    // parameter.  Because of this, the expectation is that the C-API is going
-    // to overwrite the contents of value_, and if value_ was a valid handle,
-    // the handle would have been leaked.
-    //
-    // BE CAREFUL!  Misuse of this method on mx::object<> instances whose
-    // current handle is valid can result in leaking handles.
-    mx_handle_t* get_address() { return &value_; }
+    // Note: The intended purpose is to facilitate interactions with C
+    // APIs which expect to be provided a pointer to a handle used as
+    // an out parameter.
+    mx_handle_t* reset_and_get_address() {
+        reset();
+        return &value_;
+    }
 
     __attribute__((warn_unused_result)) mx_handle_t release() {
         mx_handle_t result = value_;
@@ -194,5 +196,36 @@ template <typename T> bool operator==(const object<T>& a, mx_handle_t b) {
 template <typename T> bool operator!=(const object<T>& a, mx_handle_t b) {
     return !(a == b);
 }
+
+// Wraps a handle to an object to provide type-safe access to its operations
+// but does not take ownership of it.  The handle is not closed when the
+// wrapper is destroyed.
+//
+// All instances of unowned<T> must be const.  They cannot be stored, copied,
+// or moved but can be passed by reference in the form of a const T& or used
+// as a temporary.
+//
+// void do_something(const mx::event& event);
+//
+// void example(mx_handle_t event_handle) {
+//     do_something(unowned_event::wrap(event_handle));
+// }
+template <typename T>
+class unowned final : public T {
+public:
+    unowned(unowned&& other) : T(other.release()) {}
+
+    ~unowned() {
+        mx_handle_t h = this->release();
+        static_cast<void>(h);
+    }
+
+    static const unowned wrap(mx_handle_t h) { return unowned(h); }
+
+private:
+    friend T;
+
+    explicit unowned(mx_handle_t h) : T(h) {}
+};
 
 } // namespace mx

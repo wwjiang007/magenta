@@ -22,7 +22,7 @@ void handle_rx(mx_handle_t rx_fifo, char* iobuf, unsigned count) {
         uint32_t n;
         mx_status_t status;
         if ((status = mx_fifo_read(rx_fifo, entries, sizeof(entries), &n)) < 0) {
-            if (status == ERR_SHOULD_WAIT) {
+            if (status == MX_ERR_SHOULD_WAIT) {
                 mx_object_wait_one(rx_fifo, MX_FIFO_READABLE | MX_FIFO_PEER_CLOSED, MX_TIME_INFINITE, NULL);
                 continue;
             }
@@ -85,6 +85,10 @@ int main(int argc, char** argv) {
     if ((r = ioctl_ethernet_set_iobuf(fd, &iovmo)) < 0) {
         fprintf(stderr, "netdump: failed to set iobuf: %zd\n", r);
         return -1;
+    }
+
+    if ((r = ioctl_ethernet_set_client_name(fd, "netdump", 7)) < 0) {
+        fprintf(stderr, "netdump: failed to set client name %zd\n", r);
     }
 
     // assign data chunks to ethbufs

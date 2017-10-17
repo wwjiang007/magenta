@@ -12,8 +12,8 @@
 #include <dev/interrupt/arm_gicv2m_msi.h>
 #include <inttypes.h>
 #include <lk/init.h>
-#include <mxalloc/new.h>
-#include <mxtl/ref_ptr.h>
+#include <fbl/alloc_checker.h>
+#include <fbl/ref_ptr.h>
 #include <dev/qemu-virt.h>
 #include <trace.h>
 #include <mdi/mdi.h>
@@ -54,9 +54,9 @@ public:
 
 class QemuPcieRoot : public PcieRoot {
 public:
-    static mxtl::RefPtr<PcieRoot> Create(PcieBusDriver& bus_drv, uint managed_bus_id) {
-        AllocChecker ac;
-        auto root = mxtl::AdoptRef(new (&ac) QemuPcieRoot(bus_drv, managed_bus_id));
+    static fbl::RefPtr<PcieRoot> Create(PcieBusDriver& bus_drv, uint managed_bus_id) {
+        fbl::AllocChecker ac;
+        auto root = fbl::AdoptRef(new (&ac) QemuPcieRoot(bus_drv, managed_bus_id));
         if (!ac.check()) {
             TRACEF("Out of memory attemping to create PCIe root to manage bus ID 0x%02x\n",
                     managed_bus_id);
@@ -71,15 +71,15 @@ public:
             (dev_id  >= PCIE_MAX_DEVICES_PER_BUS) ||
             (func_id >= PCIE_MAX_FUNCTIONS_PER_DEVICE) ||
             (pin     >= PCIE_MAX_LEGACY_IRQ_PINS))
-            return ERR_INVALID_ARGS;
+            return MX_ERR_INVALID_ARGS;
 
         // TODO(johngro) : Figure out what to do here if QEMU ever starts to
         // create root complexes which manage a bus other than 0.
         if (managed_bus_id() != 0)
-            return ERR_NOT_FOUND;
+            return MX_ERR_NOT_FOUND;
 
         *irq = PCIE_INT_BASE + ((pin + dev_id) % PCIE_MAX_LEGACY_IRQ_PINS);
-        return NO_ERROR;
+        return MX_OK;
     }
 
 private:
@@ -90,15 +90,15 @@ private:
 static void arm_qemu_pcie_init(mdi_node_ref_t* node, uint level) {
     /* Initialize the MSI allocator */
     status_t res = arm_gicv2m_msi_init();
-    if (res != NO_ERROR)
+    if (res != MX_OK)
         TRACEF("Failed to initialize MSI allocator (res = %d).  PCI will be "
                "restricted to legacy IRQ mode.\n", res);
 
     /* Initialize the PCI platform suppored based on whether or not we support MSI */
-    static QemuPciePlatformSupport platform_pcie_support(res == NO_ERROR);
+    static QemuPciePlatformSupport platform_pcie_support(res == MX_OK);
 
     res = PcieBusDriver::InitializeDriver(platform_pcie_support);
-    if (res == NO_ERROR) {
+    if (res == MX_OK) {
         /* Add the QEMU hardcoded ECAM and bus ranges to the bus driver, if we can. */
         auto pcie = PcieBusDriver::GetDriver();
         DEBUG_ASSERT(pcie != nullptr);
@@ -110,7 +110,7 @@ static void arm_qemu_pcie_init(mdi_node_ref_t* node, uint level) {
             .bus_end   = static_cast<uint8_t>(PCIE_ECAM_SIZE / PCIE_ECAM_BYTE_PER_BUS) - 1,
         };
         res = pcie->AddEcamRegion(ecam);
-        if (res != NO_ERROR) {
+        if (res != MX_OK) {
             TRACEF("Failed to add ECAM region to PCIe bus driver!\n");
             return;
         }
@@ -118,7 +118,7 @@ static void arm_qemu_pcie_init(mdi_node_ref_t* node, uint level) {
         constexpr uint64_t MMIO_BASE = PCIE_MMIO_BASE_PHYS;
         constexpr uint64_t MMIO_SIZE = PCIE_MMIO_SIZE;
         res = pcie->AddBusRegion(MMIO_BASE, MMIO_SIZE, PciAddrSpace::MMIO);
-        if (res != NO_ERROR) {
+        if (res != MX_OK) {
             TRACEF("WARNING - Failed to add initial PCIe MMIO region "
                    "[%" PRIx64 ", %" PRIx64") to bus driver! (res %d)\n",
                    MMIO_BASE, MMIO_BASE + MMIO_SIZE, res);
@@ -128,7 +128,7 @@ static void arm_qemu_pcie_init(mdi_node_ref_t* node, uint level) {
         constexpr uint64_t PIO_BASE = PCIE_PIO_BASE_PHYS;
         constexpr uint64_t PIO_SIZE = PCIE_PIO_SIZE;
         res = pcie->AddBusRegion(PIO_BASE, PIO_SIZE, PciAddrSpace::PIO);
-        if (res != NO_ERROR) {
+        if (res != MX_OK) {
             TRACEF("WARNING - Failed to add initial PCIe PIO region "
                    "[%" PRIx64 ", %" PRIx64") to bus driver! (res %d)\n",
                    PIO_BASE, PIO_BASE + PIO_SIZE, res);
@@ -140,13 +140,13 @@ static void arm_qemu_pcie_init(mdi_node_ref_t* node, uint level) {
         if (root == nullptr)
             return;
 
-        res = pcie->AddRoot(mxtl::move(root));
-        if (res != NO_ERROR) {
+        res = pcie->AddRoot(fbl::move(root));
+        if (res != MX_OK) {
             TRACEF("Failed to add PCIe root complex for bus 0! (res %d)\n", res);
             return;
         }
         res = pcie->StartBusDriver();
-        if (res != NO_ERROR) {
+        if (res != MX_OK) {
             TRACEF("Failed to start PCIe bus driver! (res %d)\n", res);
             return;
         }
@@ -156,6 +156,6 @@ static void arm_qemu_pcie_init(mdi_node_ref_t* node, uint level) {
     }
 }
 
-LK_PDEV_INIT(arm_qemu_pcie_init, MDI_KERNEL_DRIVERS_QEMU_PCIE, arm_qemu_pcie_init, LK_INIT_LEVEL_PLATFORM);
+LK_PDEV_INIT(arm_qemu_pcie_init, MDI_QEMU_PCIE, arm_qemu_pcie_init, LK_INIT_LEVEL_PLATFORM);
 
 #endif  // if WITH_DEV_PCIE

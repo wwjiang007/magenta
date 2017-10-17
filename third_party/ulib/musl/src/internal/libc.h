@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <magenta/compiler.h>
 #include <magenta/types.h>
 
 struct __locale_map;
@@ -36,6 +37,9 @@ struct __libc {
 #define ATTR_LIBC_VISIBILITY
 #endif
 
+// Put this on things that are touched only during dynamic linker startup.
+#define ATTR_RELRO __SECTION(".data.rel.ro")
+
 extern struct __libc __libc ATTR_LIBC_VISIBILITY;
 #define libc __libc
 
@@ -61,7 +65,7 @@ void __tls_run_dtors(void) ATTR_LIBC_VISIBILITY;
 //     entries.
 // |handles| contains the actual handle values, or MX_HANDLE_INVALID if a
 //     handle has already been claimed.
-// |handle_info| contains the MX_HND_INFO value associated with the
+// |handle_info| contains the PA_HND value associated with the
 //     corresponding element of |handles|, or zero if the handle has already
 //     been claimed.
 void __libc_startup_handles_init(uint32_t nhandles,
@@ -80,3 +84,9 @@ extern char** __environ;
 
 #undef weak_alias
 #define weak_alias(old, new) extern __typeof(old) new __attribute__((weak, alias(#old)))
+
+#ifdef __clang__
+#define NO_ASAN __attribute__((no_sanitize("address")))
+#else
+#define NO_ASAN
+#endif

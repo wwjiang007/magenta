@@ -21,7 +21,7 @@ $(OUTLKBIN): $(OUTLKELF)
 
 $(OUTLKELF): $(ALLMODULE_OBJS) $(EXTRA_OBJS) $(LINKER_SCRIPT)
 	$(call BUILDECHO,linking $@)
-	$(NOECHO)$(LD) $(GLOBAL_LDFLAGS) -T $(LINKER_SCRIPT) \
+	$(NOECHO)$(LD) $(GLOBAL_LDFLAGS) $(KERNEL_LDFLAGS) -T $(LINKER_SCRIPT) \
 		$(ALLMODULE_OBJS) $(EXTRA_OBJS) -o $@
 # enable/disable the size output based on a combination of ENABLE_BUILD_LISTFILES
 # and QUIET
@@ -33,7 +33,9 @@ endif
 
 $(OUTLKELF)-gdb.py: scripts/$(LKNAME).elf-gdb.py
 	$(call BUILDECHO, generating $@)
+	@$(MKDIR)
 	$(NOECHO)cp -f $< $@
+EXTRA_BUILDDEPS += $(OUTLKELF)-gdb.py
 
 # print some information about the build
 #$(BUILDDIR)/srcfiles.txt:
@@ -70,10 +72,6 @@ $(BUILDDIR)/%.debug.lst: $(BUILDDIR)/%
 $(BUILDDIR)/%.strip: $(BUILDDIR)/%
 	$(call BUILDECHO,generating $@)
 	$(NOECHO)$(STRIP) $< -o $@
-
-$(BUILDDIR)/%.debug: $(BUILDDIR)/%
-	$(call BUILDECHO,generating separate debug info file $@)
-	$(NOECHO)$(OBJCOPY) --only-keep-debug $< $@
 
 $(BUILDDIR)/%.sym: $(BUILDDIR)/%
 	$(call BUILDECHO,generating symbols $@)

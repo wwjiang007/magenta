@@ -22,21 +22,32 @@ ENABLE_BUILD_LISTFILES ?= false
 ENABLE_BUILD_SYSROOT ?= false
 ENABLE_BUILD_LISTFILES := $(call TOBOOL,$(ENABLE_BUILD_LISTFILES))
 ENABLE_BUILD_SYSROOT := $(call TOBOOL,$(ENABLE_BUILD_SYSROOT))
-USE_CLANG ?= false
+ENABLE_NEW_FB := true
+ENABLE_ACPI_BUS ?= true
+DISABLE_UTEST ?= false
+ENABLE_ULIB_ONLY ?= false
+USE_ASAN ?= false
+USE_SANCOV ?= false
+USE_LTO ?= false
+USE_THINLTO ?= $(USE_LTO)
+USE_CLANG ?= $(firstword $(filter true,$(call TOBOOL,$(USE_ASAN)) $(call TOBOOL,$(USE_LTO))) false)
 USE_LLD ?= $(USE_CLANG)
 ifeq ($(call TOBOOL,$(USE_LLD)),true)
 USE_GOLD := false
-USE_LTO ?= false
-USE_THINLTO ?= false
 else
 USE_GOLD ?= true
-USE_LTO := false
-USE_THINLTO := false
 endif
+THINLTO_CACHE_DIR ?= $(BUILDDIR)/thinlto-cache
 LKNAME ?= magenta
 CLANG_TARGET_FUCHSIA ?= false
 USE_LINKER_GC ?= true
 
+ifeq ($(call TOBOOL,$(ENABLE_ULIB_ONLY)),true)
+ENABLE_BUILD_SYSROOT := false
+ifeq (,$(strip $(TOOLS)))
+$(error ENABLE_ULIB_ONLY=true requires TOOLS=build-.../tools on command line)
+endif
+endif
 
 # If no build directory suffix has been explicitly supplied by the environment,
 # generate a default based on build options.  Start with no suffix, then add
@@ -45,7 +56,15 @@ USE_LINKER_GC ?= true
 ifeq ($(origin BUILDDIR_SUFFIX),undefined)
 BUILDDIR_SUFFIX :=
 
-ifeq ($(call TOBOOL,$(USE_CLANG)),true)
+ifeq ($(call TOBOOL,$(USE_ASAN)),true)
+BUILDDIR_SUFFIX := $(BUILDDIR_SUFFIX)-asan
+else ifeq ($(call TOBOOL,$(USE_LTO)),true)
+ifeq ($(call TOBOOL,$(USE_THINLTO)),true)
+BUILDDIR_SUFFIX := $(BUILDDIR_SUFFIX)-thinlto
+else
+BUILDDIR_SUFFIX := $(BUILDDIR_SUFFIX)-lto
+endif
+else ifeq ($(call TOBOOL,$(USE_CLANG)),true)
 BUILDDIR_SUFFIX := $(BUILDDIR_SUFFIX)-clang
 endif
 
@@ -99,19 +118,25 @@ OUTLKELF := $(BUILDDIR)/$(LKNAME).elf
 GLOBAL_CONFIG_HEADER := $(BUILDDIR)/config-global.h
 KERNEL_CONFIG_HEADER := $(BUILDDIR)/config-kernel.h
 USER_CONFIG_HEADER := $(BUILDDIR)/config-user.h
+HOST_CONFIG_HEADER := $(BUILDDIR)/config-host.h
 GLOBAL_INCLUDES := system/public system/private $(GENERATED_INCLUDES)
 GLOBAL_OPTFLAGS ?= $(ARCH_OPTFLAGS)
 GLOBAL_DEBUGFLAGS ?= -g
-GLOBAL_COMPILEFLAGS := $(GLOBAL_DEBUGFLAGS) -finline -include $(GLOBAL_CONFIG_HEADER)
+# When embedding source file locations in debugging information, by default
+# the compiler will record the absolute path of the current directory and
+# make everything relative to that.  Instead, we tell the compiler to map
+# the current directory to $(DEBUG_BUILDROOT), which is the "relative"
+# location of the magenta source tree (i.e. usually . in a standalone build).
+DEBUG_BUILDROOT ?= $(BUILDROOT)
+GLOBAL_COMPILEFLAGS := $(GLOBAL_DEBUGFLAGS)
+GLOBAL_COMPILEFLAGS += -fdebug-prefix-map=$(shell pwd)=$(DEBUG_BUILDROOT)
+GLOBAL_COMPILEFLAGS += -finline -include $(GLOBAL_CONFIG_HEADER)
 GLOBAL_COMPILEFLAGS += -Wall -Wextra -Wno-multichar -Werror -Wno-error=deprecated-declarations
 GLOBAL_COMPILEFLAGS += -Wno-unused-parameter -Wno-unused-function -Wno-unused-label -Werror=return-type
 GLOBAL_COMPILEFLAGS += -fno-common
 ifeq ($(call TOBOOL,$(USE_CLANG)),true)
+GLOBAL_COMPILEFLAGS += -no-canonical-prefixes
 GLOBAL_COMPILEFLAGS += -Wno-address-of-packed-member
-# TODO(mcgrathr): This avoids complaints about the 'leaf' attribute, which
-# GCC supports as an optimization hint but Clang does not grok.  This can
-# be removed when https://llvm.org/bugs/show_bug.cgi?id=30980 is fixed.
-GLOBAL_COMPILEFLAGS += -Wno-unknown-attributes
 GLOBAL_COMPILEFLAGS += -Wthread-safety
 else
 GLOBAL_COMPILEFLAGS += -Wno-nonnull-compare
@@ -143,6 +168,11 @@ endif
 KERNEL_CFLAGS := -Wmissing-prototypes
 KERNEL_CPPFLAGS :=
 KERNEL_ASMFLAGS :=
+KERNEL_LDFLAGS :=
+
+ifeq ($(call TOBOOL,$(ENABLE_NEW_BOOTDATA)),true)
+KERNEL_COMPILEFLAGS += -DENABLE_NEW_BOOTDATA=1
+endif
 
 # Build flags for modules that want frame pointers.
 # crashlogger, ngunwind, backtrace use this so that the simplisitic unwinder
@@ -163,24 +193,58 @@ USER_LDFLAGS := \
     -z combreloc -z relro -z now -z text \
     --hash-style=gnu --eh-frame-hdr
 
-ifeq ($(call TOBOOL,$(USE_CLANG)),true)
-ifeq ($(call TOBOOL,$(USE_LTO)),true)
-ifeq ($(call TOBOOL,$(USE_THINLTO)),true)
-USER_COMPILEFLAGS += -flto=thin
-USER_LDFLAGS += --thinlto-jobs=8 --thinlto-cache-dir=$(BUILDDIR)/thinlto-cache
+ifeq ($(call TOBOOL,$(USE_LLD)),true)
+USER_LDFLAGS += -z rodynamic
+RODSO_LDFLAGS :=
 else
-USER_COMPILEFLAGS += -flto -fwhole-program-vtables
+RODSO_LDFLAGS := -T scripts/rodso.ld
+endif
+
+ifeq ($(call TOBOOL,$(USE_LTO)),true)
+ifeq ($(call TOBOOL,$(USE_CLANG)),false)
+$(error USE_LTO requires USE_CLANG)
+endif
+ifeq ($(call TOBOOL,$(USE_LLD)),false)
+$(error USE_LTO requires USE_LLD)
+endif
+# LTO doesn't store -mcmodel=kernel information in the bitcode files as it
+# does for many other codegen options so we have to set it explicitly. This
+# can be removed when https://bugs.llvm.org/show_bug.cgi?id=33306 is fixed.
+KERNEL_LDFLAGS += -mllvm -code-model=kernel
+ifeq ($(call TOBOOL,$(USE_THINLTO)),true)
+GLOBAL_COMPILEFLAGS += -flto=thin
+GLOBAL_LDFLAGS += --thinlto-jobs=8 --thinlto-cache-dir=$(THINLTO_CACHE_DIR)
+else
+GLOBAL_COMPILEFLAGS += -flto -fwhole-program-vtables
 # Full LTO doesn't require any special ld flags.
 endif
 endif
-endif
+
+# Turn on -fasynchronous-unwind-tables to get .eh_frame.
+# This is necessary for unwinding through optimized code.
+# The unwind information is part of the loaded binary. It's not that much space
+# and it allows for unwinding of stripped binaries, pc -> source translation
+# can be done offline with, e.g., scripts/symbolize.
+USER_COMPILEFLAGS += -fasynchronous-unwind-tables
+
+# We want .debug_frame for the kernel. MG-62
+# And we still want asynchronous unwind tables. Alas there's (currently) no way
+# to achieve this with our GCC. At the moment we compile with
+# -fno-omit-frame-pointer which is good because we link with -gc-sections which
+# means .eh_frame gets discarded so GCC-built kernels don't have any unwind
+# info (except for assembly - heh)!
+# Assembler code has its own way of requesting .debug_frame vs .eh_frame with
+# the .cfi_sections directive. Sigh.
+KERNEL_COMPILEFLAGS += -fno-exceptions -fno-unwind-tables
 
 ifeq ($(call TOBOOL,$(USE_CLANG)),true)
 SAFESTACK := -fsanitize=safe-stack -fstack-protector-strong
 NO_SAFESTACK := -fno-sanitize=safe-stack -fno-stack-protector
+NO_SANITIZERS := -fno-sanitize=all -fno-stack-protector
 else
 SAFESTACK :=
 NO_SAFESTACK :=
+NO_SANITIZERS :=
 endif
 
 USER_COMPILEFLAGS += $(SAFESTACK)
@@ -195,6 +259,11 @@ USERLIB_SO_LDFLAGS := $(USER_LDFLAGS) -z defs
 # "loader service", so it should be a simple name rather than an
 # absolute pathname as is used for this on other systems.
 USER_SHARED_INTERP := ld.so.1
+
+# Programs built with ASan use the ASan-supporting dynamic linker.
+ifeq ($(call TOBOOL,$(USE_ASAN)),true)
+USER_SHARED_INTERP := asan/$(USER_SHARED_INTERP)
+endif
 
 # Additional flags for building dynamically-linked executables.
 USERAPP_LDFLAGS := \
@@ -220,11 +289,7 @@ ARCH_CPPFLAGS :=
 ARCH_ASMFLAGS :=
 
 # top level rule
-all:: $(OUTLKBIN) $(OUTLKELF)-gdb.py
-
-ifeq ($(ENABLE_BUILD_LISTFILES),true)
-all:: $(OUTLKELF).lst $(OUTLKELF).debug.lst  $(OUTLKELF).sym $(OUTLKELF).sym.sorted $(OUTLKELF).size
-endif
+all::
 
 # master module object list
 ALLOBJS_MODULE :=
@@ -248,10 +313,13 @@ GENERATED :=
 GLOBAL_DEFINES :=
 
 # anything added to KERNEL_DEFINES will be put into $(BUILDDIR)/config-kernel.h
-KERNEL_DEFINES := LK=1 _KERNEL=1
+KERNEL_DEFINES := LK=1 _KERNEL=1 MAGENTA_TOOLCHAIN=1
 
 # anything added to USER_DEFINES will be put into $(BUILDDIR)/config-user.h
-USER_DEFINES :=
+USER_DEFINES := MAGENTA_TOOLCHAIN=1
+
+# anything added to HOST_DEFINES will be put into $(BUILDDIR)/config-host.h
+HOST_DEFINES :=
 
 # Anything added to GLOBAL_SRCDEPS will become a dependency of every source file in the system.
 # Useful for header files that may be included by one or more source files.
@@ -301,6 +369,12 @@ ALLUSER_LIBS :=
 # host apps to build
 ALLHOST_APPS :=
 
+# host libs to build
+ALLHOST_LIBS :=
+
+# EFI libs to build
+ALLEFI_LIBS :=
+
 # sysroot (exported libraries and headers)
 SYSROOT_DEPS :=
 
@@ -308,7 +382,7 @@ SYSROOT_DEPS :=
 MDI_SRCS :=
 
 # MDI source files used to generate the mdi-defs.h header file
-MDI_INCLUDES :=
+MDI_INCLUDES := system/public/magenta/mdi/magenta.mdi
 
 # For now always enable frame pointers so kernel backtraces
 # can work and define WITH_PANIC_BACKTRACE to enable them in panics
@@ -331,6 +405,12 @@ USER_MANIFEST_DEBUG_INPUTS :=
 
 # if someone defines this, the build id will be pulled into lib/version
 BUILDID ?=
+
+# Tool locations.
+TOOLS := $(BUILDDIR)/tools
+MDIGEN := $(TOOLS)/mdigen
+MKBOOTFS := $(TOOLS)/mkbootfs
+SYSGEN := $(TOOLS)/sysgen
 
 # set V=1 in the environment if you want to see the full command line of every command
 ifeq ($(V),1)
@@ -363,12 +443,68 @@ include kernel/arch/$(ARCH)/rules.mk
 include kernel/top/rules.mk
 include make/sysgen.mk
 
+ifeq ($(call TOBOOL,$(USE_CLANG)),true)
+GLOBAL_COMPILEFLAGS += --target=$(CLANG_ARCH)-fuchsia
+endif
+
+ifeq ($(call TOBOOL,$(USE_SANCOV)),true)
+ifeq ($(call TOBOOL,$(USE_ASAN)),false)
+$(error USE_SANCOV requires USE_ASAN)
+endif
+endif
+
+ifeq ($(call TOBOOL,$(USE_ASAN)),true)
+ifeq ($(call TOBOOL,$(USE_CLANG)),false)
+$(error USE_ASAN requires USE_CLANG)
+endif
+
+# Compile all of userland with ASan.  ASan makes safe-stack superfluous
+# and ASan reporting doesn't really grok safe-stack, so disable it.
+# Individual modules can append $(NO_SANITIZERS) to counteract this.
+USER_COMPILEFLAGS += -fsanitize=address -fno-sanitize=safe-stack
+
+# Ask the Clang driver where the library with SONAME $1 is found at link time.
+find-clang-solib = \
+    $(shell $(CLANG_TOOLCHAIN_PREFIX)clang $(GLOBAL_COMPILEFLAGS) \
+					   -print-file-name=$1)
+# Every userland executable and shared library compiled with ASan
+# needs to link with $(ASAN_SOLIB).  module-user{app,lib}.mk adds it
+# to MODULE_EXTRA_OBJS so the linking target will depend on it.
+ASAN_SONAME := libclang_rt.asan-$(CLANG_ARCH).so
+ASAN_SOLIB := $(call find-clang-solib,$(ASAN_SONAME))
+USER_MANIFEST_LINES += lib/$(ASAN_SONAME)=$(ASAN_SOLIB)
+
+# The ASan runtime DSO depends on more DSOs from the toolchain.  We don't
+# link against those, so we don't need any build-time dependencies on them.
+# But we need them alongside the ASan runtime DSO in the bootfs.
+ASAN_RUNTIME_SONAMES := libc++abi.so.1 libunwind.so.1
+USER_MANIFEST_LINES += \
+    $(foreach soname,$(ASAN_RUNTIME_SONAMES),\
+	      lib/$(soname)=$(call find-clang-solib,$(soname)))
+endif
+
+ifeq ($(call TOBOOL,$(USE_SANCOV)),true)
+# Compile all of userland with coverage.
+USER_COMPILEFLAGS += -fsanitize-coverage=trace-pc-guard
+NO_SANCOV := -fno-sanitize-coverage=trace-pc-guard
+NO_SANITIZERS += $(NO_SANCOV)
+else
+NO_SANCOV :=
+endif
+
+# Save these for the first module.mk iteration to see.
+SAVED_EXTRA_BUILDDEPS := $(EXTRA_BUILDDEPS)
+SAVED_GENERATED := $(GENERATED)
+SAVED_USER_MANIFEST_LINES := $(USER_MANIFEST_LINES)
+
 # recursively include any modules in the MODULE variable, leaving a trail of included
 # modules in the ALLMODULES list
 include make/recurse.mk
 
+ifeq ($(call TOBOOL,$(ENABLE_ULIB_ONLY)),false)
 # rules for generating MDI header and binary
 include make/mdi.mk
+endif
 
 ifneq ($(EXTRA_IDFILES),)
 $(BUILDDIR)/ids.txt: $(EXTRA_IDFILES)
@@ -450,17 +586,32 @@ $(BUILDDIR)/sysroot.list.stamp: FORCE
 
 GENERATED += $(BUILDDIR)/sysroot.list $(BUILDDIR)/sysroot.list.stamp
 EXTRA_BUILDDEPS += $(BUILDDIR)/sysroot.list.stamp
-endif
-
 EXTRA_BUILDDEPS += $(SYSROOT_DEPS)
+endif
 
 # make the build depend on all of the user apps
 all:: $(foreach app,$(ALLUSER_APPS),$(app) $(app).strip)
 
 # and all host tools
-all:: $(ALLHOST_APPS)
+all:: $(ALLHOST_APPS) $(ALLHOST_LIBS)
 
-tools:: $(ALLHOST_APPS)
+tools:: $(ALLHOST_APPS) $(ALLHOST_LIBS)
+
+# meta rule for the kernel
+.PHONY: kern
+ifeq ($(ENABLE_BUILD_LISTFILES),true)
+kern: $(OUTLKBIN) $(OUTLKELF).lst $(OUTLKELF).debug.lst  $(OUTLKELF).sym $(OUTLKELF).sym.sorted $(OUTLKELF).size
+else
+kern: $(OUTLKBIN)
+endif
+
+ifeq ($(call TOBOOL,$(ENABLE_ULIB_ONLY)),false)
+# add the kernel to the build
+all:: kern
+else
+# No kernel, but we want the bootdata.bin containing the shared libraries.
+all:: $(USER_BOOTDATA)
+endif
 
 # add some automatic configuration defines
 KERNEL_DEFINES += \
@@ -501,23 +652,28 @@ endif
 GLOBAL_INCLUDES := $(addprefix -I,$(GLOBAL_INCLUDES))
 KERNEL_INCLUDES := $(addprefix -I,$(KERNEL_INCLUDES))
 
+# Path to the Goma compiler wrapper.  Defaults to using no wrapper.
+GOMACC ?=
+
 # set up paths to various tools
 ifeq ($(call TOBOOL,$(USE_CLANG)),true)
-CC := $(CLANG_TOOLCHAIN_PREFIX)clang
+CC := $(GOMACC) $(CLANG_TOOLCHAIN_PREFIX)clang
 AR := $(CLANG_TOOLCHAIN_PREFIX)llvm-ar
 OBJDUMP := $(CLANG_TOOLCHAIN_PREFIX)llvm-objdump
-READELF := $(CLANG_TOOLCHAIN_PREFIX)llvm-readobj -elf-output-style=GNU
+READELF := $(CLANG_TOOLCHAIN_PREFIX)llvm-readelf
 CPPFILT := $(CLANG_TOOLCHAIN_PREFIX)llvm-cxxfilt
 SIZE := $(CLANG_TOOLCHAIN_PREFIX)llvm-size
 NM := $(CLANG_TOOLCHAIN_PREFIX)llvm-nm
+OBJCOPY := $(CLANG_TOOLCHAIN_PREFIX)llvm-objcopy
 else
-CC := $(TOOLCHAIN_PREFIX)gcc
+CC := $(GOMACC) $(TOOLCHAIN_PREFIX)gcc
 AR := $(TOOLCHAIN_PREFIX)ar
 OBJDUMP := $(TOOLCHAIN_PREFIX)objdump
 READELF := $(TOOLCHAIN_PREFIX)readelf
 CPPFILT := $(TOOLCHAIN_PREFIX)c++filt
 SIZE := $(TOOLCHAIN_PREFIX)size
 NM := $(TOOLCHAIN_PREFIX)nm
+OBJCOPY := $(TOOLCHAIN_PREFIX)objcopy
 endif
 LD := $(TOOLCHAIN_PREFIX)ld
 ifeq ($(call TOBOOL,$(USE_LLD)),true)
@@ -528,7 +684,6 @@ USER_LD := $(LD).gold
 else
 USER_LD := $(LD)
 endif
-OBJCOPY := $(TOOLCHAIN_PREFIX)objcopy
 STRIP := $(TOOLCHAIN_PREFIX)strip
 
 LIBGCC := $(shell $(CC) $(GLOBAL_COMPILEFLAGS) $(ARCH_COMPILEFLAGS) -print-libgcc-file-name)
@@ -539,17 +694,36 @@ endif
 # try to have the compiler output colorized error messages if available
 export GCC_COLORS ?= 1
 
+# setup bootloader toolchain
+ifeq ($(call TOBOOL,$(USE_CLANG)),true)
+EFI_AR := $(CLANG_TOOLCHAIN_PREFIX)llvm-ar
+EFI_CC := $(CLANG_TOOLCHAIN_PREFIX)clang
+EFI_CXX := $(CLANG_TOOLCHAIN_PREFIX)clang++
+EFI_COMPILEFLAGS := --target=x86_64-windows-msvc
+else
+EFI_AR := $(TOOLCHAIN_PREFIX)ar
+EFI_CC := $(TOOLCHAIN_PREFIX)gcc
+EFI_CXX := $(TOOLCHAIN_PREFIX)g++
+EFI_COMPILEFLAGS := -fPIE
+endif
+
+EFI_OPTFLAGS := -O2
+EFI_COMPILEFLAGS += -fno-stack-protector -mno-red-zone
+EFI_COMPILEFLAGS += -nostdinc
+EFI_COMPILEFLAGS += -Wall
+EFI_CFLAGS := -fshort-wchar -std=c99 -ffreestanding
+
 # setup host toolchain
 # default to prebuilt clang
 FOUND_HOST_GCC ?= $(shell which $(HOST_TOOLCHAIN_PREFIX)gcc)
 HOST_TOOLCHAIN_PREFIX ?= $(CLANG_TOOLCHAIN_PREFIX)
 HOST_USE_CLANG ?= $(shell which $(HOST_TOOLCHAIN_PREFIX)clang)
 ifneq ($(HOST_USE_CLANG),)
-HOST_CC      := $(HOST_TOOLCHAIN_PREFIX)clang
-HOST_CXX     := $(HOST_TOOLCHAIN_PREFIX)clang++
+HOST_CC      := $(GOMACC) $(HOST_TOOLCHAIN_PREFIX)clang
+HOST_CXX     := $(GOMACC) $(HOST_TOOLCHAIN_PREFIX)clang++
 HOST_AR      := $(HOST_TOOLCHAIN_PREFIX)llvm-ar
 HOST_OBJDUMP := $(HOST_TOOLCHAIN_PREFIX)llvm-objdump
-HOST_READELF := $(HOST_TOOLCHAIN_PREFIX)llvm-readobj
+HOST_READELF := $(HOST_TOOLCHAIN_PREFIX)llvm-readelf
 HOST_CPPFILT := $(HOST_TOOLCHAIN_PREFIX)llvm-cxxfilt
 HOST_SIZE    := $(HOST_TOOLCHAIN_PREFIX)llvm-size
 HOST_NM      := $(HOST_TOOLCHAIN_PREFIX)llvm-nm
@@ -558,8 +732,8 @@ else
 ifeq ($(FOUND_HOST_GCC),)
 $(error cannot find toolchain, please set HOST_TOOLCHAIN_PREFIX or add it to your path)
 endif
-HOST_CC      := $(HOST_TOOLCHAIN_PREFIX)gcc
-HOST_CXX     := $(HOST_TOOLCHAIN_PREFIX)g++
+HOST_CC      := $(GOMACC) $(HOST_TOOLCHAIN_PREFIX)gcc
+HOST_CXX     := $(GOMACC) $(HOST_TOOLCHAIN_PREFIX)g++
 HOST_AR      := $(HOST_TOOLCHAIN_PREFIX)ar
 HOST_OBJDUMP := $(HOST_TOOLCHAIN_PREFIX)objdump
 HOST_READELF := $(HOST_TOOLCHAIN_PREFIX)readelf
@@ -600,10 +774,6 @@ ifneq ($(HOST_SYSROOT),)
 HOST_COMPILEFLAGS += --sysroot=$(HOST_SYSROOT)
 endif
 
-# tool locations
-MKBOOTFS := $(BUILDDIR)/tools/mkbootfs
-MDIGEN := $(BUILDDIR)/tools/mdigen
-
 # the logic to compile and link stuff is in here
 include make/build.mk
 
@@ -621,25 +791,36 @@ GLOBAL_DEFINES += ARCH_COMPILEFLAGS=\"$(subst $(SPACE),_,$(ARCH_COMPILEFLAGS))\"
 GLOBAL_DEFINES += ARCH_CFLAGS=\"$(subst $(SPACE),_,$(ARCH_CFLAGS))\"
 GLOBAL_DEFINES += ARCH_CPPFLAGS=\"$(subst $(SPACE),_,$(ARCH_CPPFLAGS))\"
 GLOBAL_DEFINES += ARCH_ASMFLAGS=\"$(subst $(SPACE),_,$(ARCH_ASMFLAGS))\"
+
 KERNEL_DEFINES += KERNEL_INCLUDES=\"$(subst $(SPACE),_,$(KERNEL_INCLUDES))\"
 KERNEL_DEFINES += KERNEL_COMPILEFLAGS=\"$(subst $(SPACE),_,$(KERNEL_COMPILEFLAGS))\"
 KERNEL_DEFINES += KERNEL_CFLAGS=\"$(subst $(SPACE),_,$(KERNEL_CFLAGS))\"
 KERNEL_DEFINES += KERNEL_CPPFLAGS=\"$(subst $(SPACE),_,$(KERNEL_CPPFLAGS))\"
 KERNEL_DEFINES += KERNEL_ASMFLAGS=\"$(subst $(SPACE),_,$(KERNEL_ASMFLAGS))\"
+KERNEL_DEFINES += KERNEL_LDFLAGS=\"$(subst $(SPACE),_,$(KERNEL_LDFLAGS))\"
+
 USER_DEFINES += USER_COMPILEFLAGS=\"$(subst $(SPACE),_,$(USER_COMPILEFLAGS))\"
 USER_DEFINES += USER_CFLAGS=\"$(subst $(SPACE),_,$(USER_CFLAGS))\"
 USER_DEFINES += USER_CPPFLAGS=\"$(subst $(SPACE),_,$(USER_CPPFLAGS))\"
 USER_DEFINES += USER_ASMFLAGS=\"$(subst $(SPACE),_,$(USER_ASMFLAGS))\"
 USER_DEFINES += USER_LDFLAGS=\"$(subst $(SPACE),_,$(USER_LDFLAGS))\"
 
+HOST_DEFINES += HOST_COMPILEFLAGS=\"$(subst $(SPACE),_,$(HOST_COMPILEFLAGS))\"
+HOST_DEFINES += HOST_CFLAGS=\"$(subst $(SPACE),_,$(HOST_CFLAGS))\"
+HOST_DEFINES += HOST_CPPFLAGS=\"$(subst $(SPACE),_,$(HOST_CPPFLAGS))\"
+HOST_DEFINES += HOST_ASMFLAGS=\"$(subst $(SPACE),_,$(HOST_ASMFLAGS))\"
+HOST_DEFINES += HOST_LDFLAGS=\"$(subst $(SPACE),_,$(HOST_LDFLAGS))\"
+
 #$(info LIBGCC = $(LIBGCC))
 #$(info GLOBAL_COMPILEFLAGS = $(GLOBAL_COMPILEFLAGS))
 #$(info GLOBAL_OPTFLAGS = $(GLOBAL_OPTFLAGS))
 
+ifeq ($(call TOBOOL,$(ENABLE_ULIB_ONLY)),false)
 # bootloader (x86-64 only for now)
 # This needs to be after CC et al are set above.
 ifeq ($(ARCH),x86)
 include bootloader/build.mk
+endif
 endif
 
 # make all object files depend on any targets in GLOBAL_SRCDEPS
@@ -663,7 +844,7 @@ install: all
 
 # generate a config-global.h file with all of the GLOBAL_DEFINES laid out in #define format
 $(GLOBAL_CONFIG_HEADER): FORCE
-	@$(call MAKECONFIGHEADER,$@,GLOBAL_DEFINES,"")
+	@$(call MAKECONFIGHEADER,$@,GLOBAL_DEFINES,"#define __Fuchsia__ 1")
 
 # generate a config-kernel.h file with all of the KERNEL_DEFINES laid out in #define format
 $(KERNEL_CONFIG_HEADER): FORCE
@@ -671,9 +852,12 @@ $(KERNEL_CONFIG_HEADER): FORCE
 
 # generate a config-user.h file with all of the USER_DEFINES laid out in #define format
 $(USER_CONFIG_HEADER): FORCE
-	@$(call MAKECONFIGHEADER,$@,USER_DEFINES,"#define __Fuchsia__ 1")
+	@$(call MAKECONFIGHEADER,$@,USER_DEFINES,"")
 
-GENERATED += $(GLOBAL_CONFIG_HEADER) $(KERNEL_CONFIG_HEADER) $(USER_CONFIG_HEADER)
+$(HOST_CONFIG_HEADER): FORCE
+	@$(call MAKECONFIGHEADER,$@,HOST_DEFINES,"")
+
+GENERATED += $(GLOBAL_CONFIG_HEADER) $(KERNEL_CONFIG_HEADER) $(USER_CONFIG_HEADER) $(HOST_CONFIG_HEADER)
 
 # Empty rule for the .d files. The above rules will build .d files as a side
 # effect. Only works on gcc 3.x and above, however.

@@ -6,20 +6,20 @@
 
 #include <bitmap/raw-bitmap.h>
 #include <bitmap/storage.h>
-#include <mxtl/intrusive_double_list.h>
-#include <mxtl/intrusive_hash_table.h>
-#include <mxtl/macros.h>
-#include <mxtl/ref_counted.h>
-#include <mxtl/ref_ptr.h>
-#include <mxtl/type_support.h>
-#include <mxtl/unique_free_ptr.h>
+#include <fbl/intrusive_double_list.h>
+#include <fbl/intrusive_hash_table.h>
+#include <fbl/macros.h>
+#include <fbl/ref_counted.h>
+#include <fbl/ref_ptr.h>
+#include <fbl/type_support.h>
+#include <fbl/unique_free_ptr.h>
 
 #include <magenta/types.h>
 
 #include <assert.h>
 #include <limits.h>
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "misc.h"
 
@@ -34,23 +34,36 @@ using RawBitmap = bitmap::RawBitmapGeneric<bitmap::DefaultStorage>;
 
 namespace minfs {
 
-constexpr uint64_t kMinfsMagic0 = (0x002153466e694d21ULL);
-constexpr uint64_t kMinfsMagic1 = (0x385000d3d3d3d304ULL);
-constexpr uint32_t kMinfsVersion = 0x00000002;
+// Type of a reference to block number, either absolute (able to index
+// into disk directly) or relative to some entity (such as a file).
+typedef uint32_t blk_t;
 
-constexpr uint32_t kMinfsRootIno        = 1;
-constexpr uint32_t kMinfsFlagClean      = 1;
+// The type of an inode number, which may be used as an
+// index into the inode table.
+typedef uint32_t ino_t;
+
+constexpr uint64_t kMinfsMagic0         = (0x002153466e694d21ULL);
+constexpr uint64_t kMinfsMagic1         = (0x385000d3d3d3d304ULL);
+constexpr uint32_t kMinfsVersion        = 0x00000005;
+
+constexpr ino_t kMinfsRootIno           = 1;
+constexpr uint32_t kMinfsFlagClean      = 0x00000001; // Currently unused
+constexpr uint32_t kMinfsFlagFVM        = 0x00000002; // Mounted on FVM
 constexpr uint32_t kMinfsBlockSize      = 8192;
 constexpr uint32_t kMinfsBlockBits      = (kMinfsBlockSize * 8);
 constexpr uint32_t kMinfsInodeSize      = 256;
 constexpr uint32_t kMinfsInodesPerBlock = (kMinfsBlockSize / kMinfsInodeSize);
 
-constexpr uint32_t kMinfsDirect   = 16;
-constexpr uint32_t kMinfsIndirect = 32;
+constexpr uint32_t kMinfsDirect         = 16;
+constexpr uint32_t kMinfsIndirect       = 31;
+constexpr uint32_t kMinfsDoublyIndirect = 1;
 
+constexpr uint32_t kMinfsDirectPerIndirect = (kMinfsBlockSize / sizeof(blk_t));
 // not possible to have a block at or past this one
 // due to the limitations of the inode and indirect blocks
-constexpr uint64_t kMinfsMaxFileBlock = (kMinfsDirect + kMinfsIndirect * (kMinfsBlockSize / sizeof(uint32_t)));
+constexpr uint64_t kMinfsMaxFileBlock = (kMinfsDirect + (kMinfsIndirect * kMinfsDirectPerIndirect)
+                                        + (kMinfsDoublyIndirect * kMinfsDirectPerIndirect
+                                        * kMinfsDirectPerIndirect));
 constexpr uint64_t kMinfsMaxFileSize  = kMinfsMaxFileBlock * kMinfsBlockSize;
 
 constexpr uint32_t kMinfsTypeFile = 8;
@@ -61,6 +74,11 @@ constexpr uint32_t kMinfsMagicDir  = MinfsMagic(kMinfsTypeDir);
 constexpr uint32_t kMinfsMagicFile = MinfsMagic(kMinfsTypeFile);
 constexpr uint32_t MinfsMagicType(uint32_t n) { return n & 0xFF; }
 
+constexpr size_t kFVMBlockInodeBmStart = 0x10000;
+constexpr size_t kFVMBlockDataBmStart  = 0x20000;
+constexpr size_t kFVMBlockInodeStart   = 0x30000;
+constexpr size_t kFVMBlockDataStart    = 0x40000;
+
 typedef struct {
     uint64_t magic0;
     uint64_t magic1;
@@ -68,12 +86,21 @@ typedef struct {
     uint32_t flags;
     uint32_t block_size;    // 8K typical
     uint32_t inode_size;    // 256
-    uint32_t block_count;   // total number of blocks
+    uint32_t block_count;   // total number of data blocks
     uint32_t inode_count;   // total number of inodes
-    uint32_t ibm_block;     // first blockno of inode allocation bitmap
-    uint32_t abm_block;     // first blockno of block allocation bitmap
-    uint32_t ino_block;     // first blockno of inode table
-    uint32_t dat_block;     // first blockno available for file data
+    uint32_t alloc_block_count; // total number of allocated data blocks
+    uint32_t alloc_inode_count; // total number of allocated inodes
+    blk_t ibm_block;     // first blockno of inode allocation bitmap
+    blk_t abm_block;     // first blockno of block allocation bitmap
+    blk_t ino_block;     // first blockno of inode table
+    blk_t dat_block;     // first blockno available for file data
+    // The following flags are only valid with (flags & kMinfsFlagFVM):
+    uint64_t slice_size;    // Underlying slice size
+    uint64_t vslice_count;  // Number of allocated underlying slices
+    uint32_t ibm_slices;    // Slices allocated to inode bitmap
+    uint32_t abm_slices;    // Slices allocated to block bitmap
+    uint32_t ino_slices;    // Slices allocated to inode table
+    uint32_t dat_slices;    // Slices allocated to file data section
 } minfs_info_t;
 
 // Notes:
@@ -101,15 +128,16 @@ typedef struct {
     uint32_t gen_num;               // bumped when deleted
     uint32_t dirent_count;          // for directories
     uint32_t rsvd[5];
-    uint32_t dnum[kMinfsDirect];    // direct blocks
-    uint32_t inum[kMinfsIndirect];  // indirect blocks
+    blk_t dnum[kMinfsDirect];    // direct blocks
+    blk_t inum[kMinfsIndirect];  // indirect blocks
+    blk_t dinum[kMinfsDoublyIndirect]; // doubly indirect blocks
 } minfs_inode_t;
 
 static_assert(sizeof(minfs_inode_t) == kMinfsInodeSize,
               "minfs inode size is wrong");
 
 typedef struct {
-    uint32_t ino;                   // inode number
+    ino_t ino;                      // inode number
     uint32_t reclen;                // Low 28 bits: Length of record
                                     // High 4 bits: Flags
     uint8_t namelen;                // length of the filename
@@ -167,21 +195,48 @@ public:
     DISALLOW_COPY_ASSIGN_AND_MOVE(Bcache);
     friend class BlockNode;
 
-    static mx_status_t Create(mxtl::unique_ptr<Bcache>* out, int fd, uint32_t blockmax);
+    static mx_status_t Create(fbl::unique_ptr<Bcache>* out, int fd, uint32_t blockmax);
 
     // Raw block read functions.
     // These do not track blocks (or attempt to access the block cache)
-    mx_status_t Readblk(uint32_t bno, void* data);
-    mx_status_t Writeblk(uint32_t bno, const void* data);
+    mx_status_t Readblk(blk_t bno, void* data);
+    mx_status_t Writeblk(blk_t bno, const void* data);
 
+    // Returns the maximum number of available blocks,
+    // assuming the filesystem is non-resizable.
     uint32_t Maxblk() const { return blockmax_; };
 
 #ifdef __Fuchsia__
+    ssize_t GetDevicePath(char* out, size_t out_len);
     mx_status_t AttachVmo(mx_handle_t vmo, vmoid_t* out);
     mx_status_t Txn(block_fifo_request_t* requests, size_t count) {
         return block_fifo_txn(fifo_client_, requests, count);
     }
     txnid_t TxnId() const { return txnid_; }
+
+    mx_status_t FVMQuery(fvm_info_t* info) {
+        ssize_t r = ioctl_block_fvm_query(fd_, info);
+        if (r < 0) {
+            return static_cast<mx_status_t>(r);
+        }
+        return MX_OK;
+    }
+
+    mx_status_t FVMExtend(const extend_request_t* request) {
+        ssize_t r = ioctl_block_fvm_extend(fd_, request);
+        if (r < 0) {
+            return static_cast<mx_status_t>(r);
+        }
+        return MX_OK;
+    }
+
+    mx_status_t FVMShrink(const extend_request_t* request) {
+        ssize_t r = ioctl_block_fvm_shrink(fd_, request);
+        if (r < 0) {
+            return static_cast<mx_status_t>(r);
+        }
+        return MX_OK;
+    }
 #endif
 
     int Sync();
@@ -192,42 +247,11 @@ private:
     Bcache(int fd, uint32_t blockmax);
 
 #ifdef __Fuchsia__
-    fifo_client_t* fifo_client_; // Fast path to interact with block device
-    txnid_t txnid_; // TODO(smklein): One per thread
+    fifo_client_t* fifo_client_{}; // Fast path to interact with block device
+    txnid_t txnid_{}; // TODO(smklein): One per thread
 #endif
-    int fd_;
-    uint32_t blockmax_;
+    int fd_ = -1;
+    uint32_t blockmax_{};
 };
-
-
-namespace internal {
-
-template <typename T>
-struct GetBlockHelper;
-
-template <>
-struct GetBlockHelper <const void*> {
-    static void* get_block(const void* data, uint32_t blkno) {
-        assert(kMinfsBlockSize <= (blkno + 1) * kMinfsBlockSize); // Avoid overflow
-        return (void*)((uintptr_t)(data) + (uintptr_t)(kMinfsBlockSize * blkno));
-    }
-};
-
-template <>
-struct GetBlockHelper <const RawBitmap&> {
-    static void* get_block(const RawBitmap& bitmap, uint32_t blkno) {
-        assert(blkno * kMinfsBlockSize < bitmap.size()); // Accessing beyond end of bitmap
-        return GetBlockHelper<const void*>::get_block(bitmap.StorageUnsafe()->GetData(), blkno);
-    }
-};
-
-} // namespace internal
-
-// Access the "blkno"-th block within data.
-// "blkno = 0" corresponds to the first block within data.
-template <typename T>
-void* GetBlock(T data, uint32_t blkno) {
-    return internal::GetBlockHelper<T>::get_block(data, blkno);
-}
 
 } // namespace minfs

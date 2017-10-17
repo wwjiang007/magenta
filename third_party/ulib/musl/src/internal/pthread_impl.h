@@ -1,7 +1,6 @@
 #pragma once
 
 #include "atomic.h"
-#include "ksigaction.h"
 #include "libc.h"
 #include "pthread_arch.h"
 #include <assert.h>
@@ -60,6 +59,7 @@ struct pthread {
     int tsd_used;
     int errno_value;
 
+    void* sanitizer_hook;
     void* start_arg;
     void* (*start)(void*);
     void* result;
@@ -129,8 +129,14 @@ static inline struct pthread* tp_to_pthread(void* tp) {
 extern void* __pthread_tsd_main[];
 extern volatile size_t __pthread_tsd_size;
 
+void* __tls_get_new(size_t*) ATTR_LIBC_VISIBILITY;
+
 static inline pthread_t __pthread_self(void) {
     return tp_to_pthread(mxr_tp_get());
+}
+
+static inline thrd_t __thrd_current(void) {
+    return (thrd_t)__pthread_self();
 }
 
 static inline pid_t __thread_get_tid(void) {
@@ -144,11 +150,17 @@ static inline pid_t __thread_get_tid(void) {
     return id;
 }
 
-// Signal n (or all, for -1) threads on a pthread_cond_t or cnd_t.
-void __private_cond_signal(void* condvar, int n);
+int __pthread_create(pthread_t* __restrict, const pthread_attr_t* __restrict,
+                     void* (*)(void*), void* __restrict) ATTR_LIBC_VISIBILITY;
+int __pthread_detach(pthread_t t) ATTR_LIBC_VISIBILITY;
+_Noreturn void __pthread_exit(void* result) ATTR_LIBC_VISIBILITY;
+int __pthread_join(pthread_t t, void** result) ATTR_LIBC_VISIBILITY;
 
-int __libc_sigaction(int, const struct sigaction*, struct sigaction*);
-int __libc_sigprocmask(int, const sigset_t*, sigset_t*);
+// Signal n (or all, for -1) threads on a pthread_cond_t or cnd_t.
+void __private_cond_signal(void* condvar, int n) ATTR_LIBC_VISIBILITY;
+
+int __pthread_key_create(tss_t*, void (*)(void*)) ATTR_LIBC_VISIBILITY;
+int __pthread_key_delete(tss_t k) ATTR_LIBC_VISIBILITY;
 
 // This is guaranteed to only return 0, EINVAL, or ETIMEDOUT.
 int __timedwait(atomic_int*, int, clockid_t, const struct timespec*)
@@ -162,43 +174,7 @@ int __timedwait(atomic_int*, int, clockid_t, const struct timespec*)
 void __thread_allocation_inhibit(void) ATTR_LIBC_VISIBILITY;
 void __thread_allocation_release(void) ATTR_LIBC_VISIBILITY;
 
-void __block_all_sigs(void*) ATTR_LIBC_VISIBILITY;
-void __block_app_sigs(void*) ATTR_LIBC_VISIBILITY;
-void __restore_sigs(void*) ATTR_LIBC_VISIBILITY;
-
 void __pthread_tsd_run_dtors(void) ATTR_LIBC_VISIBILITY;
-
-static inline int __sigaltstack(const stack_t* restrict ss, stack_t* restrict old) {
-    return 0;
-}
-
-static inline int __rt_sigprocmask(int how, const sigset_t* restrict set,
-                                   sigset_t* restrict old_set, size_t sigmask_size) {
-    return 0;
-}
-
-static inline int __rt_sigaction(int sig, const struct k_sigaction* restrict action,
-                                 struct k_sigaction* restrict old_action,
-                                 size_t sigaction_mask_size) {
-    return 0;
-}
-
-static inline int __rt_sigpending(sigset_t* set, size_t sigset_size) {
-    return 0;
-}
-
-static inline int __rt_sigsuspend(const sigset_t* set, size_t sigset_size) {
-    return 0;
-}
-
-static inline int __rt_sigtimedwait(const sigset_t* restrict set, siginfo_t* restrict info,
-                                    const struct timespec* restrict timeout, size_t sigset_size) {
-    return 0;
-}
-
-static inline int __rt_sigqueueinfo(pid_t pid, int sig, siginfo_t* info) {
-    return 0;
-}
 
 #define DEFAULT_PTHREAD_ATTR                                                  \
     ((pthread_attr_t){                                                        \
@@ -206,7 +182,13 @@ static inline int __rt_sigqueueinfo(pid_t pid, int sig, siginfo_t* info) {
         ._a_guardsize = PAGE_SIZE,                                            \
     })
 
-pthread_t __allocate_thread(const pthread_attr_t* attr)
-    __attribute__((nonnull(1))) ATTR_LIBC_VISIBILITY;
+pthread_t __allocate_thread(const pthread_attr_t* attr,
+                            const char* thread_name,
+                            char default_name[MX_MAX_NAME_LEN])
+    __attribute__((nonnull(1,2))) ATTR_LIBC_VISIBILITY;
 
 pthread_t __init_main_thread(mx_handle_t thread_self) ATTR_LIBC_VISIBILITY;
+
+int __pthread_once(pthread_once_t*, void (*)(void)) ATTR_LIBC_VISIBILITY;
+
+int __clock_gettime(clockid_t, struct timespec*) ATTR_LIBC_VISIBILITY;

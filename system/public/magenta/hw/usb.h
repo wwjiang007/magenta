@@ -59,6 +59,10 @@ __BEGIN_CDECLS;
 #define USB_CLASS_DIAGNOSTIC                0xdc
 #define USB_CLASS_WIRELESS                  0xe0
 #define USB_CLASS_MISC                      0xef
+#define USB_CLASS_VENDOR                    0xFf
+
+#define USB_SUBCLASS_MSC_SCSI               0x06
+#define USB_PROTOCOL_MSC_BULK_ONLY          0x50
 
 /* Descriptor Types */
 #define USB_DT_DEVICE                      0x01
@@ -73,6 +77,8 @@ __BEGIN_CDECLS;
 #define USB_DT_HID                         0x21
 #define USB_DT_HIDREPORT                   0x22
 #define USB_DT_HIDPHYSICAL                 0x23
+#define USB_DT_CS_INTERFACE                0x24
+#define USB_DT_CS_ENDPOINT                 0x25
 #define USB_DT_SS_EP_COMPANION             0x30
 #define USB_DT_SS_ISOCH_EP_COMPANION       0x31
 
@@ -80,6 +86,11 @@ __BEGIN_CDECLS;
 #define USB_DEVICE_SELF_POWERED            0x00
 #define USB_DEVICE_REMOTE_WAKEUP           0x01
 #define USB_DEVICE_TEST_MODE               0x02
+
+/* Configuration attributes (bmAttributes) */
+#define USB_CONFIGURATION_REMOTE_WAKEUP    0x20
+#define USB_CONFIGURATION_SELF_POWERED     0x40
+#define USB_CONFIGURATION_RESERVED_7       0x80 // This bit must be set
 
 /* Endpoint direction (bEndpointAddress) */
 #define USB_ENDPOINT_IN                    0x80
@@ -161,6 +172,12 @@ typedef struct {
 
 typedef struct {
     uint8_t bLength;
+    uint8_t bDescriptorType;    // USB_DT_STRING
+    uint8_t bString[];
+} __attribute__ ((packed)) usb_string_descriptor_t;
+
+typedef struct {
+    uint8_t bLength;
     uint8_t bDescriptorType;    // USB_DT_INTERFACE
     uint8_t bInterfaceNumber;
     uint8_t bAlternateSetting;
@@ -183,9 +200,9 @@ typedef struct {
 #define usb_ep_type(ep)         ((ep)->bmAttributes & USB_ENDPOINT_TYPE_MASK)
 // max packet size is in bits 10..0
 #define usb_ep_max_packet(ep)   (le16toh((ep)->wMaxPacketSize) & 0x07FF)
-// for isochronous endpoints, additional transactions per microframe
+// for high speed interrupt and isochronous endpoints, additional transactions per microframe
 // are in bits 12..11
-#define usb_ep_max_burst(ep) (((le16toh((ep)->wMaxPacketSize) >> 11) & 3) + 1)
+#define usb_ep_add_mf_transactions(ep) ((le16toh((ep)->wMaxPacketSize) >> 11) & 3)
 
 typedef struct {
     uint8_t bLength;
@@ -212,5 +229,11 @@ typedef struct {
     uint8_t bFunctionProtocol;
     uint8_t iFunction;
 } __attribute__ ((packed)) usb_interface_assoc_descriptor_t;
+
+typedef struct {
+    uint8_t bLength;
+    uint8_t bDescriptorType;    // USB_DT_CS_INTERFACE
+    uint8_t bDescriptorSubType;
+} __attribute__ ((packed)) usb_cs_interface_descriptor_t;
 
 __END_CDECLS;

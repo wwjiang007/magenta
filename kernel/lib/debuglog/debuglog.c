@@ -10,7 +10,6 @@
 #include <dev/udisplay.h>
 #include <kernel/spinlock.h>
 #include <kernel/thread.h>
-#include <lib/user_copy.h>
 #include <lib/io.h>
 #include <lib/version.h>
 #include <lk/init.h>
@@ -66,15 +65,15 @@ static dlog_t DLOG = {
 
 #define ALIGN4(n) (((n) + 3) & (~3))
 
-status_t dlog_write(uint32_t flags, const void* ptr, size_t len) {
+mx_status_t dlog_write(uint32_t flags, const void* ptr, size_t len) {
     dlog_t* log = &DLOG;
 
     if (len > DLOG_MAX_DATA) {
-        return ERR_OUT_OF_RANGE;
+        return MX_ERR_OUT_OF_RANGE;
     }
 
     if (log->panic) {
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
     }
 
     // Our size "on the wire" must be a multiple of 4, so we know
@@ -130,23 +129,29 @@ status_t dlog_write(uint32_t flags, const void* ptr, size_t len) {
     }
     log->head += wiresize;
 
-    event_signal(&log->event, false);
+    // if we happen to be called from within the global thread lock, use a
+    // special version of event signal
+    if (spin_lock_holder_cpu(&thread_lock) == arch_curr_cpu_num()) {
+        event_signal_thread_locked(&log->event);
+    } else {
+        event_signal(&log->event, false);
+    }
 
     spin_unlock_irqrestore(&log->lock, state);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 // TODO: support reading multiple messages at a time
 // TODO: filter with flags
-status_t dlog_read(dlog_reader_t* rdr, uint32_t flags, void* ptr, size_t len, size_t* _actual) {
+mx_status_t dlog_read(dlog_reader_t* rdr, uint32_t flags, void* ptr, size_t len, size_t* _actual) {
     // must be room for worst-case read
     if (len < DLOG_MAX_RECORD) {
-        return ERR_BUFFER_TOO_SMALL;
+        return MX_ERR_BUFFER_TOO_SMALL;
     }
 
     dlog_t* log = rdr->log;
-    status_t status = ERR_SHOULD_WAIT;
+    mx_status_t status = MX_ERR_SHOULD_WAIT;
 
     spin_lock_saved_state_t state;
     spin_lock_irqsave(&log->lock, state);
@@ -176,7 +181,7 @@ status_t dlog_read(dlog_reader_t* rdr, uint32_t flags, void* ptr, size_t len, si
         }
 
         *_actual = actual;
-        status = NO_ERROR;
+        status = MX_OK;
 
         rtail += DLOG_HDR_GET_FIFOLEN(header);
     }
@@ -243,7 +248,7 @@ static int debuglog_notifier(void* arg) {
         }
         mutex_release(&log->readers_lock);
     }
-    return NO_ERROR;
+    return MX_OK;
 }
 
 
@@ -274,7 +279,7 @@ static int debuglog_dumper(void *arg) {
 
         // dump records to kernel console
         size_t actual;
-        while (dlog_read(&reader, 0, &rec, DLOG_MAX_RECORD, &actual) == NO_ERROR) {
+        while (dlog_read(&reader, 0, &rec, DLOG_MAX_RECORD, &actual) == MX_OK) {
             if (rec.hdr.datalen && (rec.data[rec.hdr.datalen - 1] == '\n')) {
                 rec.data[rec.hdr.datalen - 1] = 0;
             } else {
@@ -309,6 +314,13 @@ void dlog_bluescreen_init(void) {
     dprintf(INFO, "\nMAGENTA KERNEL PANIC\n\nUPTIME: %" PRIu64 "ms\n",
             current_time() / LK_MSEC(1));
     dprintf(INFO, "BUILDID %s\n\n", version.buildid);
+
+    // Log the ELF build ID in the format the symbolizer scripts understand.
+    if (version.elf_build_id[0] != '\0') {
+        vaddr_t base = KERNEL_BASE + KERNEL_LOAD_OFFSET;
+        dprintf(INFO, "dso: id=%s base=%#lx name=magenta.elf\n",
+                version.elf_build_id, base);
+    }
 }
 
 static void dlog_init_hook(uint level) {

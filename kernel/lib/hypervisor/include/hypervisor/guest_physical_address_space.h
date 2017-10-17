@@ -6,30 +6,36 @@
 
 #pragma once
 
-#include <arch/guest_mmu.h>
-#include <kernel/vm/vm_object.h>
-#include <mxtl/unique_ptr.h>
+#include <vm/vm_aspace.h>
+#include <vm/vm_object.h>
+#include <fbl/unique_ptr.h>
 
 class GuestPhysicalAddressSpace {
 public:
-    static status_t Create(mxtl::RefPtr<VmObject> guest_phys_mem,
-                           mxtl::unique_ptr<GuestPhysicalAddressSpace>* gpas);
+    static mx_status_t Create(fbl::RefPtr<VmObject> guest_phys_mem,
+                              fbl::unique_ptr<GuestPhysicalAddressSpace>* gpas);
 
     ~GuestPhysicalAddressSpace();
 
-    size_t size() const { return guest_phys_mem_->size(); }
+    size_t size() const { return paspace_->size(); }
+    fbl::RefPtr<VmAspace> aspace() const { return paspace_; }
+
 #if ARCH_X86_64
-    paddr_t Pml4Address() { return paspace_.pt_phys; }
-    status_t MapApicPage(vaddr_t guest_paddr, paddr_t host_paddr);
+    paddr_t Pml4Address() { return paspace_->arch_aspace().pt_phys(); }
+    mx_status_t MapApicPage(vaddr_t guest_paddr, paddr_t host_paddr);
 #endif
-    status_t UnmapRange(vaddr_t guest_paddr, size_t size);
-    status_t GetPage(vaddr_t guest_paddr, paddr_t* host_paddr);
+    mx_status_t UnmapRange(vaddr_t guest_paddr, size_t size);
+    mx_status_t GetPage(vaddr_t guest_paddr, paddr_t* host_paddr);
 
 private:
-    guest_paspace_t paspace_;
-    mxtl::RefPtr<VmObject> guest_phys_mem_;
+    fbl::RefPtr<VmAspace> paspace_;
+    fbl::RefPtr<VmObject> guest_phys_mem_;
 
-    explicit GuestPhysicalAddressSpace(mxtl::RefPtr<VmObject> guest_phys_mem);
-
-    status_t MapRange(vaddr_t guest_paddr, size_t size);
+    explicit GuestPhysicalAddressSpace(fbl::RefPtr<VmObject> guest_phys_mem);
 };
+
+static inline mx_status_t guest_lookup_page(void* context, size_t offset, size_t index,
+                                            paddr_t pa) {
+    *static_cast<paddr_t*>(context) = pa;
+    return MX_OK;
+}

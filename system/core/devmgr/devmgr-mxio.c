@@ -34,7 +34,7 @@
 void devmgr_io_init(void) {
     // setup stdout
     mx_handle_t h;
-    if (mx_log_create(MX_LOG_FLAG_DEVMGR, &h) < 0) {
+    if (mx_log_create(0, &h) < 0) {
         return;
     }
     mxio_t* logger;
@@ -45,34 +45,29 @@ void devmgr_io_init(void) {
     mxio_bind_to_fd(logger, 1, 0);
 }
 
-typedef struct bootfile bootfile_t;
-struct bootfile {
-    bootfile_t* next;
-    const char* name;
-    void* data;
-    size_t len;
-};
-
 struct callback_data {
     mx_handle_t vmo;
     unsigned int file_count;
     mx_status_t (*add_file)(const char* path, mx_handle_t vmo, mx_off_t off, size_t len);
 };
 
-static void callback(void* arg, const char* path, size_t off, size_t len) {
+static mx_status_t callback(void* arg, const bootfs_entry_t* entry) {
     struct callback_data* cd = arg;
     //printf("bootfs: %s @%zd (%zd bytes)\n", path, off, len);
-    cd->add_file(path, cd->vmo, off, len);
+    cd->add_file(entry->name, cd->vmo, entry->data_off, entry->data_len);
     ++cd->file_count;
+    return MX_OK;
 }
 
 #define USER_MAX_HANDLES 4
 #define MAX_ENVP 16
+#define CHILD_JOB_RIGHTS (MX_RIGHT_DUPLICATE | MX_RIGHT_TRANSFER | MX_RIGHT_READ | MX_RIGHT_WRITE)
 
 mx_status_t devmgr_launch(mx_handle_t job, const char* name,
                           int argc, const char* const* argv,
                           const char** _envp, int stdiofd,
-                          mx_handle_t* handles, uint32_t* types, size_t hcount) {
+                          mx_handle_t* handles, uint32_t* types, size_t hcount,
+                          mx_handle_t* proc) {
 
     const char* envp[MAX_ENVP + 1];
     unsigned envn = 0;
@@ -85,8 +80,8 @@ mx_status_t devmgr_launch(mx_handle_t job, const char* name,
     }
     envp[envn++] = NULL;
 
-    mx_handle_t job_copy = MX_HANDLE_INVALID;;
-    mx_handle_duplicate(job, MX_RIGHT_SAME_RIGHTS, &job_copy);
+    mx_handle_t job_copy = MX_HANDLE_INVALID;
+    mx_handle_duplicate(job, CHILD_JOB_RIGHTS, &job_copy);
 
     launchpad_t* lp;
     launchpad_create(job_copy, name, &lp);
@@ -94,13 +89,18 @@ mx_status_t devmgr_launch(mx_handle_t job, const char* name,
     launchpad_set_args(lp, argc, argv);
     launchpad_set_environ(lp, envp);
 
+    const char* nametable[2] = { "/", "/svc", };
+    size_t name_count = 0;
+
     mx_handle_t h = vfs_create_global_root_handle();
-    launchpad_add_handle(lp, h, PA_MXIO_ROOT);
+    launchpad_add_handle(lp, h, PA_HND(PA_NS_DIR, name_count++));
 
     //TODO: constrain to /svc/debug, or other as appropriate
     if (strcmp(name, "init") && ((h = get_service_root()) != MX_HANDLE_INVALID)) {
-        launchpad_add_handle(lp, h, PA_SERVICE_ROOT);
+        launchpad_add_handle(lp, h, PA_HND(PA_NS_DIR, name_count++));
     }
+
+    launchpad_set_nametable(lp, name_count, nametable);
 
     if (stdiofd < 0) {
         mx_status_t r;
@@ -117,7 +117,7 @@ mx_status_t devmgr_launch(mx_handle_t job, const char* name,
     launchpad_add_handles(lp, hcount, handles, types);
 
     const char* errmsg;
-    mx_status_t status = launchpad_go(lp, NULL, &errmsg);
+    mx_status_t status = launchpad_go(lp, proc, &errmsg);
     if (status < 0) {
         printf("devmgr: launchpad %s (%s) failed: %s: %d\n",
                argv[0], name, errmsg, status);
@@ -129,7 +129,7 @@ mx_status_t devmgr_launch(mx_handle_t job, const char* name,
 
 static void start_system_init(void) {
     thrd_t t;
-    int r = thrd_create_with_name(&t, devmgr_start_system_init, NULL, "system-init");
+    int r = thrd_create_with_name(&t, devmgr_start_appmgr, NULL, "system-init");
     if (r == thrd_success) {
         thrd_detach(t);
     }
@@ -139,13 +139,19 @@ static bool has_secondary_bootfs = false;
 static ssize_t setup_bootfs_vmo(uint32_t n, uint32_t type, mx_handle_t vmo) {
     uint64_t size;
     mx_status_t status = mx_vmo_get_size(vmo, &size);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         printf("devmgr: failed to get bootfs#%u size (%d)\n", n, status);
         return status;
     }
     if (size == 0) {
         return 0;
     }
+
+    // map the vmo so that ps will account for it
+    // NOTE: will leak the mapping in case the bootfs is thrown away later
+    uintptr_t address;
+    mx_vmar_map(mx_vmar_root_self(), 0, vmo, 0, size, MX_VM_FLAG_PERM_READ, &address);
+
     struct callback_data cd = {
         .vmo = vmo,
         .add_file = (type == BOOTDATA_BOOTFS_SYSTEM) ? systemfs_add_file : bootfs_add_file,
@@ -154,16 +160,18 @@ static ssize_t setup_bootfs_vmo(uint32_t n, uint32_t type, mx_handle_t vmo) {
         has_secondary_bootfs = true;
         memfs_mount(vfs_create_global_root(), systemfs_get_root());
     }
-    bootfs_parse(vmo, size, &callback, &cd);
-    printf("devmgr: bootfs #%u contains %u file%s\n",
-           n, cd.file_count, (cd.file_count == 1) ? "" : "s");
+    bootfs_t bfs;
+    if (bootfs_create(&bfs, vmo) == MX_OK) {
+        bootfs_parse(&bfs, callback, &cd);
+        bootfs_destroy(&bfs);
+    }
     return cd.file_count;
 }
 
 static mx_status_t copy_vmo(mx_handle_t src, mx_off_t offset, size_t length, mx_handle_t* out_dest) {
     mx_handle_t dest;
     mx_status_t status = mx_vmo_create(length, 0, &dest);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         return status;
     }
 
@@ -174,10 +182,10 @@ static mx_status_t copy_vmo(mx_handle_t src, mx_off_t offset, size_t length, mx_
     while (length > 0) {
         size_t copy = (length > sizeof(buffer) ? sizeof(buffer) : length);
         size_t actual;
-        if ((status = mx_vmo_read(src, buffer, src_offset, copy, &actual)) != NO_ERROR) {
+        if ((status = mx_vmo_read(src, buffer, src_offset, copy, &actual)) != MX_OK) {
             goto fail;
         }
-        if ((status = mx_vmo_write(dest, buffer, dest_offset, actual, &actual)) != NO_ERROR) {
+        if ((status = mx_vmo_write(dest, buffer, dest_offset, actual, &actual)) != MX_OK) {
             goto fail;
         }
         src_offset += actual;
@@ -186,7 +194,7 @@ static mx_status_t copy_vmo(mx_handle_t src, mx_off_t offset, size_t length, mx_
     }
 
     *out_dest = dest;
-    return NO_ERROR;
+    return MX_OK;
 
 fail:
     mx_handle_close(dest);
@@ -196,7 +204,7 @@ fail:
 static void setup_last_crashlog(mx_handle_t vmo_in, uint64_t off_in, size_t sz) {
     printf("devmgr: last crashlog is %zu bytes\n", sz);
     mx_handle_t vmo;
-    if (copy_vmo(vmo_in, off_in, sz, &vmo) != NO_ERROR) {
+    if (copy_vmo(vmo_in, off_in, sz, &vmo) != MX_OK) {
         return;
     }
     bootfs_add_file("log/last-panic.txt", vmo, 0, sz);
@@ -205,13 +213,13 @@ static void setup_last_crashlog(mx_handle_t vmo_in, uint64_t off_in, size_t sz) 
 static mx_status_t devmgr_read_mdi(mx_handle_t vmo, mx_off_t offset, size_t length) {
     mx_handle_t mdi_handle;
     mx_status_t status = copy_vmo(vmo, offset, length, &mdi_handle);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         printf("devmgr_read_mdi failed to copy MDI data: %d\n", status);
         return status;
     }
 
     devmgr_set_mdi(mdi_handle);
-    return NO_ERROR;
+    return MX_OK;
 
 fail:
     printf("devmgr_read_mdi failed %d\n", status);
@@ -246,13 +254,20 @@ static void setup_bootfs(void) {
 
         size_t len = bootdata.length;
         size_t off = sizeof(bootdata);
+        if (bootdata.flags & BOOTDATA_FLAG_EXTRA) {
+            off += sizeof(bootextra_t);
+        }
 
         while (len > sizeof(bootdata)) {
             mx_status_t status = mx_vmo_read(vmo, &bootdata, off, sizeof(bootdata), &actual);
             if ((status < 0) || (actual != sizeof(bootdata))) {
                 break;
             }
-            size_t itemlen = BOOTDATA_ALIGN(sizeof(bootdata) + bootdata.length);
+            size_t hdrsz = sizeof(bootdata_t);
+            if (bootdata.flags & BOOTDATA_FLAG_EXTRA) {
+                hdrsz += sizeof(bootextra_t);
+            }
+            size_t itemlen = BOOTDATA_ALIGN(hdrsz + bootdata.length);
             if (itemlen > len) {
                 printf("devmgr: bootdata item too large (%zd > %zd)\n", itemlen, len);
                 break;
@@ -268,22 +283,21 @@ static void setup_bootfs(void) {
             case BOOTDATA_BOOTFS_SYSTEM: {
                 const char* errmsg;
                 mx_handle_t bootfs_vmo;
-                printf("devmgr: decompressing bootfs #%u\n", idx);
                 status = decompress_bootdata(mx_vmar_root_self(), vmo,
-                                             off, bootdata.length + sizeof(bootdata),
+                                             off, bootdata.length + hdrsz,
                                              &bootfs_vmo, &errmsg);
                 if (status < 0) {
-                    printf("devmgr: failed to decompress bootdata\n");
+                    printf("devmgr: failed to decompress bootdata: %s\n", errmsg);
                 } else {
                     setup_bootfs_vmo(idx++, bootdata.type, bootfs_vmo);
                 }
                 break;
             }
             case BOOTDATA_LAST_CRASHLOG:
-                setup_last_crashlog(vmo, off + sizeof(bootdata), bootdata.length);
+                setup_last_crashlog(vmo, off + hdrsz, bootdata.length);
                 break;
             case BOOTDATA_MDI:
-                devmgr_read_mdi(vmo, off, len);
+                devmgr_read_mdi(vmo, off, itemlen);
                 break;
             case BOOTDATA_CMDLINE:
             case BOOTDATA_ACPI_RSDP:
@@ -291,6 +305,10 @@ static void setup_bootfs(void) {
             case BOOTDATA_E820_TABLE:
             case BOOTDATA_EFI_MEMORY_MAP:
             case BOOTDATA_EFI_SYSTEM_TABLE:
+            case BOOTDATA_DEBUG_UART:
+            case BOOTDATA_LASTLOG_NVRAM:
+            case BOOTDATA_LASTLOG_NVRAM2:
+            case BOOTDATA_IGNORE:
                 // quietly ignore these
                 break;
             default:
@@ -329,8 +347,4 @@ void devmgr_vfs_init(void) {
     if (h > 0) {
         mxio_install_root(mxio_remote_create(h, 0));
     }
-}
-
-void devmgr_vfs_exit(void) {
-    vfs_uninstall_all(mx_deadline_after(MX_SEC(5)));
 }

@@ -32,6 +32,7 @@ FUNCTION(arch_idle)
     hlt
 1:
     ret
+END_FUNCTION(arch_idle)
 
 
 /* status_t read_msr_safe(uint32_t msr_id, uint64_t *val); */
@@ -57,7 +58,7 @@ FUNCTION(read_msr_safe)
     or %rax, %rdx
     mov %rdx, (%rsi)
 
-    mov $NO_ERROR, %rax
+    mov $MX_OK, %rax
     ret
 .Lgpf_handler:
     # Cleanup GPF handler
@@ -65,5 +66,6 @@ FUNCTION(read_msr_safe)
     # Restore interrupts if they were on before
     popfq
 
-    mov $ERR_NOT_SUPPORTED, %rax
+    mov $MX_ERR_NOT_SUPPORTED, %rax
     ret
+END_FUNCTION(read_msr_safe)

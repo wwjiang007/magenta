@@ -11,11 +11,11 @@
 #include <dev/pcie_platform.h>
 #include <kernel/auto_lock.h>
 #include <kernel/mutex.h>
-#include <mxtl/intrusive_single_list.h>
-#include <mxtl/intrusive_wavl_tree.h>
-#include <mxtl/macros.h>
-#include <mxtl/ref_counted.h>
-#include <mxtl/ref_ptr.h>
+#include <fbl/intrusive_single_list.h>
+#include <fbl/intrusive_wavl_tree.h>
+#include <fbl/macros.h>
+#include <fbl/ref_counted.h>
+#include <fbl/ref_ptr.h>
 #include <region-alloc/region-alloc.h>
 
 class SharedLegacyIrqHandler;
@@ -28,7 +28,7 @@ class PcieUpstreamNode;
 class PciConfig;
 
 
-class PcieBusDriver : public mxtl::RefCounted<PcieBusDriver> {
+class PcieBusDriver : public fbl::RefCounted<PcieBusDriver> {
 public:
     // QuirkHandler
     //
@@ -51,7 +51,7 @@ public:
     // appropriate action.  If it didn't, it should log a warning informing the
     // maintainers to come back and update the quirk to take the appropriate
     // actions (if any) for the new chipset.
-    using QuirkHandler = void (*)(const mxtl::RefPtr<PcieDevice>& device);
+    using QuirkHandler = void (*)(const fbl::RefPtr<PcieDevice>& device);
 
     struct EcamRegion {
         paddr_t phys_base;  // Physical address of the memory mapped config region.
@@ -97,7 +97,29 @@ public:
     }
 
     // Add a root bus to the driver and attempt to scan it for devices.
-    status_t AddRoot(mxtl::RefPtr<PcieRoot>&& root);
+    status_t AddRoot(fbl::RefPtr<PcieRoot>&& root);
+
+    // Set a bus driver's memory address space to MMIO or IO.
+    //
+    // TODO(cja): This is a workaround to get around a problem with the current
+    // system of initializing PCI. Presently, while PCI is in the kernel,
+    // we create the PcieBusDriver singleton in a platform specific early
+    // init hook linked via LK_INIT_HOOK, then after ACPI runs we add roots
+    // and start the bus driver. It would make more sense to apply the memory
+    // space to the root, however during downstream scanning we rely on the
+    // bus driver's ability to call its own GetConfig(). For this reason, since
+    // we're only surfacing a single root right now anyway we need to mark that
+    // root as MMIO or PIO in the bus driver itself. When we move to userspace
+    // and have a bus driver instance for each root, this will no longer be an
+    // issue.
+    bool EnablePIOWorkaround(bool enable) {
+        fbl::AutoLock lock(&driver_lock_);
+        if (roots_.is_empty()) {
+            is_mmio_ = !enable;
+        }
+
+        return is_mmio_;
+    }
 
     // Start the driver
     //
@@ -125,14 +147,14 @@ public:
     // TODO(johngro) : Remove this someday.  Getting the "Nth" device is not a
     // concept which is going to carry over well to the world of hot-plugable
     // devices.
-    mxtl::RefPtr<PcieDevice> GetNthDevice(uint32_t index);
+    fbl::RefPtr<PcieDevice> GetNthDevice(uint32_t index);
 
     // Topology related stuff
     void LinkDeviceToUpstream(PcieDevice& dev, PcieUpstreamNode& upstream);
     void UnlinkDeviceFromUpstream(PcieDevice& dev);
-    mxtl::RefPtr<PcieUpstreamNode> GetUpstream(PcieDevice& dev);
-    mxtl::RefPtr<PcieDevice> GetDownstream(PcieUpstreamNode& upstream, uint ndx);
-    mxtl::RefPtr<PcieDevice> GetRefedDevice(uint bus_id, uint dev_id, uint func_id);
+    fbl::RefPtr<PcieUpstreamNode> GetUpstream(PcieDevice& dev);
+    fbl::RefPtr<PcieDevice> GetDownstream(PcieUpstreamNode& upstream, uint ndx);
+    fbl::RefPtr<PcieDevice> GetRefedDevice(uint bus_id, uint dev_id, uint func_id);
 
     // Bus region allocation
     const RegionAllocator::RegionPool::RefPtr& region_bookkeeping() const {
@@ -143,17 +165,18 @@ public:
     RegionAllocator& pio_regions()     { return pio_regions_; }
 
     // TODO(johngro) : Make this private when we can.
-    mxtl::RefPtr<SharedLegacyIrqHandler> FindLegacyIrqHandler(uint irq_id);
+    fbl::RefPtr<SharedLegacyIrqHandler> FindLegacyIrqHandler(uint irq_id);
     // TODO(johngro) : end TODO section
 
     // Disallow copying, assigning and moving.
     DISALLOW_COPY_ASSIGN_AND_MOVE(PcieBusDriver);
 
-    static mxtl::RefPtr<PcieBusDriver> GetDriver() {
-        AutoLock lock(&driver_lock_);
+    static fbl::RefPtr<PcieBusDriver> GetDriver() {
+        fbl::AutoLock lock(&driver_lock_);
         return driver_;
     }
 
+    void DisableBus();
     static status_t InitializeDriver(PciePlatformInterface& platform);
     static void     ShutdownDriver();
 
@@ -166,9 +189,9 @@ private:
     static constexpr size_t REGION_BOOKKEEPING_SLAB_SIZE = 16  << 10;
     static constexpr size_t REGION_BOOKKEEPING_MAX_MEM   = 128 << 10;
 
-    using RootCollection = mxtl::WAVLTree<uint, mxtl::RefPtr<PcieRoot>>;
-    using ForeachRootCallback = bool (*)(const mxtl::RefPtr<PcieRoot>& root, void* ctx);
-    using ForeachDeviceCallback = bool (*)(const mxtl::RefPtr<PcieDevice>& dev,
+    using RootCollection = fbl::WAVLTree<uint, fbl::RefPtr<PcieRoot>>;
+    using ForeachRootCallback = bool (*)(const fbl::RefPtr<PcieRoot>& root, void* ctx);
+    using ForeachDeviceCallback = bool (*)(const fbl::RefPtr<PcieDevice>& dev,
                                            void* ctx, uint level);
 
     enum class State {
@@ -179,7 +202,7 @@ private:
         OPERATIONAL                  = 4,
     };
 
-    class MappedEcamRegion : public mxtl::WAVLTreeContainable<mxtl::unique_ptr<MappedEcamRegion>> {
+    class MappedEcamRegion : public fbl::WAVLTreeContainable<fbl::unique_ptr<MappedEcamRegion>> {
     public:
         explicit MappedEcamRegion(const EcamRegion& ecam) : ecam_(ecam) { }
         ~MappedEcamRegion();
@@ -200,12 +223,12 @@ private:
 
     bool     AdvanceState(State expected, State next);
     bool     IsNotStarted(bool allow_quirks_phase = false) const;
-    bool     IsOperational() const { smp_rmb(); return state_ == State::OPERATIONAL; }
+    bool     IsOperational() const { smp_mb(); return state_ == State::OPERATIONAL; }
 
     status_t AllocBookkeeping();
     void     ForeachRoot(ForeachRootCallback cbk, void* ctx);
     void     ForeachDevice(ForeachDeviceCallback cbk, void* ctx);
-    bool     ForeachDownstreamDevice(const mxtl::RefPtr<PcieUpstreamNode>& upstream,
+    bool     ForeachDownstreamDevice(const fbl::RefPtr<PcieUpstreamNode>& upstream,
                                      uint                                  level,
                                      ForeachDeviceCallback                 cbk,
                                      void*                                 ctx);
@@ -215,36 +238,37 @@ private:
     // IRQ support.  Implementation in pcie_irqs.cpp
     void ShutdownIrqs();
 
-    static void RunQuirks(const mxtl::RefPtr<PcieDevice>& device);
+    static void RunQuirks(const fbl::RefPtr<PcieDevice>& device);
 
     State                               state_ = State::NOT_STARTED;
-    Mutex                               bus_topology_lock_;
-    Mutex                               bus_rescan_lock_;
-    mutable Mutex                       start_lock_;
+    fbl::Mutex                         bus_topology_lock_;
+    fbl::Mutex                         bus_rescan_lock_;
+    mutable fbl::Mutex                 start_lock_;
     RootCollection                      roots_;
-    mxtl::SinglyLinkedList<mxtl::RefPtr<PciConfig>> configs_;
+    fbl::SinglyLinkedList<fbl::RefPtr<PciConfig>> configs_;
 
+    bool                                is_mmio_ = true;
     RegionAllocator::RegionPool::RefPtr region_bookkeeping_;
     RegionAllocator                     mmio_lo_regions_;
     RegionAllocator                     mmio_hi_regions_;
     RegionAllocator                     pio_regions_;
 
-    mutable Mutex                       ecam_region_lock_;
-    mxtl::WAVLTree<uint8_t, mxtl::unique_ptr<MappedEcamRegion>> ecam_regions_;
+    mutable fbl::Mutex                 ecam_region_lock_;
+    fbl::WAVLTree<uint8_t, fbl::unique_ptr<MappedEcamRegion>> ecam_regions_;
 
-    Mutex                               legacy_irq_list_lock_;
-    mxtl::SinglyLinkedList<mxtl::RefPtr<SharedLegacyIrqHandler>> legacy_irq_list_;
+    fbl::Mutex                         legacy_irq_list_lock_;
+    fbl::SinglyLinkedList<fbl::RefPtr<SharedLegacyIrqHandler>> legacy_irq_list_;
     PciePlatformInterface&              platform_;
 
-    static mxtl::RefPtr<PcieBusDriver>  driver_;
-    static Mutex                        driver_lock_;
+    static fbl::RefPtr<PcieBusDriver>  driver_;
+    static fbl::Mutex                  driver_lock_;
 };
 
 #if WITH_DEV_PCIE
 #define STATIC_PCIE_QUIRK_HANDLER(quirk_handler) \
-    extern const PcieBusDriver::QuirkHandler __pcie_quirk_handler_##quirk_handler; \
-    const PcieBusDriver::QuirkHandler __pcie_quirk_handler_##quirk_handler \
-    __ALIGNED(sizeof(void *)) __SECTION("pcie_quirk_handlers") = quirk_handler
+    [[gnu::used, gnu::section("pcie_quirk_handlers")]] \
+    alignas(void*) static const PcieBusDriver::QuirkHandler \
+        __pcie_quirk_handler_##quirk_handler = quirk_handler
 #else  // WITH_DEV_PCIE
 #define STATIC_PCIE_QUIRK_HANDLER(quirk_handler)
 #endif  // WITH_DEV_PCIE

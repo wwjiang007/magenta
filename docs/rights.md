@@ -5,6 +5,10 @@
 Rights are associated with handles and convey privileges to perform actions on
 either the associated handle or the object associated with the handle.
 
+The [`<magenta/rights.h>`](../system/public/magenta/rights.h) header defines
+default rights for each object type, which can be reduced via
+`mx_handle_replace()` or `mx_handle_duplicate()`.
+
 | Right | Conferred Privileges |
 | ----- | -------------------- |
 | **MX_RIGHT_DUPLICATE** | Allows handle duplication via [*mx_handle_duplicate*](syscalls/handle_duplicate.md) |
@@ -17,5 +21,5 @@ either the associated handle or the object associated with the handle.
 | **MX_RIGHT_DEBUG** | Placeholder for debugger use, pending audit of all rights usage |
 
 ## See also
-[Kernel Objects](kernel_objects.md),
+[Objects](objects.md),
 [Magenta Handles](handles.md)

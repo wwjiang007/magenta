@@ -39,7 +39,7 @@ __END_CDECLS
 
 #ifdef __cplusplus
 
-#include <mxtl/ref_counted.h>
+#include <fbl/ref_counted.h>
 
 // PciePlatformInterface
 //
@@ -94,7 +94,7 @@ public:
         // Bus driver code should not be calling this if the platform does not
         // indicate support for MSI.
         DEBUG_ASSERT(false);
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 
     /**
@@ -146,6 +146,7 @@ public:
         DEBUG_ASSERT(false);
     }
 
+    DISALLOW_COPY_ASSIGN_AND_MOVE(PciePlatformInterface);
 protected:
     enum class MsiSupportLevel { NONE, MSI, MSI_WITH_MASKING };
     explicit PciePlatformInterface(MsiSupportLevel msi_support)

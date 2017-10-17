@@ -4,12 +4,15 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
+#include <arch/x86/mmu.h>
 #include <assert.h>
 #include <efi/boot-services.h>
 #include <err.h>
+#include <inttypes.h>
 #include <kernel/vm.h>
 #include <lib/memory_limit.h>
 #include <magenta/boot/multiboot.h>
+#include <fbl/algorithm.h>
 #include <platform.h>
 #include <platform/pc/bootloader.h>
 #include <platform/pc/memory.h>
@@ -26,6 +29,7 @@ extern multiboot_info_t *_multiboot_info;
 struct addr_range {
     uint64_t base;
     uint64_t size;
+    bool is_mem;
 };
 
 /* Values that will store the largest low-memory contiguous address space
@@ -85,7 +89,7 @@ static status_t mem_arena_init(boot_addr_range_t *range)
     ctx.kernel_size = reinterpret_cast<uintptr_t>(&_end) - ctx.kernel_base;
     ctx.ramdisk_base = reinterpret_cast<uintptr_t>(platform_get_ramdisk(&ctx.ramdisk_size));
 
-    bool have_limit = (mem_limit_init(&ctx) == NO_ERROR);
+    bool have_limit = (mem_limit_init(&ctx) == MX_OK);
 
     // Set up a base arena template to use
     pmm_arena_info_t base_arena;
@@ -115,14 +119,14 @@ static status_t mem_arena_init(boot_addr_range_t *range)
             size -= adjust;
         }
 
-        status_t status = NO_ERROR;
+        status_t status = MX_OK;
         if (have_limit) {
             status = mem_limit_add_arenas_from_range(&ctx, base, size, base_arena);
         }
 
         // If there is no limit, or we failed to add arenas from processing
         // ranges then add the original range.
-        if (!have_limit || status != NO_ERROR) {
+        if (!have_limit || status != MX_OK) {
             auto arena = base_arena;
             arena.base = base;
             arena.size = size;
@@ -131,7 +135,7 @@ static status_t mem_arena_init(boot_addr_range_t *range)
             status = pmm_add_arena(&arena);
             // This will result in subsequent arenas not being added, but this
             // is a fairly fatal event so it's justifiable.
-            if (status != NO_ERROR) {
+            if (status != MX_OK) {
                 TRACEF("Failed to add pmm range at %#" PRIxPTR "\n", arena.base);
                 return status;
             }
@@ -139,14 +143,8 @@ static status_t mem_arena_init(boot_addr_range_t *range)
 
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
-
-#define E820_RAM 1
-#define E820_RESERVED 2
-#define E820_ACPI 3
-#define E820_NVS 4
-#define E820_UNUSABLE 5
 
 typedef struct e820_range_seq {
     e820entry_t* map;
@@ -369,13 +367,10 @@ static int multiboot_range_init(boot_addr_range_t *range,
     seq->mmap = NULL;
     seq->count = 0;
 
-    // Qemu does not set MB_INFO_MMAP flag, but does provide a
-    // mmap table, which is necessary to see memory above 2GB.
-    // Grub always sets both
-    //
-    // NOTE: We may misbehave under a bootloader that does not provide
-    // a mmap table but does have a nonzero address and length.
-    if ((seq->info->mmap_addr != 0) && (seq->info->mmap_length > 0)) {
+    // if the MMAP flag is set and the address/length seems sane, parse the multiboot
+    // memory map table
+    if ((seq->info->flags & MB_INFO_MMAP)
+            && (seq->info->mmap_addr != 0) && (seq->info->mmap_length > 0)) {
 
         void* mmap_addr = (void*)X86_PHYS_TO_VIRT(seq->info->mmap_addr);
 
@@ -415,20 +410,20 @@ static status_t platform_mem_range_init(void)
     /* first try the efi memory table */
     efi_range_seq_t efi_seq;
     if (efi_range_init(&range, &efi_seq) &&
-        (mem_arena_init(&range) == NO_ERROR))
-        return NO_ERROR;
+        (mem_arena_init(&range) == MX_OK))
+        return MX_OK;
 
     /* then try getting range info from e820 */
     e820_range_seq_t e820_seq;
     if (e820_range_init(&range, &e820_seq) &&
-        (mem_arena_init(&range) == NO_ERROR))
-        return NO_ERROR;
+        (mem_arena_init(&range) == MX_OK))
+        return MX_OK;
 
     /* if no ranges were found, try multiboot */
     multiboot_range_seq_t multiboot_seq;
     if (multiboot_range_init(&range, &multiboot_seq) &&
-        (mem_arena_init(&range) == NO_ERROR))
-        return NO_ERROR;
+        (mem_arena_init(&range) == MX_OK))
+        return MX_OK;
 
     /* if still no ranges were found, make a safe guess */
     e820_range_init(&range, &e820_seq);
@@ -447,22 +442,23 @@ static struct addr_range cached_e820_entries[64];
 
 status_t enumerate_e820(enumerate_e820_callback callback, void* ctx) {
     if (callback == NULL)
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     if(!cached_e820_entry_count)
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
 
-    DEBUG_ASSERT(cached_e820_entry_count <= countof(cached_e820_entries));
+    DEBUG_ASSERT(cached_e820_entry_count <= fbl::count_of(cached_e820_entries));
     for (size_t i = 0; i < cached_e820_entry_count; ++i)
-        callback(cached_e820_entries[i].base, cached_e820_entries[i].size, ctx);
+        callback(cached_e820_entries[i].base, cached_e820_entries[i].size,
+                 cached_e820_entries[i].is_mem, ctx);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 /* Discover the basic memory map */
 void platform_mem_init(void)
 {
-    if (platform_mem_range_init() != NO_ERROR) {
+    if (platform_mem_range_init() != MX_OK) {
         TRACEF("Error adding arenas from provided memory tables.\n");
     }
 
@@ -484,7 +480,7 @@ void platform_mem_init(void)
         for (range.reset(&range),
              range.advance(&range);
              !range.is_reset; range.advance(&range)) {
-            if (cached_e820_entry_count >= countof(cached_e820_entries)) {
+            if (cached_e820_entry_count >= fbl::count_of(cached_e820_entries)) {
                 TRACEF("ERROR - Too many e820 entries to hold in the cache!\n");
                 cached_e820_entry_count = 0;
                 break;
@@ -493,6 +489,7 @@ void platform_mem_init(void)
             struct addr_range* entry = &cached_e820_entries[cached_e820_entry_count++];
             entry->base = range.base;
             entry->size = range.size;
+            entry->is_mem = range.is_mem ? true : false;
 
         }
     } else {

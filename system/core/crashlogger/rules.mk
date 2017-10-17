@@ -7,6 +7,7 @@ LOCAL_DIR := $(GET_LOCAL_DIR)
 MODULE := $(LOCAL_DIR)
 
 MODULE_TYPE := userapp
+MODULE_GROUP := core
 
 MODULE_SRCS += \
     $(LOCAL_DIR)/crashlogger.cpp \
@@ -18,9 +19,8 @@ MODULE_SRCS += \
 MODULE_NAME := crashlogger
 
 MODULE_STATIC_LIBS := \
-    system/ulib/mxalloc \
     system/ulib/mxcpp \
-    system/ulib/mxtl \
+    system/ulib/fbl \
     system/ulib/pretty \
     system/ulib/runtime
 

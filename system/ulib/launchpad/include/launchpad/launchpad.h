@@ -67,11 +67,11 @@ mx_status_t launchpad_create(mx_handle_t job, const char* name,
 // The creation_job handle is used to create the process but is
 // not taken ownership of or closed.
 //
-// The transfered_job handle is optional.  If non-zero, it is
+// The transferred_job handle is optional.  If non-zero, it is
 // consumed by the launchpad and will be passed to the new process
 // on successful launch or closed on failure.
 mx_status_t launchpad_create_with_jobs(mx_handle_t creation_job,
-                                       mx_handle_t transfered_job,
+                                       mx_handle_t transferred_job,
                                        const char* name,
                                        launchpad_t** result);
 
@@ -108,7 +108,7 @@ void launchpad_destroy(launchpad_t* lp);
 // any calls to launchpad_go() will fail.
 // If it is not already in an error state, the error state is
 // set to status, and errmsg is set to msg.
-// If status is non-negative, it is interpreted as ERR_INTERNAL.
+// If status is non-negative, it is interpreted as MX_ERR_INTERNAL.
 void launchpad_abort(launchpad_t* lp, mx_status_t status, const char* msg);
 
 // If any launchpad_*() call against this lp has failed, this returns
@@ -171,41 +171,41 @@ mx_status_t launchpad_add_handles(launchpad_t* lp, size_t n,
 // running process to be shared with the process being launched.
 // The items shared are as of the call to launchpad_clone().
 //
-// CLONE_MXIO_ROOT   shares the root filestem view
-// CLONE_MXIO_CWD    shares the current working directory
-// CLONE_MXIO_STDIO  shares file descriptors 0, 1, and 2
-// CLONE_ENVIRON     shares the environment
-// CLONE_JOB         shares the default job (if one exists)
+// CLONE_MXIO_NAMESPACE  shares the filestem namespace
+// CLONE_MXIO_CWD        shares the current working directory
+// CLONE_MXIO_STDIO      shares file descriptors 0, 1, and 2
+// CLONE_ENVIRON         shares the environment
+// CLONE_JOB             shares the default job (if one exists)
 //
 // It is *not* an error if any of the above requested items don't
 // exist (eg, fd0 is closed)
 //
 // launchpad_clone_fd() and launchpad_trasnfer_fd() may be used to
 // add additional file descriptors to the launched process.
-#define LP_CLONE_MXIO_ROOT     (0x0001u)
-#define LP_CLONE_MXIO_CWD      (0x0002u)
-#define LP_CLONE_MXIO_STDIO    (0x0004u)
-#define LP_CLONE_MXIO_ALL      (0x00FFu)
-#define LP_CLONE_ENVIRON       (0x0100u)
-#define LP_CLONE_DEFAULT_JOB   (0x0200u)
-#define LP_CLONE_ALL           (0xFFFFu)
+#define LP_CLONE_MXIO_NAMESPACE  (0x0001u)
+#define LP_CLONE_MXIO_CWD        (0x0002u)
+#define LP_CLONE_MXIO_STDIO      (0x0004u)
+#define LP_CLONE_MXIO_ALL        (0x00FFu)
+#define LP_CLONE_ENVIRON         (0x0100u)
+#define LP_CLONE_DEFAULT_JOB     (0x0200u)
+#define LP_CLONE_ALL             (0xFFFFu)
 
 mx_status_t launchpad_clone(launchpad_t* lp, uint32_t what);
 
 
 // Attempt to duplicate local descriptor fd into target_fd in the
-// new process.  Returns ERR_BAD_HANDLE if fd is not a valid fd, or
-// ERR_NOT_SUPPORTED if it's not possible to transfer this fd.
+// new process.  Returns MX_ERR_BAD_HANDLE if fd is not a valid fd, or
+// MX_ERR_NOT_SUPPORTED if it's not possible to transfer this fd.
 mx_status_t launchpad_clone_fd(launchpad_t* lp, int fd, int target_fd);
 
 // Attempt to transfer local descriptor fd into target_fd in the
-// new process.  Returns ERR_BAD_HANDLE if fd is not a valid fd,
+// new process.  Returns MX_ERR_BAD_HANDLE if fd is not a valid fd,
 // ERR_UNAVILABLE if fd has been duplicated or is in use in an
-// io operation, or ERR_NOT_SUPPORTED if it's not possible to transfer
+// io operation, or MX_ERR_NOT_SUPPORTED if it's not possible to transfer
 // this fd.
 // Upon success, from the point of view of the calling process, the fd
 // will appear to have been closed.  The underlying "file" will continue
-// to exist until launch succeeds (and it is transfered) or fails (and
+// to exist until launch succeeds (and it is transferred) or fails (and
 // it is destroyed).
 mx_status_t launchpad_transfer_fd(launchpad_t* lp, int fd, int target_fd);
 
@@ -272,8 +272,8 @@ mx_status_t launchpad_elf_load_extra(launchpad_t* lp, mx_handle_t vmo,
 // as the first argument to the interpreter, followed by all of the
 // original argv arguments (which includes the script name in argv[0]).
 // The length of the first line of an interpreted script may not exceed
-// 127 characters, or ERR_NOT_FOUND will be returned. If an invalid vmo
-// handle is passed, ERR_INVALID_ARGS will be returned.
+// 127 characters, or MX_ERR_NOT_FOUND will be returned. If an invalid vmo
+// handle is passed, MX_ERR_INVALID_ARGS will be returned.
 mx_status_t launchpad_file_load(launchpad_t* lp, mx_handle_t vmo);
 
 // The maximum length of the first line of a file that specifies an
@@ -317,7 +317,7 @@ mx_handle_t launchpad_use_loader_service(launchpad_t* lp, mx_handle_t svc);
 // just duplicates the handle passed in the last call.  Otherwise,
 // the first time the system vDSO is needed it's fetched with
 // mx_get_startup_handle.
-mx_handle_t launchpad_get_vdso_vmo(void);
+mx_status_t launchpad_get_vdso_vmo(mx_handle_t* out);
 
 // Replace the globally-held VM object handle for the system vDSO.
 // This takes ownership of the given handle, and returns the old

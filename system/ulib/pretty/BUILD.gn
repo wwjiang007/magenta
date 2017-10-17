@@ -1,15 +1,22 @@
+# Copyright 2017 The Fuchsia Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
 config("pretty_config") {
   include_dirs = [ "include" ]
 }
 
 static_library("pretty") {
   sources = [
-      "hexdump.c",
-      "sizes.c",
+    "hexdump.c",
+    "sizes.c",
   ]
   public = [
-      "include/pretty/hexdump.h",
-      "include/pretty/sizes.h",
+    "include/pretty/hexdump.h",
+    "include/pretty/sizes.h",
+  ]
+  deps = [
+    "//magenta/system/public",
   ]
   public_configs = [ ":pretty_config" ]
 }

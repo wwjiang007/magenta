@@ -17,6 +17,7 @@
 #include <platform.h>
 #include <platform/debug.h>
 #include <kernel/thread.h>
+#include <kernel/vm.h>
 
 #if WITH_LIB_DEBUGLOG
 #include <lib/debuglog.h>
@@ -73,7 +74,7 @@ void __kernel_console_write(const char *str, size_t len)
 static void __kernel_stdout_write(const char *str, size_t len)
 {
 #if WITH_LIB_DEBUGLOG && !ENABLE_KERNEL_LL_DEBUG
-    if (dlog_write(DLOG_FLAG_KERNEL, str, len)) {
+    if (dlog_write(0, str, len)) {
         __kernel_console_write(str, len);
         __kernel_serial_write(str, len);
     }

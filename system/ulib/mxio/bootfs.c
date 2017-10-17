@@ -8,99 +8,116 @@
 #include <string.h>
 
 #include <magenta/boot/bootdata.h>
+#include <magenta/process.h>
 #include <magenta/syscalls.h>
 #include <magenta/types.h>
 
-#define BOOTFS_MAX_NAME_LEN 256
+#include <mxio/util.h>
 
-
-// BOOTFS is a trivial "filesystem" format
-//
-// It has a bootdata item header
-// Followed by a series of records of:
-//   namelength (32bit le)
-//   filesize   (32bit le)
-//   fileoffset (32bit le)
-//   namedata   (namelength bytes, includes \0)
-//
-// - fileoffsets must be page aligned (multiple of 4096)
-
-#define NLEN 0
-#define FSIZ 1
-#define FOFF 2
-
-void bootfs_parse(mx_handle_t vmo, size_t len,
-                  void (*cb)(void*, const char* fn, size_t off, size_t len),
-                  void* cb_arg) {
+mx_status_t bootfs_create(bootfs_t* bfs, mx_handle_t vmo) {
+    bootfs_header_t hdr;
     size_t rlen;
-    bootdata_t hdr;
-    size_t off = 0;
-    mx_status_t r = mx_vmo_read(vmo, &hdr, off, sizeof(hdr), &rlen);
-    if (r < 0 || rlen < sizeof(hdr)) {
-        printf("bootfs_parse: couldn't read boot_data - %#zx\n", rlen);
-        return;
+    mx_status_t r = mx_vmo_read(vmo, &hdr, 0, sizeof(hdr), &rlen);
+    if ((r < 0) || (rlen < sizeof(hdr))) {
+        printf("bootfs_create: couldn't read boot_data - %d\n", r);
+        return r;
+    }
+    if (hdr.magic != BOOTFS_MAGIC) {
+        printf("bootfs_create: incorrect bootdata header: %x\n", hdr.magic);
+        return MX_ERR_IO;
+    }
+    if ((r = mx_handle_duplicate(vmo, MX_RIGHT_SAME_RIGHTS, &bfs->vmo)) < 0) {
+        return r;
+    }
+    uintptr_t addr;
+    if ((r = mx_vmar_map(mx_vmar_root_self(), 0, vmo, 0,
+                         sizeof(hdr) + hdr.dirsize,
+                         MX_VM_FLAG_PERM_READ, &addr)) < 0) {
+        printf("boofts_create: couldn't map directory: %d\n", r);
+        mx_handle_close(bfs->vmo);
+        return r;
+    }
+    bfs->dirsize = hdr.dirsize;
+    bfs->dir = (void*)addr + sizeof(hdr);
+    return MX_OK;
+}
+
+void bootfs_destroy(bootfs_t* bfs) {
+    mx_handle_close(bfs->vmo);
+    mx_vmar_unmap(mx_vmar_root_self(),
+                  (uintptr_t)bfs->dir - sizeof(bootfs_header_t),
+                  bfs->dirsize);
+}
+
+mx_status_t bootfs_parse(bootfs_t* bfs,
+                         mx_status_t (*cb)(void* cookie, const bootfs_entry_t* entry),
+                         void* cookie) {
+    size_t avail = bfs->dirsize;
+    void* p = bfs->dir;
+    mx_status_t r;
+    while (avail > sizeof(bootfs_entry_t)) {
+        bootfs_entry_t* e = p;
+        size_t sz = BOOTFS_RECSIZE(e);
+        if ((e->name_len < 1) || (e->name_len > BOOTFS_MAX_NAME_LEN) ||
+            (e->name[e->name_len - 1] != 0) || (sz > avail)) {
+            printf("bootfs: bogus entry!\n");
+            return MX_ERR_IO;
+        }
+        if ((r = cb(cookie, e)) != MX_OK) {
+            return r;
+        }
+        p += sz;
+        avail -= sz;
+    }
+    return MX_OK;
+}
+
+mx_status_t bootfs_open(bootfs_t* bfs, const char* name, mx_handle_t* vmo_out) {
+    size_t name_len = strlen(name) + 1;
+    size_t avail = bfs->dirsize;
+    void* p = bfs->dir;
+    bootfs_entry_t* e;
+    while (avail > sizeof(bootfs_entry_t)) {
+        e = p;
+        size_t sz = BOOTFS_RECSIZE(e);
+        if ((e->name_len < 1) || (e->name_len > BOOTFS_MAX_NAME_LEN) ||
+            (e->name[e->name_len - 1] != 0) || (sz > avail)) {
+            printf("bootfs: bogus entry!\n");
+            return MX_ERR_IO;
+        }
+        if ((name_len == e->name_len) && (memcmp(name, e->name, name_len) == 0)) {
+            goto found;
+        }
+        p += sz;
+        avail -= sz;
+    }
+    printf("bootfs_open: '%s' not found\n", name);
+    return MX_ERR_NOT_FOUND;
+
+found:;
+    mx_handle_t vmo;
+    mx_status_t r;
+
+    // Clone a private copy of the file's subset of the bootfs VMO.
+    // TODO(mcgrathr): Create a plain read-only clone when the feature
+    // is implemented in the VM.
+    if ((r = mx_vmo_clone(bfs->vmo, MX_VMO_CLONE_COPY_ON_WRITE,
+                          e->data_off, e->data_len, &vmo)) != MX_OK) {
+        return r;
     }
 
-    if ((hdr.type & BOOTDATA_BOOTFS_MASK) != BOOTDATA_BOOTFS_TYPE) {
-        printf("bootfs_parse: incorrect bootdata header: %08x\n", hdr.type);
-        return;
+    mx_object_set_property(vmo, MX_PROP_NAME, name, name_len - 1);
+
+    // Drop unnecessary MX_RIGHT_WRITE rights.
+    // TODO(mcgrathr): Should be superfluous with read-only mx_vmo_clone.
+    if ((r = mx_handle_replace(vmo,
+                               MX_RIGHT_READ | MX_RIGHT_EXECUTE |
+                               MX_RIGHT_MAP | MX_RIGHT_TRANSFER |
+                               MX_RIGHT_DUPLICATE | MX_RIGHT_GET_PROPERTY,
+                               &vmo)) != MX_OK) {
+        return r;
     }
 
-    uint8_t _buffer[4096];
-    uint8_t* data = _buffer;
-    uint8_t* end = data; // force initial read
-
-    char name[BOOTFS_MAX_NAME_LEN];
-    uint32_t header[3];
-
-    off += sizeof(hdr);
-    for (;;) {
-        if ((end - data) < (int)sizeof(header)) {
-            // read in another xxx headers
-            off += data - _buffer; // advance past processed headers
-            r = mx_vmo_read(vmo, _buffer, off, sizeof(_buffer), &rlen);
-            if (r < 0) {
-                break;
-            }
-            data = _buffer;
-            end = data+rlen;
-            if ((end - data) < (int)sizeof(header)) {
-                break;
-            }
-        }
-        memcpy(header, data, sizeof(header));
-
-        // check for end marker
-        if (header[NLEN] == 0)
-            break;
-
-        // require reasonable filename size
-        if ((header[NLEN] < 2) || (header[NLEN] > BOOTFS_MAX_NAME_LEN)) {
-            printf("bootfs_parse: bogus filename\n");
-            break;
-        }
-
-        // require correct alignment
-        if (header[FOFF] & 4095) {
-            printf("bootfs_parse: unaligned item\n");
-            break;
-        }
-
-
-        if (data + sizeof(header) + header[NLEN] > end) {
-            // read only part of the last file name:
-            // back up end and induce a fresh, new read
-            end = data;
-            continue;
-        }
-        data += sizeof(header);
-        if ((end - data) < (off_t)header[NLEN]) {
-            break;
-        }
-        memcpy(name, data, header[NLEN]);
-        data += header[NLEN];
-        name[header[NLEN] - 1] = 0;
-
-        (*cb)(cb_arg, name, header[FOFF], header[FSIZ]);
-    }
+    *vmo_out = vmo;
+    return MX_OK;
 }

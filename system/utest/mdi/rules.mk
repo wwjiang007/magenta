@@ -18,7 +18,6 @@ MODULE_LIBS := system/ulib/unittest system/ulib/mdi system/ulib/mxio system/ulib
 # for including MDI_HEADER
 MODULE_COMPILEFLAGS := -I$(BUILDDIR)/utest/mdi
 
-MDIGEN := $(BUILDDIR)/tools/mdigen
 MDI_TEST_SRCS := $(LOCAL_DIR)/test.mdi
 MDI_TEST_DEPS := $(LOCAL_DIR)/test-defs.mdi
 MDI_TEST_BIN := $(BUILDDIR)/utest/mdi/mdi-test.bin
@@ -29,15 +28,12 @@ MODULE_SRCDEPS := $(MDI_TEST_BIN) $(MDI_TEST_HEADER)
 
 include make/module.mk
 
-# add "MDI_" prefix and make header file symbols uppercase
-MDI_TEST_OPTS := -p "MDI_" -u
-
 $(MDI_TEST_HEADER): $(MDI_TEST_BIN)
 
 $(MDI_TEST_BIN): $(MDIGEN) $(MDI_TEST_SRCS) $(MDI_TEST_DEPS)
 	$(call BUILDECHO,generating $@)
 	@$(MKDIR)
-	$(NOECHO)$(MDIGEN) -o $@ $(MDI_TEST_SRCS) -h $(MDI_TEST_HEADER) $(MDI_TEST_OPTS)
+	$(NOECHO)$(MDIGEN) -o $@ $(MDI_TEST_SRCS) -h $(MDI_TEST_HEADER)
 
 GENERATED += $(MDI_TEST_BIN) $(MDI_TEST_HEADER)
 EXTRA_BUILDDEPS += $(MDI_TEST_BIN) $(MDI_TEST_HEADER)

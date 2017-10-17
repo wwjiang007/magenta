@@ -26,26 +26,27 @@ typedef struct mx_policy_basic {
     uint32_t policy;
 } mx_policy_basic_t;
 
-// Conditons handled by job policy.
-#define MX_POL_BAD_HANDLE                   0u
-#define MX_POL_WRONG_OBJECT                 1u
-#define MX_POL_VMAR_WX                      2u
-#define MX_POL_NEW_ANY                      3u
-#define MX_POL_NEW_VMO                      4u
-#define MX_POL_NEW_CHANNEL                  5u
-#define MX_POL_NEW_EVENT                    6u
-#define MX_POL_NEW_EVPAIR                   7u
-#define MX_POL_NEW_PORT                     8u
-#define MX_POL_NEW_SOCKET                   9u
+// Conditions handled by job policy.
+#define MX_POL_BAD_HANDLE                    0u
+#define MX_POL_WRONG_OBJECT                  1u
+#define MX_POL_VMAR_WX                       2u
+#define MX_POL_NEW_ANY                       3u
+#define MX_POL_NEW_VMO                       4u
+#define MX_POL_NEW_CHANNEL                   5u
+#define MX_POL_NEW_EVENT                     6u
+#define MX_POL_NEW_EVPAIR                    7u
+#define MX_POL_NEW_PORT                      8u
+#define MX_POL_NEW_SOCKET                    9u
 #define MX_POL_NEW_FIFO                     10u
-#define MX_POL_MAX                          11u
+#define MX_POL_NEW_TIMER                    11u
+#define MX_POL_MAX                          12u
 
-// Polciy actions.
-// MX_POL_ACTION_ALLOW and MX_POL_ACTION_DENY can be ORed with MX_POL_ACTION_ALARM.
+// Policy actions.
+// MX_POL_ACTION_ALLOW and MX_POL_ACTION_DENY can be ORed with MX_POL_ACTION_EXCEPTION.
 // MX_POL_ACTION_KILL implies MX_POL_ACTION_DENY.
 #define MX_POL_ACTION_ALLOW                 0u
 #define MX_POL_ACTION_DENY                  1u
-#define MX_POL_ACTION_ALARM                 2u
+#define MX_POL_ACTION_EXCEPTION             2u
 #define MX_POL_ACTION_KILL                  5u
 
 __END_CDECLS

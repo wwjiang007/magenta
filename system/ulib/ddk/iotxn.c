@@ -31,7 +31,7 @@
 
 #define IOTXN_PFLAG_CONTIGUOUS (1 << 0)   // the vmo is contiguous
 #define IOTXN_PFLAG_ALLOC      (1 << 1)   // the vmo is allocated by us
-#define IOTXN_PFLAG_PHYSMAP    (1 << 2)   // we performed physmap() on this vmo
+#define IOTXN_PFLAG_PHYSMAP    (1 << 2)   // we performed physmap() on this vmo and allocated memory
 #define IOTXN_PFLAG_MMAP       (1 << 3)   // we performed mmap() on this vmo
 #define IOTXN_PFLAG_FREE       (1 << 4)   // this txn has been released
 #define IOTXN_PFLAG_QUEUED     (1 << 5)   // transaction has been queued and not yet released
@@ -56,7 +56,7 @@ static uint32_t alloc_flags_to_pflags(uint32_t alloc_flags) {
 }
 
 static bool do_free_phys(uint32_t pflags) {
-    // only free phys if we called physmap
+    // only free phys if we called physmap and allocated memory
     return (pflags & IOTXN_PFLAG_PHYSMAP);
 }
 
@@ -96,6 +96,8 @@ static void iotxn_release_free_list(iotxn_t* txn) {
     mx_paddr_t* phys = txn->phys;
     uint64_t phys_count = txn->phys_count;
     uint32_t pflags = txn->pflags;
+    mx_paddr_t phys_inline[3];
+    memcpy(phys_inline, txn->phys_inline, sizeof(txn->phys_inline));
 
     memset(txn, 0, sizeof(iotxn_t));
 
@@ -108,6 +110,7 @@ static void iotxn_release_free_list(iotxn_t* txn) {
         txn->phys = phys;
         txn->phys_count = phys_count;
         txn->pflags = pflags;
+        memcpy(txn->phys_inline, phys_inline, sizeof(txn->phys_inline));
     } else {
         if (do_free_phys(pflags)) {
             if (phys != NULL) {
@@ -197,7 +200,7 @@ ssize_t iotxn_copyfrom(iotxn_t* txn, void* data, size_t length, size_t offset) {
     size_t actual;
     mx_status_t status = mx_vmo_read(txn->vmo_handle, data, txn->vmo_offset + offset, length, &actual);
     xprintf("iotxn_copyfrom: txn %p vmo_offset 0x%" PRIx64 " offset 0x%zx length 0x%zx actual 0x%zx status %d\n", txn, txn->vmo_offset, offset, length, actual, status);
-    return (status == NO_ERROR) ? (ssize_t)actual : status;
+    return (status == MX_OK) ? (ssize_t)actual : status;
 }
 
 ssize_t iotxn_copyto(iotxn_t* txn, const void* data, size_t length, size_t offset) {
@@ -205,33 +208,28 @@ ssize_t iotxn_copyto(iotxn_t* txn, const void* data, size_t length, size_t offse
     size_t actual;
     mx_status_t status = mx_vmo_write(txn->vmo_handle, data, txn->vmo_offset + offset, length, &actual);
     xprintf("iotxn_copyto: txn %p vmo_offset 0x%" PRIx64 " offset 0x%zx length 0x%zx actual 0x%zx status %d\n", txn, txn->vmo_offset, offset, length, actual, status);
-    return (status == NO_ERROR) ? (ssize_t)actual : status;
+    return (status == MX_OK) ? (ssize_t)actual : status;
 }
 
 static mx_status_t iotxn_physmap_contiguous(iotxn_t* txn) {
-    txn->phys = malloc(sizeof(mx_paddr_t));
-    if (txn->phys == NULL) {
-        return ERR_NO_MEMORY;
-    }
+    txn->phys = txn->phys_inline;
 
     // for contiguous buffers, commit the whole range but just map the first
     // page
     uint64_t page_offset = ROUNDDOWN(txn->vmo_offset, PAGE_SIZE);
     mx_status_t status = mx_vmo_op_range(txn->vmo_handle, MX_VMO_OP_COMMIT, page_offset, txn->vmo_length, NULL, 0);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         goto fail;
     }
 
     status = mx_vmo_op_range(txn->vmo_handle, MX_VMO_OP_LOOKUP, page_offset, PAGE_SIZE, txn->phys, sizeof(mx_paddr_t));
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         goto fail;
     }
 
-    txn->pflags |= IOTXN_PFLAG_PHYSMAP;
     txn->phys_count = 1;
-    return NO_ERROR;
+    return MX_OK;
 fail:
-    free(txn->phys);
     txn->phys = NULL;
     return status;
 }
@@ -243,40 +241,47 @@ static mx_status_t iotxn_physmap_paged(iotxn_t* txn) {
     uint64_t page_length = txn->vmo_length + (txn->vmo_offset - page_offset);
     uint64_t pages = ROUNDUP(page_length, PAGE_SIZE) / PAGE_SIZE;
 
-    mx_paddr_t* paddrs = malloc(sizeof(mx_paddr_t) * pages);
+    bool use_inline = pages <= 3;
+    mx_paddr_t* paddrs = use_inline ? txn->phys_inline : malloc(sizeof(mx_paddr_t) * pages);
     if (paddrs == NULL) {
         xprintf("iotxn_physmap_paged: out of memory\n");
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
 
     // commit pages and lookup physical addresses
     // assume that commited pages will never be auto-decommitted
     mx_status_t status = mx_vmo_op_range(txn->vmo_handle, MX_VMO_OP_COMMIT, txn->vmo_offset, txn->vmo_length, NULL, 0);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         xprintf("iotxn_physmap_paged: error %d in commit\n", status);
-        free(paddrs);
+        if (!use_inline) {
+            free(paddrs);
+        }
         return status;
     }
 
     status = mx_vmo_op_range(txn->vmo_handle, MX_VMO_OP_LOOKUP, page_offset, page_length, paddrs, sizeof(mx_paddr_t) * pages);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         xprintf("iotxn_physmap_paged: error %d in lookup\n", status);
-        free(paddrs);
+        if (!use_inline) {
+            free(paddrs);
+        }
         return status;
     }
 
-    txn->pflags |= IOTXN_PFLAG_PHYSMAP;
+    if (!use_inline) {
+        txn->pflags |= IOTXN_PFLAG_PHYSMAP;
+    }
     txn->phys = paddrs;
     txn->phys_count = pages;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 mx_status_t iotxn_physmap(iotxn_t* txn) {
     if (txn->phys_count > 0) {
-        return NO_ERROR;
+        return MX_OK;
     }
     if (txn->vmo_length == 0) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
     mx_status_t status;
     if (txn->pflags & IOTXN_PFLAG_CONTIGUOUS) {
@@ -291,10 +296,10 @@ mx_status_t iotxn_mmap(iotxn_t* txn, void** data) {
     xprintf("iotxn_mmap: txn %p\n", txn);
     if (txn->virt) {
         *data = txn->virt;
-        return NO_ERROR;
+        return MX_OK;
     }
     mx_status_t status = mx_vmar_map(mx_vmar_root_self(), 0, txn->vmo_handle, txn->vmo_offset, txn->vmo_length, MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE, (uintptr_t*)(&txn->virt));
-    if (status == NO_ERROR) {
+    if (status == MX_OK) {
         txn->pflags |= IOTXN_PFLAG_MMAP;
         *data = txn->virt;
     }
@@ -311,7 +316,7 @@ mx_status_t iotxn_clone(iotxn_t* txn, iotxn_t** out) {
         if (clone == NULL) {
             clone = calloc(1, sizeof(iotxn_t));
             if (clone == NULL) {
-                return ERR_NO_MEMORY;
+                return MX_ERR_NO_MEMORY;
             }
         }
     }
@@ -324,23 +329,23 @@ mx_status_t iotxn_clone(iotxn_t* txn, iotxn_t** out) {
     clone->release_cb = iotxn_release_free_list;
 
     *out = clone;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 mx_status_t iotxn_clone_partial(iotxn_t* txn, uint64_t vmo_offset, mx_off_t length, iotxn_t** out) {
     xprintf("iotxn_clone_partial txn %p\n", txn);
     if (vmo_offset < txn->vmo_offset) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
     if (length > txn->length) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
     if ((vmo_offset - txn->vmo_offset) > (length - txn->length)) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     mx_status_t status = iotxn_clone(txn, out);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         return status;
     }
 
@@ -357,19 +362,13 @@ mx_status_t iotxn_clone_partial(iotxn_t* txn, uint64_t vmo_offset, mx_off_t leng
         uint64_t new_page_offset = ROUNDDOWN(clone->vmo_offset, PAGE_SIZE);
         if (page_offset != new_page_offset) {
             if (txn->pflags & IOTXN_PFLAG_CONTIGUOUS) {
-                clone->phys = malloc(sizeof(mx_paddr_t));
-                if (!clone->phys) {
-                    iotxn_release(clone);
-                    return ERR_NO_MEMORY;
-                }
-                // need to free allocated phys on release
-                clone->pflags |= IOTXN_PFLAG_PHYSMAP;
+                clone->phys = clone->phys_inline;
                 clone->phys[0] = txn->phys[0] + new_page_offset - page_offset;
             } else {
                 uint64_t pages = (new_page_offset - page_offset) / PAGE_SIZE;
                 if (pages >= clone->phys_count) {
                     iotxn_release(clone);
-                    return ERR_INVALID_ARGS;
+                    return MX_ERR_INVALID_ARGS;
                 }
                 clone->phys += pages;
                 clone->phys_count -= pages;
@@ -378,7 +377,7 @@ mx_status_t iotxn_clone_partial(iotxn_t* txn, uint64_t vmo_offset, mx_off_t leng
         }
     }
     MX_DEBUG_ASSERT(clone->release_cb == iotxn_release_free_list);
-    return NO_ERROR;
+    return MX_OK;
 }
 
 void iotxn_release(iotxn_t* txn) {
@@ -391,6 +390,10 @@ void iotxn_release(iotxn_t* txn) {
 }
 
 void iotxn_cacheop(iotxn_t* txn, uint32_t op, size_t offset, size_t length) {
+    // Bail out if the syscall has nothing to do.
+    if (length == 0 || txn->vmo_length == 0)
+        return;
+
     mx_vmo_op_range(txn->vmo_handle, op, txn->vmo_offset + offset, length, NULL, 0);
 }
 
@@ -407,7 +410,7 @@ mx_status_t iotxn_alloc(iotxn_t** out, uint32_t alloc_flags, uint64_t data_size)
     // didn't find one that fits, allocate a new one
     txn = calloc(1, sizeof(iotxn_t));
     if (!txn) {
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
     if (data_size > 0) {
         mx_status_t status;
@@ -417,7 +420,8 @@ mx_status_t iotxn_alloc(iotxn_t** out, uint32_t alloc_flags, uint64_t data_size)
         } else {
             status = mx_vmo_create(data_size, 0, &txn->vmo_handle);
         }
-        if (status != NO_ERROR) {
+        mx_object_set_property(txn->vmo_handle, MX_PROP_NAME, "iotxn", 5);
+        if (status != MX_OK) {
             xprintf("iotxn_alloc: error %d in mx_vmo_create, flags 0x%x\n", status, alloc_flags);
             free(txn);
             return status;
@@ -436,26 +440,26 @@ out:
         txn->release_cb = iotxn_release_free;
     }
     *out = txn;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 void iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
     // don't assert not queued here, since iotxns are allowed to be requeued
     txn->pflags |= IOTXN_PFLAG_QUEUED;
 
-    if (dev->ops->iotxn_queue) {
-        dev->ops->iotxn_queue(dev->ctx, txn);
-    } else {
+    // This can only fail if iotxn_queue() is not implemented by the
+    // device, in which case we fall back to calling the read or write op
+    if (device_iotxn_queue(dev, txn) != MX_OK) {
         mx_status_t status;
         size_t actual = 0;
         void* buf;
         iotxn_mmap(txn, &buf);
         if (txn->opcode == IOTXN_OP_READ) {
-            status = device_op_read(dev, buf, txn->length, txn->offset, &actual);
+            status = device_read(dev, buf, txn->length, txn->offset, &actual);
         } else if (txn->opcode == IOTXN_OP_WRITE) {
-            status = device_op_write(dev, buf, txn->length, txn->offset, &actual);
+            status = device_write(dev, buf, txn->length, txn->offset, &actual);
         } else {
-            status = ERR_NOT_SUPPORTED;
+            status = MX_ERR_NOT_SUPPORTED;
         }
         iotxn_complete(txn, status, actual);
     }
@@ -474,7 +478,7 @@ mx_status_t iotxn_alloc_vmo(iotxn_t** out, uint32_t alloc_flags, mx_handle_t vmo
                             uint64_t vmo_offset, uint64_t length) {
     iotxn_t* txn;
     mx_status_t status = iotxn_alloc(&txn, alloc_flags, 0);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         return status;
     }
     txn->vmo_handle = vmo_handle;
@@ -482,7 +486,7 @@ mx_status_t iotxn_alloc_vmo(iotxn_t** out, uint32_t alloc_flags, mx_handle_t vmo
     txn->vmo_length = length;
     txn->length = length;
     *out = txn;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 void iotxn_phys_iter_init(iotxn_phys_iter_t* iter, iotxn_t* txn, size_t max_length) {
@@ -537,7 +541,14 @@ size_t iotxn_phys_iter_next(iotxn_phys_iter_t* iter, mx_paddr_t* out_paddr) {
         // alignment for subsequent iterations.
         *out_paddr = phys + align_adjust;
         return_length = PAGE_SIZE - align_adjust;
+        remaining -= return_length;
         iter->page = 1;
+
+        if (iter->page > iter->last_page || phys + PAGE_SIZE != phys_addrs[iter->page]) {
+            iter->offset += return_length;
+            return return_length;
+        }
+        phys = phys_addrs[iter->page];
     } else {
         *out_paddr = phys;
     }
@@ -545,25 +556,25 @@ size_t iotxn_phys_iter_next(iotxn_phys_iter_t* iter, mx_paddr_t* out_paddr) {
     // below is more complicated case where we need to watch for discontinuities
     // in the physical address space.
 
-    bool discontiguous = false;
-
     // loop through physical addresses looking for discontinuities
-    while (remaining > 0 && return_length < max_length && iter->page++ < iter->last_page) {
-        size_t increment = (PAGE_SIZE > remaining ? remaining : PAGE_SIZE);
+    while (remaining > 0 && iter->page <= iter->last_page) {
+        const size_t increment = MIN(PAGE_SIZE, remaining);
+        if (return_length + increment > max_length) {
+            break;
+        }
         return_length += increment;
         remaining -= increment;
+        iter->page++;
+
+        if (iter->page > iter->last_page) {
+            break;
+        }
 
         mx_paddr_t next = phys_addrs[iter->page];
         if (phys + PAGE_SIZE != next) {
-            discontiguous = true;
             break;
         }
         phys = next;
-    }
-
-    if (!discontiguous && remaining > 0) {
-        // if we did not hit a discontinuity, we can add any remaining length from last page
-        return_length += remaining;
     }
 
     if (return_length > max_length) {

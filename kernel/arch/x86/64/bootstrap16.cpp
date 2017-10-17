@@ -13,39 +13,41 @@
 #include <arch/x86/mp.h>
 #include <assert.h>
 #include <err.h>
-#include <mxtl/auto_call.h>
+#include <vm/pmm.h>
+#include <fbl/algorithm.h>
+#include <fbl/auto_call.h>
 #include <string.h>
 #include <trace.h>
 
 status_t x86_bootstrap16_prep(
         paddr_t bootstrap_phys_addr,
         uintptr_t entry64,
-        mxtl::RefPtr<VmAspace> *temp_aspace,
+        fbl::RefPtr<VmAspace> *temp_aspace,
         void **bootstrap_aperature)
 {
     // Make sure bootstrap region will be entirely in the first 1MB of physical
     // memory
     if (bootstrap_phys_addr > (1 << 20) - 2 * PAGE_SIZE) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     // Make sure the entrypoint code is in the bootstrap code that will be
     // loaded
     if (entry64 < (uintptr_t)x86_bootstrap16_start ||
         entry64 >= (uintptr_t)x86_bootstrap16_end) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     VmAspace *kernel_aspace = VmAspace::kernel_aspace();
-    mxtl::RefPtr<VmAspace> bootstrap_aspace = VmAspace::Create(VmAspace::TYPE_LOW_KERNEL,
+    fbl::RefPtr<VmAspace> bootstrap_aspace = VmAspace::Create(VmAspace::TYPE_LOW_KERNEL,
                                                                "bootstrap16");
     if (!bootstrap_aspace) {
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
     void *bootstrap_virt_addr = NULL;
 
     // add an auto caller to clean up the address space on the way out
-    auto ac = mxtl::MakeAutoCall([&]() {
+    auto ac = fbl::MakeAutoCall([&]() {
         bootstrap_aspace->Destroy();
         if (bootstrap_virt_addr) {
             kernel_aspace->FreeRegion(reinterpret_cast<vaddr_t>(bootstrap_virt_addr));
@@ -75,7 +77,7 @@ status_t x86_bootstrap16_prep(
         // 4) The kernel's version of the bootstrap code page (matched mapping)
         // 5) The page containing the aps_still_booting counter (matched mapping)
     };
-    for (unsigned int i = 0; i < countof(page_mappings); ++i) {
+    for (unsigned int i = 0; i < fbl::count_of(page_mappings); ++i) {
         void *vaddr = (void *)page_mappings[i].start_vaddr;
         status_t status = bootstrap_aspace->AllocPhysical(
                 "bootstrap_mapping",
@@ -83,9 +85,9 @@ status_t x86_bootstrap16_prep(
                 &vaddr,
                 PAGE_SIZE_SHIFT,
                 page_mappings[i].start_paddr,
-                VMM_FLAG_VALLOC_SPECIFIC,
+                VmAspace::VMM_FLAG_VALLOC_SPECIFIC,
                 ARCH_MMU_FLAG_PERM_READ | ARCH_MMU_FLAG_PERM_WRITE | ARCH_MMU_FLAG_PERM_EXECUTE);
-        if (status != NO_ERROR) {
+        if (status != MX_OK) {
             TRACEF("Failed to create wakeup bootstrap aspace\n");
             return status;
         }
@@ -101,7 +103,7 @@ status_t x86_bootstrap16_prep(
             bootstrap_phys_addr, // physical address
             0, // vmm flags
             ARCH_MMU_FLAG_PERM_READ | ARCH_MMU_FLAG_PERM_WRITE); // arch mmu flags
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         TRACEF("could not allocate AP bootstrap page: %d\n", status);
         return status;
     }
@@ -120,13 +122,13 @@ status_t x86_bootstrap16_prep(
             (entry64 - (uintptr_t)x86_bootstrap16_start);
     ASSERT(long_mode_entry <= UINT32_MAX);
 
-    uint64_t phys_bootstrap_pml4 = bootstrap_aspace->arch_aspace().pt_phys;
+    uint64_t phys_bootstrap_pml4 = bootstrap_aspace->arch_aspace().pt_phys();
     uint64_t phys_kernel_pml4 = x86_get_cr3();
     if (phys_bootstrap_pml4 > UINT32_MAX) {
-        // TODO(teisenbe): Once the pmm supports it, we should request that this
+        // TODO(MG-978): Once the pmm supports it, we should request that this
         // VmAspace is backed by a low mem PML4, so we can avoid this issue.
         TRACEF("bootstrap PML4 was not allocated out of low mem\n");
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
     ASSERT(phys_kernel_pml4 <= UINT32_MAX);
 
@@ -144,5 +146,5 @@ status_t x86_bootstrap16_prep(
     // cancel the cleanup autocall, since we're returning the new aspace and region
     ac.cancel();
 
-    return NO_ERROR;
+    return MX_OK;
 }

@@ -16,6 +16,7 @@
 #include <dev/interrupt/arm_gicv2m.h>
 #include <reg.h>
 #include <kernel/thread.h>
+#include <kernel/stats.h>
 #include <lk/init.h>
 #include <dev/interrupt.h>
 #include <arch/ops.h>
@@ -44,9 +45,11 @@ static uint32_t ipi_base = 0;
 
 uint max_irqs = 0;
 
-static paddr_t GICV2M_REG_FRAMES[] = { 0 };
-
 static void arm_gic_init(void);
+
+static status_t gic_configure_interrupt(unsigned int vector,
+                                        enum interrupt_trigger_mode tm,
+                                        enum interrupt_polarity pol);
 
 static void suspend_resume_fiq(bool resume_gicc, bool resume_gicd)
 {
@@ -118,7 +121,7 @@ static void arm_gic_init(void)
     uint i;
 
     max_irqs = ((GICREG(0, GICD_TYPER) & 0x1F) + 1) * 32;
-    printf("arm_gic_init max_irqs: %u\n", max_irqs);
+    LTRACEF("arm_gic_init max_irqs: %u\n", max_irqs);
     assert(max_irqs <= MAX_INT);
 
     for (i = 0; i < max_irqs; i+= 32) {
@@ -132,6 +135,9 @@ static void arm_gic_init(void)
             GICREG(0, GICD_ITARGETSR(i / 4)) = gicd_itargetsr[i / 4];
         }
     }
+    // Initialize all the SPIs to edge triggered
+    for (i = GIC_BASE_SPI; i < max_irqs; i++)
+        gic_configure_interrupt(i, IRQ_TRIGGER_MODE_EDGE, IRQ_POLARITY_ACTIVE_HIGH);
 
     GICREG(0, GICD_CTLR) = 1; // enable GIC0
 
@@ -147,55 +153,59 @@ static status_t arm_gic_sgi(u_int irq, u_int flags, u_int cpu_mask)
         (irq & 0xf);
 
     if (irq >= 16)
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     LTRACEF("GICD_SGIR: %x\n", val);
 
     GICREG(0, GICD_SGIR) = val;
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static status_t gic_mask_interrupt(unsigned int vector)
 {
     if (vector >= max_irqs)
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     gic_set_enable(vector, false);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static status_t gic_unmask_interrupt(unsigned int vector)
 {
     if (vector >= max_irqs)
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     gic_set_enable(vector, true);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static status_t gic_configure_interrupt(unsigned int vector,
                                         enum interrupt_trigger_mode tm,
                                         enum interrupt_polarity pol)
 {
-    if (vector >= max_irqs)
-        return ERR_INVALID_ARGS;
-
-    if (tm != IRQ_TRIGGER_MODE_EDGE) {
-        // We don't currently support non-edge triggered interupts via the GIC,
-        // and we pre-initialize everything to edge triggered.
-        // TODO: re-evaluate this.
-        return ERR_NOT_SUPPORTED;
-    }
+    //Only configurable for SPI interrupts
+    if ((vector >= max_irqs) || (vector < GIC_BASE_SPI))
+        return MX_ERR_INVALID_ARGS;
 
     if (pol != IRQ_POLARITY_ACTIVE_HIGH) {
         // TODO: polarity should actually be configure through a GPIO controller
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 
-    return NO_ERROR;
+    // type is encoded with two bits, MSB of the two determine type
+    // 16 irqs encoded per ICFGR register
+    uint32_t reg_ndx = vector >> 4;
+    uint32_t bit_shift = ((vector & 0xf) << 1) + 1;
+    uint32_t type = (tm == IRQ_TRIGGER_MODE_EDGE) ? 1 : 0;
+
+    uint32_t reg_val   = GICREG(0, GICD_ICFGR(reg_ndx));
+    reg_val |= (type << bit_shift);
+    GICREG(0, GICD_ICFGR(reg_ndx)) = reg_val;
+
+    return MX_OK;
 }
 
 static status_t gic_get_interrupt_config(unsigned int vector,
@@ -203,12 +213,12 @@ static status_t gic_get_interrupt_config(unsigned int vector,
                                          enum interrupt_polarity* pol)
 {
     if (vector >= max_irqs)
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     if (tm)  *tm  = IRQ_TRIGGER_MODE_EDGE;
     if (pol) *pol = IRQ_POLARITY_ACTIVE_HIGH;
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static unsigned int gic_remap_interrupt(unsigned int vector)
@@ -229,7 +239,7 @@ static enum handler_return gic_handle_irq(struct iframe *frame)
 
     // tracking external hardware irqs in this variable
     if (vector >= 32)
-        THREAD_STATS_INC(interrupts);
+        CPU_STATS_INC(interrupts);
 
     uint cpu = arch_curr_cpu_num();
 
@@ -272,7 +282,7 @@ static status_t gic_send_ipi(mp_cpu_mask_t target, mp_ipi_t ipi) {
         arm_gic_sgi(gic_ipi_num, ARM_GIC_SGI_FLAG_NS, target);
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static enum handler_return arm_ipi_generic_handler(void *arg) {
@@ -325,6 +335,7 @@ static const struct pdev_interrupt_ops gic_ops = {
 static void arm_gic_v2_init(mdi_node_ref_t* node, uint level) {
     uint64_t gic_base_virt = 0;
     uint64_t msi_frame_phys = 0;
+    uint64_t msi_frame_virt = 0;
 
     bool got_gic_base_virt = false;
     bool got_gicd_offset = false;
@@ -334,20 +345,24 @@ static void arm_gic_v2_init(mdi_node_ref_t* node, uint level) {
     mdi_node_ref_t child;
     mdi_each_child(node, &child) {
         switch (mdi_id(&child)) {
-        case MDI_KERNEL_DRIVERS_ARM_GIC_V2_BASE_VIRT:
+        case MDI_BASE_VIRT:
             got_gic_base_virt = !mdi_node_uint64(&child, &gic_base_virt);
             break;
-        case MDI_KERNEL_DRIVERS_ARM_GIC_V2_GICD_OFFSET:
+        case MDI_ARM_GIC_V2_GICD_OFFSET:
             got_gicd_offset = !mdi_node_uint64(&child, &arm_gicv2_gicd_offset);
             break;
-        case MDI_KERNEL_DRIVERS_ARM_GIC_V2_GICC_OFFSET:
+        case MDI_ARM_GIC_V2_GICC_OFFSET:
             got_gicc_offset = !mdi_node_uint64(&child, &arm_gicv2_gicc_offset);
             break;
-        case MDI_KERNEL_DRIVERS_ARM_GIC_V2_IPI_BASE:
+        case MDI_ARM_GIC_V2_IPI_BASE:
             got_ipi_base = !mdi_node_uint32(&child, &ipi_base);
             break;
-        case MDI_KERNEL_DRIVERS_ARM_GIC_V2_MSI_FRAME_PHYS:
+        case MDI_ARM_GIC_V2_MSI_FRAME_PHYS:
             mdi_node_uint64(&child, &msi_frame_phys);
+            break;
+        case MDI_ARM_GIC_V2_MSI_FRAME_VIRT:
+            mdi_node_uint64(&child, &msi_frame_virt);
+            break;
         }
     }
 
@@ -367,13 +382,24 @@ static void arm_gic_v2_init(mdi_node_ref_t* node, uint level) {
         printf("arm-gic-v2: ipi_base not defined\n");
         return;
     }
+    if ((msi_frame_phys == 0) != (msi_frame_virt == 0)) {
+        printf("arm-gic-v2: only one of msi_frame_phys or virt is defined\n");
+        return;
+    }
 
     arm_gicv2_gic_base = (uint64_t)(gic_base_virt);
 
     arm_gic_init();
-    if (msi_frame_phys) {
+
+    // pass the list of physical and virtual addresses for the GICv2m register apertures
+    if (msi_frame_phys && msi_frame_virt) {
+        // the following arrays must be static because arm_gicv2m_init stashes the pointer
+        static paddr_t GICV2M_REG_FRAMES[] = { 0 };
+        static vaddr_t GICV2M_REG_FRAMES_VIRT[] = { 0 };
+
         GICV2M_REG_FRAMES[0] = msi_frame_phys;
-        arm_gicv2m_init(GICV2M_REG_FRAMES, countof(GICV2M_REG_FRAMES));
+        GICV2M_REG_FRAMES_VIRT[0] = msi_frame_virt;
+        arm_gicv2m_init(GICV2M_REG_FRAMES, GICV2M_REG_FRAMES_VIRT, countof(GICV2M_REG_FRAMES));
     }
     pdev_register_interrupts(&gic_ops);
 
@@ -382,4 +408,4 @@ static void arm_gic_v2_init(mdi_node_ref_t* node, uint level) {
     register_int_handler(MP_IPI_HALT + ipi_base, &arm_ipi_halt_handler, 0);
 }
 
-LK_PDEV_INIT(arm_gic_v2_init, MDI_KERNEL_DRIVERS_ARM_GIC_V2, arm_gic_v2_init, LK_INIT_LEVEL_PLATFORM_EARLY);
+LK_PDEV_INIT(arm_gic_v2_init, MDI_ARM_GIC_V2, arm_gic_v2_init, LK_INIT_LEVEL_PLATFORM_EARLY);

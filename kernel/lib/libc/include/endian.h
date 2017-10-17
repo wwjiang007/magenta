@@ -5,8 +5,7 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-#ifndef __ENDIAN_H
-#define __ENDIAN_H
+#pragma once
 
 #include <sys/types.h>
 
@@ -19,12 +18,18 @@
 #define BIG_ENDIAN __ORDER_BIG_ENDIAN__
 #define BYTE_ORDER __BYTE_ORDER__
 
-// define a macro that unconditionally swaps
-#define SWAP_32(x) \
-    (((uint32_t)(x) << 24) | (((uint32_t)(x) & 0xff00) << 8) |(((uint32_t)(x) & 0x00ff0000) >> 8) | ((uint32_t)(x) >> 24))
-#define SWAP_16(x) \
-    ((((uint16_t)(x) & 0xff) << 8) | ((uint16_t)(x) >> 8))
-#define SWAP_64(x) ((((uint64_t)(SWAP_32((uint64_t)(x)))) << 32) | (SWAP_32(((uint64_t)(x)) >> 32)))
+// define functions that unconditionally swap
+static inline uint64_t SWAP_64(uint64_t x) {
+    return __builtin_bswap64(x);
+}
+
+static inline uint32_t SWAP_32(uint32_t x) {
+    return __builtin_bswap32(x);
+}
+
+static inline uint16_t SWAP_16(uint16_t x) {
+    return __builtin_bswap16(x);
+}
 
 // standard swap macros
 #if BYTE_ORDER == BIG_ENDIAN
@@ -75,7 +80,4 @@
 #define WRITE_MEM_WORD(ptr, data)   (*(word *)(ptr) = SWAPIT_32(data))
 #define WRITE_MEM_HALFWORD(ptr, data)   (*(halfword *)(ptr) = SWAPIT_16(data))
 #define WRITE_MEM_BYTE(ptr, data)   (*(byte *)(ptr) = (data))
-#endif
-
-
 #endif

@@ -210,7 +210,6 @@ bool test_directory_readdir(void) {
 
     expected_dirent_t empty_dir[] = {
         {false, ".", DT_DIR},
-        {false, "..", DT_DIR},
     };
     ASSERT_TRUE(check_dir_contents("::a", empty_dir, countof(empty_dir)), "");
 
@@ -226,7 +225,6 @@ bool test_directory_readdir(void) {
     ASSERT_EQ(mkdir("::a/dir2", 0755), 0, "");
     expected_dirent_t filled_dir[] = {
         {false, ".", DT_DIR},
-        {false, "..", DT_DIR},
         {false, "dir1", DT_DIR},
         {false, "dir2", DT_DIR},
         {false, "file1", DT_REG},
@@ -238,7 +236,6 @@ bool test_directory_readdir(void) {
     ASSERT_EQ(unlink("::a/file2"), 0, "");
     expected_dirent_t partial_dir[] = {
         {false, ".", DT_DIR},
-        {false, "..", DT_DIR},
         {false, "dir1", DT_DIR},
         {false, "file1", DT_REG},
     };
@@ -325,11 +322,10 @@ bool test_directory_rewind(void) {
     ASSERT_EQ(mkdir("::a", 0755), 0, "");
     expected_dirent_t empty_dir[] = {
         {false, ".", DT_DIR},
-        {false, "..", DT_DIR},
     };
 
     DIR* dir = opendir("::a");
-    ASSERT_NEQ(dir, NULL, "");
+    ASSERT_NE(dir, NULL, "");
 
     // We should be able to repeatedly access the directory without
     // re-opening it.
@@ -343,7 +339,6 @@ bool test_directory_rewind(void) {
     // re-opening it.
     expected_dirent_t dir_contents[] = {
         {false, ".", DT_DIR},
-        {false, "..", DT_DIR},
         {false, "b", DT_DIR},
         {false, "c", DT_DIR},
     };
@@ -367,13 +362,12 @@ bool test_directory_after_rmdir(void) {
 
     expected_dirent_t empty_dir[] = {
         {false, ".", DT_DIR},
-        {false, "..", DT_DIR},
     };
 
     // Make a directory...
     ASSERT_EQ(mkdir("::dir", 0755), 0, "");
     DIR* dir = opendir("::dir");
-    ASSERT_NEQ(dir, NULL, "");
+    ASSERT_NE(dir, NULL, "");
     // We can make and delete subdirectories, since "::dir" exists...
     ASSERT_EQ(mkdir("::dir/subdir", 0755), 0, "");
     ASSERT_EQ(rmdir("::dir/subdir"), 0, "");

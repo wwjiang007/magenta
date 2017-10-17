@@ -10,10 +10,11 @@
 #include <err.h>
 #include <string.h>
 #include <trace.h>
+#include <fbl/algorithm.h>
 #include <dev/pci_config.h>
 #include <dev/pcie_device.h>
 
-#include <mxalloc/new.h>
+#include <fbl/alloc_checker.h>
 
 #define LOCAL_TRACE 0
 
@@ -31,7 +32,7 @@ static bool quirk_should_force_pcie(const PcieDevice& dev) {
         { .vendor_id = 0x8086, .device_id = 0x1616 },  // Wildcat Point GPU
     };
 
-    for (size_t i = 0; i < countof(QUIRK_LIST); ++i) {
+    for (size_t i = 0; i < fbl::count_of(QUIRK_LIST); ++i) {
         if ((QUIRK_LIST[i].vendor_id == dev.vendor_id()) &&
             (QUIRK_LIST[i].device_id == dev.device_id()))
             return true;
@@ -260,10 +261,10 @@ inline status_t validate_capability_offset(uint8_t offset) {
     if (offset == 0xFF
         || offset < PCIE_CAP_PTR_MIN_VALID
         || offset > PCIE_CAP_PTR_MAX_VALID) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 /*
@@ -274,10 +275,10 @@ inline status_t validate_capability_offset(uint8_t offset) {
  */
 
 status_t PcieDevice::ParseStdCapabilitiesLocked() {
-    status_t res = NO_ERROR;
+    status_t res = MX_OK;
     uint8_t cap_offset = cfg_->Read(PciConfig::kCapabilitiesPtr);
     uint8_t caps_found = 0;
-    AllocChecker ac;
+    fbl::AllocChecker ac;
 
     /*
      * Walk the pointer list for the standard capabilities table. As a safety,
@@ -289,7 +290,7 @@ status_t PcieDevice::ParseStdCapabilitiesLocked() {
     LTRACEF("Scanning for capabilities at %02x:%02x.%01x (%04hx:%04hx)\n",
             bus_id(), dev_id(), func_id(), vendor_id(), device_id());
     while (cap_offset != PCIE_CAP_PTR_NULL && caps_found < PCIE_MAX_CAPABILITIES) {
-        if ((res = validate_capability_offset(cap_offset)) != NO_ERROR) {
+        if ((res = validate_capability_offset(cap_offset)) != MX_OK) {
             TRACEF("Device %02x:%02x.%01x (%04hx:%04hx) has invalid cptr (%#02x)\n",
                     bus_id(), dev_id(), func_id(),
                     vendor_id(), device_id(), cap_offset);
@@ -326,10 +327,10 @@ status_t PcieDevice::ParseStdCapabilitiesLocked() {
 
         if (!ac.check()) {
             TRACEF("Could not allocate memory fori capability 0x%02x\n", id);
-            return ERR_NO_MEMORY;
+            return MX_ERR_NO_MEMORY;
         }
 
-        caps_.detected.push_front(mxtl::unique_ptr<PciStdCapability>(cap));
+        caps_.detected.push_front(fbl::unique_ptr<PciStdCapability>(cap));
         cap_offset  = cfg_->Read(PciReg8(static_cast<uint16_t>(cap_offset + 0x1))) & 0xFC;
         caps_found++;
     }
@@ -342,14 +343,14 @@ status_t PcieDevice::ParseExtCapabilitiesLocked() {
      * TODO(cja): Since ExtCaps are a no-op right now (we had nothing in the table for
      * supported extended capabilities) this is a stub for now.
      */
-    return NO_ERROR;
+    return MX_OK;
 }
 
 // Parse PCI Standard Capabilities starting with the pointer in the PCI
 // config structure.
 status_t PcieDevice::ProbeCapabilitiesLocked() {
     status_t ret = ParseStdCapabilitiesLocked();
-    if (ret != NO_ERROR) {
+    if (ret != MX_OK) {
         return ret;
     }
 

@@ -12,11 +12,11 @@
 #include <arch/ops.h>
 #include <arch/user_copy.h>
 #include <kernel/cmdline.h>
-#include <kernel/vm/vm_aspace.h>
+#include <vm/vm_aspace.h>
 #include <lib/ktrace.h>
 #include <lk/init.h>
 #include <magenta/thread_annotations.h>
-#include <magenta/user_thread.h>
+#include <object/thread_dispatcher.h>
 
 #if __x86_64__
 #define ktrace_timestamp() rdtsc();
@@ -131,19 +131,20 @@ int ktrace_read_user(void* ptr, uint32_t off, uint32_t len) {
         len = max - off;
     }
 
-    if (arch_copy_to_user(ptr, ks->buffer + off, len) != NO_ERROR) {
-        return ERR_INVALID_ARGS;
+    if (arch_copy_to_user(ptr, ks->buffer + off, len) != MX_OK) {
+        return MX_ERR_INVALID_ARGS;
     }
     return len;
 }
 
-status_t ktrace_control(uint32_t action, uint32_t options, void* ptr) {
+mx_status_t ktrace_control(uint32_t action, uint32_t options, void* ptr) {
     ktrace_state_t* ks = &KTRACE_STATE;
     switch (action) {
     case KTRACE_ACTION_START:
         options = KTRACE_GRP_TO_MASK(options);
         ks->marker = 0;
         atomic_store(&ks->grpmask, options ? options : KTRACE_GRP_TO_MASK(KTRACE_GRP_ALL));
+        ktrace_report_live_processes();
         ktrace_report_live_threads();
         break;
     case KTRACE_ACTION_STOP: {
@@ -172,7 +173,7 @@ status_t ktrace_control(uint32_t action, uint32_t options, void* ptr) {
         probe = (ktrace_probe_info_t*) calloc(sizeof(*probe) + MX_MAX_NAME_LEN, 1);
         if (probe == nullptr) {
             mutex_release(&probe_list_lock);
-            return ERR_NO_MEMORY;
+            return MX_ERR_NO_MEMORY;
         }
         probe->name = (const char*) (probe + 1);
         memcpy(probe + 1, ptr, MX_MAX_NAME_LEN);
@@ -181,9 +182,9 @@ status_t ktrace_control(uint32_t action, uint32_t options, void* ptr) {
         return probe->num;
     }
     default:
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
-    return NO_ERROR;
+    return MX_OK;
 }
 
 int trace_not_ready = 0;
@@ -201,9 +202,9 @@ void ktrace_init(unsigned level) {
 
     mb *= (1024*1024);
 
-    status_t status;
+    mx_status_t status;
     VmAspace* aspace = VmAspace::kernel_aspace();
-    if ((status = aspace->Alloc("ktrace", mb, (void**)&ks->buffer, 0, VMM_FLAG_COMMIT,
+    if ((status = aspace->Alloc("ktrace", mb, (void**)&ks->buffer, 0, VmAspace::VMM_FLAG_COMMIT,
                                 ARCH_MMU_FLAG_PERM_READ | ARCH_MMU_FLAG_PERM_WRITE)) < 0) {
         dprintf(INFO, "ktrace: cannot alloc buffer %d\n", status);
         return;

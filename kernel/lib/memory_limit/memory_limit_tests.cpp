@@ -1,5 +1,12 @@
+// Copyright 2017 The Fuchsia Authors
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
+
 #include <err.h>
 #include <lib/memory_limit.h>
+#include <fbl/algorithm.h>
 #include <sys/types.h>
 #include <unittest.h>
 
@@ -87,9 +94,9 @@ static bool test_runner(const platform_test_case_t test, size_t mem_limit) {
     for (size_t i = 0; i < test.range_cnt; i++) {
         size_t used;
         total_platform_size += test.ranges[i].size;
-        status_t status = mem_limit_get_iovs(&ctx, test.ranges[i].base, test.ranges[i].size, vecs, &used);
+        mx_status_t status = mem_limit_get_iovs(&ctx, test.ranges[i].base, test.ranges[i].size, vecs, &used);
 
-        REQUIRE_EQ(NO_ERROR, status, "checking mem_limit_get_iovs status");
+        REQUIRE_EQ(MX_OK, status, "checking mem_limit_get_iovs status");
 
         for (size_t j = 0; j < used; j++) {
             size += vecs[j].iov_len;
@@ -113,9 +120,9 @@ static bool test_runner(const platform_test_case_t test, size_t mem_limit) {
 // more useful if some specific cases are written, but those should be easily
 // addable as we find new problems down the line.
 const platform_test_case_t test_cases[] = {
-    {nuc_ctx, nuc_ranges, countof(nuc_ranges)},
-    {switch_alpha_12_ctx, switch_alpha_12_ranges, countof(switch_alpha_12_ranges)},
-    {rpi3_ctx, rpi3_ranges, countof(rpi3_ranges)},
+    {nuc_ctx, nuc_ranges, fbl::count_of(nuc_ranges)},
+    {switch_alpha_12_ctx, switch_alpha_12_ranges, fbl::count_of(switch_alpha_12_ranges)},
+    {rpi3_ctx, rpi3_ranges, fbl::count_of(rpi3_ranges)},
 };
 
 // Test that the memory limit is expanded if the ramdisk would otherwise be
@@ -130,9 +137,9 @@ static bool ml_test_large_ramdisk(void* context) {
 
     ctx.ramdisk_size = 64 * MB;
     ctx.memory_limit = memory_limit;
-    for (size_t i = 0; i < countof(nuc_ranges); i++) {
-        status_t status = mem_limit_get_iovs(&ctx, nuc_ranges[i].base, nuc_ranges[i].size, vecs, &used);
-        EXPECT_EQ(NO_ERROR, status, "checking status");
+    for (size_t i = 0; i < fbl::count_of(nuc_ranges); i++) {
+        mx_status_t status = mem_limit_get_iovs(&ctx, nuc_ranges[i].base, nuc_ranges[i].size, vecs, &used);
+        EXPECT_EQ(MX_OK, status, "checking status");
         for (size_t i = 0; i < used; i++) {
             size += vecs[i].iov_len;
         }
@@ -140,7 +147,7 @@ static bool ml_test_large_ramdisk(void* context) {
 
     EXPECT_EQ(true, ctx.found_kernel, "checking kernel");
     EXPECT_EQ(true, ctx.found_ramdisk, "checking ramdisk");
-    EXPECT_NEQ(memory_limit, size, "checking that size and limit don't match");
+    EXPECT_NE(memory_limit, size, "checking that size and limit don't match");
     EXPECT_EQ(ctx.kernel_size + ctx.ramdisk_size, size, "checking the limit grew to fit kernel + ramdisk");
     END_TEST;
 }

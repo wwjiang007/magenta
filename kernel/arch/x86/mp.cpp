@@ -10,6 +10,7 @@
 #include <debug.h>
 #include <err.h>
 #include <stdio.h>
+#include <string.h>
 #include <trace.h>
 
 #include <arch/mp.h>
@@ -31,11 +32,7 @@
 
 #define LOCAL_TRACE 0
 
-// put the boot cpu percpu structure in .data since we get initialized before
-// the bss clearing code runs.
-__SECTION(".data") struct x86_percpu bp_percpu;
-
-static struct x86_percpu *ap_percpus;
+struct x86_percpu *ap_percpus;
 uint8_t x86_num_cpus = 1;
 
 extern struct idt _idt;
@@ -46,14 +43,16 @@ status_t x86_allocate_ap_structures(uint32_t *apic_ids, uint8_t cpu_count)
 
     DEBUG_ASSERT(cpu_count >= 1);
     if (cpu_count == 0) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     if (cpu_count > 1) {
-        ap_percpus = (x86_percpu *)calloc(sizeof(*ap_percpus), cpu_count - 1);
+        size_t len = sizeof(*ap_percpus) * (cpu_count - 1);
+        ap_percpus = (x86_percpu *)memalign(MAX_CACHE_LINE, len);
         if (ap_percpus == NULL) {
-            return ERR_NO_MEMORY;
+            return MX_ERR_NO_MEMORY;
         }
+        memset(ap_percpus, 0, len);
     }
 
     uint32_t bootstrap_ap = apic_local_id();
@@ -66,7 +65,7 @@ status_t x86_allocate_ap_structures(uint32_t *apic_ids, uint8_t cpu_count)
         DEBUG_ASSERT(apic_idx != (uint)(cpu_count - 1));
         if (apic_idx == (uint)cpu_count - 1) {
             /* Never found bootstrap CPU in apic id list */
-            return ERR_BAD_STATE;
+            return MX_ERR_BAD_STATE;
         }
         ap_percpus[apic_idx].cpu_num = apic_idx + 1;
         ap_percpus[apic_idx].apic_id = apic_ids[i];
@@ -75,41 +74,25 @@ status_t x86_allocate_ap_structures(uint32_t *apic_ids, uint8_t cpu_count)
     }
 
     x86_num_cpus = cpu_count;
-    return NO_ERROR;
+    return MX_OK;
 }
 
-__NO_SAFESTACK uintptr_t x86_init_percpu(uint cpu_num, uintptr_t unsafe_sp)
+void x86_init_percpu(uint cpu_num)
 {
-    struct x86_percpu *percpu;
-    if (cpu_num == 0) {
-        percpu = &bp_percpu;
-
-        percpu->cpu_num = 0;
-        percpu->direct = &bp_percpu;
-        /* Start with an invalid id until we know the local APIC is setup */
-        percpu->apic_id = INVALID_APIC_ID;
-    } else {
-        percpu = &ap_percpus[cpu_num - 1];
-    }
+    struct x86_percpu *const percpu =
+        cpu_num == 0 ? &bp_percpu : &ap_percpus[cpu_num - 1];
     DEBUG_ASSERT(percpu->cpu_num == cpu_num);
     DEBUG_ASSERT(percpu->direct == percpu);
 
-    /* point gs at the per cpu structure */
-    write_msr(X86_MSR_IA32_GS_BASE, (uintptr_t)percpu);
+    // Assembly code has already set up %gs.base so that this function's
+    // own code can use it implicitly for stack-protector or safe-stack.
+    DEBUG_ASSERT(read_msr(X86_MSR_IA32_GS_BASE) == (uintptr_t)percpu);
 
     /* set the KERNEL_GS_BASE MSR to 0 */
     /* when we enter user space, this will be populated via a swapgs */
     write_msr(X86_MSR_IA32_KERNEL_GS_BASE, 0);
 
     x86_feature_init();
-
-#if __has_feature(safe_stack)
-    if (cpu_num == 0) {
-        static uint8_t unsafe_kstack[PAGE_SIZE] __ALIGNED(16);
-        unsafe_sp = (uintptr_t)&unsafe_kstack[sizeof(unsafe_kstack)];
-    }
-    x86_write_gs_offset64(MX_TLS_UNSAFE_SP_OFFSET, unsafe_sp);
-#endif
 
     x86_cpu_topology_init();
     x86_extended_register_init();
@@ -156,7 +139,8 @@ __NO_SAFESTACK uintptr_t x86_init_percpu(uint cpu_num, uintptr_t unsafe_sp)
      */
     write_msr(X86_MSR_IA32_STAR, (uint64_t)USER_CODE_SELECTOR << 48 | (uint64_t)CODE_64_SELECTOR << 32);
 
-    /* set the FMASK register to mask off certain bits in RFLAGS on syscall entry */
+    // Set the FMASK register to mask off certain bits in RFLAGS on syscall
+    // entry.  See docs/kernel_invariants.md.
     uint64_t mask =
         X86_FLAGS_AC |         /* disable alignment check/access control (this
                                 * prevents ring 0 from performing data access
@@ -165,6 +149,12 @@ __NO_SAFESTACK uintptr_t x86_init_percpu(uint cpu_num, uintptr_t unsafe_sp)
         X86_FLAGS_IOPL_MASK |  /* set iopl to 0 */
         X86_FLAGS_STATUS_MASK; /* clear all status flags, interrupt disabled, trap flag */
     write_msr(X86_MSR_IA32_FMASK, mask);
+
+    // Apply the same mask to our current flags, to ensure that flags are
+    // set to known-good values, because some flags may be inherited by
+    // later kernel threads.  We do this just in case any bad values were
+    // left behind by firmware or the bootloader.
+    x86_restore_flags(x86_save_flags() & ~mask);
 
     /* enable syscall instruction */
     uint64_t efer_msr = read_msr(X86_MSR_IA32_EFER);
@@ -181,7 +171,7 @@ __NO_SAFESTACK uintptr_t x86_init_percpu(uint cpu_num, uintptr_t unsafe_sp)
     // a latency associated with ramping the voltage on wake. Disable this feature here
     // to save time on the irq path from idle. (5-10us on skylake nuc from kernel irq
     // handler to user space handler).
-    // TODO nicer way to handle idle across different processors
+    // TODO(MG-981): Look for a nicer way to handle this across different processors
     const struct x86_model_info* model = x86_get_model();
     if (!x86_feature_test(X86_FEATURE_HYPERVISOR) &&
             x86_vendor == X86_VENDOR_INTEL && model->display_family == 0x6 && (
@@ -210,11 +200,7 @@ __NO_SAFESTACK uintptr_t x86_init_percpu(uint cpu_num, uintptr_t unsafe_sp)
         write_msr(0x1fc, power_ctl_msr & ~0x2);
     }
 
-#if WITH_SMP
     mp_set_curr_cpu_online(true);
-#endif
-
-    return bp_percpu.stack_guard;
 }
 
 void x86_set_local_apic_id(uint32_t apic_id)
@@ -238,8 +224,7 @@ int x86_apic_id_to_cpu_num(uint32_t apic_id)
     return -1;
 }
 
-#if WITH_SMP
-status_t arch_mp_send_ipi(mp_cpu_mask_t target, mp_ipi_t ipi)
+status_t arch_mp_send_ipi(mp_ipi_target_t target, mp_cpu_mask_t mask, mp_ipi_t ipi)
 {
     uint8_t vector = 0;
     switch (ipi) {
@@ -256,17 +241,17 @@ status_t arch_mp_send_ipi(mp_cpu_mask_t target, mp_ipi_t ipi)
             panic("Unexpected MP IPI value: %u", (uint)ipi);
     }
 
-    if (target == MP_CPU_ALL_BUT_LOCAL) {
+    if (target == MP_IPI_TARGET_ALL_BUT_LOCAL) {
         apic_send_broadcast_ipi(vector, DELIVERY_MODE_FIXED);
-        return NO_ERROR;
-    } else if (target == MP_CPU_ALL) {
+        return MX_OK;
+    } else if (target == MP_IPI_TARGET_ALL) {
         apic_send_broadcast_self_ipi(vector, DELIVERY_MODE_FIXED);
-        return NO_ERROR;
+        return MX_OK;
     }
 
-    ASSERT(x86_num_cpus <= sizeof(target) * 8);
+    ASSERT(x86_num_cpus <= sizeof(mask) * CHAR_BIT);
 
-    mp_cpu_mask_t remaining = target;
+    mp_cpu_mask_t remaining = mask;
     uint cpu_id = 0;
     while (remaining && cpu_id < x86_num_cpus) {
         if (remaining & 1) {
@@ -290,7 +275,7 @@ status_t arch_mp_send_ipi(mp_cpu_mask_t target, mp_ipi_t ipi)
         cpu_id++;
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 enum handler_return x86_ipi_generic_handler(void)
@@ -319,42 +304,42 @@ void x86_ipi_halt_handler(void)
 
 status_t arch_mp_prep_cpu_unplug(uint cpu_id) {
     if (cpu_id == 0 || cpu_id >= x86_num_cpus) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t arch_mp_cpu_unplug(uint cpu_id)
 {
     /* we do not allow unplugging the bootstrap processor */
     if (cpu_id == 0 || cpu_id >= x86_num_cpus) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     uint32_t dst_apic_id = ap_percpus[cpu_id - 1].apic_id;
     if (dst_apic_id == INVALID_APIC_ID) {
         /* This is a transient state that can occur during CPU onlining */
-        return ERR_UNAVAILABLE;
+        return MX_ERR_UNAVAILABLE;
     }
 
     DEBUG_ASSERT(dst_apic_id < UINT8_MAX);
     apic_send_ipi(0, (uint8_t)dst_apic_id, DELIVERY_MODE_INIT);
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t arch_mp_cpu_hotplug(uint cpu_id)
 {
     if (cpu_id >= x86_num_cpus) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
     if (mp_is_cpu_online(cpu_id)) {
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
     }
     DEBUG_ASSERT(cpu_id != 0);
     if (cpu_id == 0) {
         /* We shouldn't be able to shutoff the bootstrap CPU, so
          * no reason to be able to bring it back via this route. */
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     struct x86_percpu *percpu = &ap_percpus[cpu_id - 1];
@@ -380,5 +365,3 @@ void arch_flush_state_and_halt(event_t *flush_done)
         __asm__ volatile("cli; hlt" : : : "memory");
     }
 }
-
-#endif

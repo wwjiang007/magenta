@@ -47,7 +47,7 @@ bool c11_thread_test(void) {
     int ret = thrd_create_with_name(&thread, thread_entry, (void*)(intptr_t)4, NULL);
     ASSERT_EQ(ret, thrd_success, "Error returned from thread creation");
     mx_handle_t handle = thrd_get_mx_handle(thread);
-    ASSERT_NEQ(handle, MX_HANDLE_INVALID, "got invalid thread handle");
+    ASSERT_NE(handle, MX_HANDLE_INVALID, "got invalid thread handle");
     // Prove this is a valid handle by duplicating it.
     mx_handle_t dup_handle;
     mx_status_t status = mx_handle_duplicate(handle, MX_RIGHT_SAME_RIGHTS, &dup_handle);
@@ -55,7 +55,7 @@ bool c11_thread_test(void) {
 
     ret = thrd_join(thread, &return_value);
     ASSERT_EQ(ret, thrd_success, "Error while thread join");
-    ASSERT_EQ(mx_handle_close(dup_handle), NO_ERROR, "failed to close duplicate handle");
+    ASSERT_EQ(mx_handle_close(dup_handle), MX_OK, "failed to close duplicate handle");
     ASSERT_EQ(return_value, 4, "Incorrect return from thread");
 
     ret = thrd_create_with_name(&thread, thread_entry, (void*)(intptr_t)5, NULL);
@@ -67,7 +67,7 @@ bool c11_thread_test(void) {
         mx_nanosleep(mx_deadline_after(MX_MSEC(100)));
 
     thread_entry((void*)(intptr_t)6);
-    ASSERT_TRUE(threads_done[6], "All threads should have completed")
+    ASSERT_TRUE(threads_done[6], "All threads should have completed");
 
     END_TEST;
 }
@@ -93,9 +93,30 @@ bool long_name_succeeds(void) {
     END_TEST;
 }
 
+static int detach_thrd(void* arg) {
+    BEGIN_HELPER;
+    thrd_t* thrd = (thrd_t*) arg;
+    EXPECT_EQ(thrd_detach(*thrd), 0, "");
+    free(thrd);
+    END_HELPER;
+}
+
+bool detach_self_test(void) {
+    BEGIN_TEST;
+
+    for (size_t i = 0; i < 1000; i++) {
+        thrd_t* thrd = calloc(sizeof(thrd_t), 1);
+        ASSERT_NONNULL(thrd, "");
+        ASSERT_EQ(thrd_create(thrd, detach_thrd, thrd), 0, "");
+    }
+
+    END_TEST;
+}
+
 BEGIN_TEST_CASE(c11_thread_tests)
 RUN_TEST(c11_thread_test)
 RUN_TEST(long_name_succeeds)
+RUN_TEST(detach_self_test)
 END_TEST_CASE(c11_thread_tests)
 
 #ifndef BUILD_COMBINED_TESTS

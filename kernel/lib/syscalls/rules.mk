@@ -12,10 +12,12 @@ MODULE := $(LOCAL_DIR)
 MODULE_DEPS := \
     kernel/lib/console \
     kernel/lib/crypto \
-    kernel/lib/magenta \
+    kernel/lib/fbl \
+    kernel/lib/pci \
     kernel/lib/vdso \
     kernel/lib/user_copy \
     kernel/lib/vdso \
+    kernel/object \
 
 MODULE_SRCS := \
     $(LOCAL_DIR)/syscalls.cpp \
@@ -35,8 +37,10 @@ MODULE_SRCS := \
     $(LOCAL_DIR)/syscalls_resource.cpp \
     $(LOCAL_DIR)/syscalls_socket.cpp \
     $(LOCAL_DIR)/syscalls_system.cpp \
+    $(LOCAL_DIR)/bootdata_unittest.cpp \
     $(LOCAL_DIR)/syscalls_task.cpp \
     $(LOCAL_DIR)/syscalls_test.cpp \
+    $(LOCAL_DIR)/syscalls_timer.cpp \
     $(LOCAL_DIR)/syscalls_vmar.cpp \
     $(LOCAL_DIR)/syscalls_vmo.cpp \
 

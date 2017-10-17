@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <assert.h>
 #include <magenta/compiler.h>
 #include <magenta/types.h>
 #include <magenta/listnode.h>
@@ -78,10 +79,7 @@ struct iotxn {
                           // it is invalid to modify this value after initialization
     uint64_t vmo_length;  // buffer size starting at vmo_offset
 
-    // optional virtual address pointing to vmo_offset
-    // the current "owner" of the iotxn may set this to specify a virtual
-    // mapping of the vmo. this field is also set by iotxn_mmap()
-    void* virt;           // mapped address of vmo
+    /* --- cacheline 1 boundary (64 bytes) --- */
 
     // optional physical pages list
     // the current "owner" of the iotxn may set these to specify physical
@@ -98,6 +96,8 @@ struct iotxn {
     // this field may be modified by any intermediate processors.
     iotxn_proto_data_t protocol_data;
 
+    /* --- cacheline 2 boundary (128 bytes) --- */
+
     // extra requestor data
     // this field may not be modified by anyone except the requestor
     iotxn_extra_data_t extra;
@@ -108,7 +108,15 @@ struct iotxn {
     // and when it's queued the processor may use node to hold the iotxn
     // in a transaction queue)
     list_node_t node;
+
+    /* --- cacheline 3 boundary (192 bytes) --- */
+
     void *context;
+
+    // optional virtual address pointing to vmo_offset
+    // the current "owner" of the iotxn may set this to specify a virtual
+    // mapping of the vmo. this field is also set by iotxn_mmap()
+    void* virt;           // mapped address of vmo
 
     // The complete_cb() callback is set by the requestor and is
     // invoked by the 'complete' ops method when it is called by
@@ -122,7 +130,15 @@ struct iotxn {
     // invoked by the 'iotxn_release' method when it is called
     // by the requestor.
     void (*release_cb)(iotxn_t* txn);
+
+    // May be used by iotxn_physmap() to store the physical pages list
+    // instead of allocating additional memory.
+    mx_paddr_t phys_inline[3];
 };
+
+static_assert(offsetof(iotxn_t, phys) == 64, "phys should be at 64");
+static_assert(offsetof(iotxn_t, extra) == 128, "extra should be at 128");
+static_assert(offsetof(iotxn_t, context) == 192, "context should be at 192");
 
 // used to iterate over contiguous buffer ranges in the physical address space
 typedef struct {

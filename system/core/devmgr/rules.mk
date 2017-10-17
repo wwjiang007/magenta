@@ -11,9 +11,11 @@ MODULE := $(LOCAL_DIR)
 MODULE_NAME := devmgr
 
 MODULE_TYPE := userapp
+MODULE_GROUP := core
 
 MODULE_SRCS += \
     $(LOCAL_DIR)/acpi.c \
+    $(LOCAL_DIR)/block-watcher.c \
     $(LOCAL_DIR)/dnode.cpp \
     $(LOCAL_DIR)/devhost-shared.c \
     $(LOCAL_DIR)/devmgr.c \
@@ -22,7 +24,6 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/devmgr-devfs.c \
     $(LOCAL_DIR)/devmgr-drivers.c \
     $(LOCAL_DIR)/devmgr-mxio.c \
-    $(LOCAL_DIR)/driver-info.c \
     $(LOCAL_DIR)/vfs-boot.cpp \
     $(LOCAL_DIR)/vfs-memory.cpp \
     $(LOCAL_DIR)/vfs-rpc.cpp \
@@ -36,51 +37,52 @@ MODULE_HEADER_DEPS := \
 	system/ulib/ddk
 
 MODULE_STATIC_LIBS := \
-    system/ulib/gpt \
     system/ulib/fs \
+    system/ulib/async \
+    system/ulib/async.loop \
+    system/ulib/gpt \
+    system/ulib/mx \
     system/ulib/bootdata \
     third_party/ulib/lz4 \
-    system/ulib/mxalloc \
     system/ulib/mxcpp \
-    system/ulib/mxtl \
+    system/ulib/fbl \
+    system/ulib/port \
     system/ulib/acpisvc-client \
+    system/ulib/driver-info \
 
 MODULE_LIBS := \
+    system/ulib/async.default \
     system/ulib/fs-management \
     system/ulib/launchpad \
     system/ulib/mxio \
     system/ulib/magenta \
     system/ulib/c
 
-MODULE_DEFINES := DDK_INTERNAL=1
-
 include make/module.mk
 
 
 # devhost - container for drivers
+#
+# This is just a main() that calls device_host_main() which
+# is provided by libdriver, where all the other devhost-*.c
+# files get built.
 #
 MODULE := $(LOCAL_DIR).host
 
 MODULE_NAME := devhost
 
 MODULE_TYPE := userapp
-
-MODULE_DEFINES := MAGENTA_BUILTIN_DRIVERS=1 DDK_INTERNAL=1
+MODULE_GROUP := core
 
 MODULE_SRCS := \
-	$(LOCAL_DIR)/devhost.c \
-    $(LOCAL_DIR)/devhost-api.c \
-    $(LOCAL_DIR)/devhost-core.c \
-    $(LOCAL_DIR)/devhost-rpc-server.c \
-    $(LOCAL_DIR)/devhost-shared.c \
+	$(LOCAL_DIR)/devhost-main.c
 
-MODULE_STATIC_LIBS := system/ulib/ddk system/ulib/sync
-
-MODULE_LIBS := system/ulib/driver system/ulib/mxio system/ulib/magenta system/ulib/c
+MODULE_LIBS := system/ulib/driver system/ulib/mxio system/ulib/c
 
 include make/module.mk
 
 
+# dmctl - bridge between dm command and devmgr
 
 MODULE := $(LOCAL_DIR).dmctl
 
@@ -92,10 +94,8 @@ MODULE_SRCS := \
 	$(LOCAL_DIR)/dmctl.c \
 	$(LOCAL_DIR)/devhost-shared.c \
 
-MODULE_STATIC_LIBS := system/ulib/ddk
+MODULE_STATIC_LIBS := system/ulib/ddk system/ulib/port
 
-MODULE_LIBS := system/ulib/driver system/ulib/mxio system/ulib/magenta system/ulib/c
-
-MODULE_DEFINES := DDK_INTERNAL=1
+MODULE_LIBS := system/ulib/driver system/ulib/launchpad system/ulib/mxio system/ulib/magenta system/ulib/c
 
 include make/module.mk

@@ -11,6 +11,7 @@
 #include <err.h>
 #include <kernel/mutex.h>
 #include <list.h>
+#include <magenta/types.h>
 #include <sys/types.h>
 
 __BEGIN_CDECLS
@@ -46,7 +47,7 @@ typedef struct p2ra_state {
  *
  * @return A status code indicating the success or failure of the operation.
  */
-status_t p2ra_init(p2ra_state_t* state, uint max_alloc_size);
+mx_status_t p2ra_init(p2ra_state_t* state, uint max_alloc_size);
 
 /**
  * Free all of the state associated with a previously initialized pow2 range
@@ -65,14 +66,14 @@ void p2ra_free(p2ra_state_t* state);
  *
  * @return A status code incidcating the success or failure of the operation.
  * Possible return values include
- * ++ ERR_INVALID_ARGS range_len is zero, or would cause the range to wrap the
+ * ++ MX_ERR_INVALID_ARGS range_len is zero, or would cause the range to wrap the
  *    maximum range of a uint.
- * ++ ERR_ALREADY_EXISTS the specified range overlaps with a range already added
+ * ++ MX_ERR_ALREADY_EXISTS the specified range overlaps with a range already added
  *    to the allocator.
- * ++ ERR_NO_MEMORY Not enough memory to allocate the bookkeeping required for
+ * ++ MX_ERR_NO_MEMORY Not enough memory to allocate the bookkeeping required for
  *    managing the range.
  */
-status_t p2ra_add_range(p2ra_state_t* state, uint range_start, uint range_len);
+mx_status_t p2ra_add_range(p2ra_state_t* state, uint range_start, uint range_len);
 
 /**
  * Attempt to allocate a range of uints from the available sub-ranges.  The
@@ -87,16 +88,16 @@ status_t p2ra_add_range(p2ra_state_t* state, uint range_start, uint range_len);
  *
  * @return A status code indicating the success or failure of the operation.
  * Possible return values include
- * ++ ERR_INVALID_ARGS Multiple reasons, including...
+ * ++ MX_ERR_INVALID_ARGS Multiple reasons, including...
  *    ++ size is zero.
  *    ++ size is not a power of two.
  *    ++ out_range_start is NULL.
- * ++ ERR_NO_RESOURCES No contiguous, aligned region could be found to satisfy
+ * ++ MX_ERR_NO_RESOURCES No contiguous, aligned region could be found to satisfy
  *    the allocation request.
- * ++ ERR_NO_MEMORY A region could be found, but memory required for bookkeeping
+ * ++ MX_ERR_NO_MEMORY A region could be found, but memory required for bookkeeping
  *    could not be allocated.
  */
-status_t p2ra_allocate_range(p2ra_state_t* state, uint size, uint* out_range_start);
+mx_status_t p2ra_allocate_range(p2ra_state_t* state, uint size, uint* out_range_start);
 
 /**
  * Free a range previously allocated using p2ra_allocate_range.

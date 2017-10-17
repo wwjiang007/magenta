@@ -2,59 +2,58 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <magenta/device/block.h>
 #include <magenta/device/ramdisk.h>
+#include <magenta/device/vfs.h>
 #include <magenta/process.h>
 #include <magenta/syscalls.h>
 #include <magenta/types.h>
+#include <mxio/watcher.h>
 
 #include <fs-management/ramdisk.h>
 
 #define RAMCTL_PATH "/dev/misc/ramctl"
-#define BLOCK_EXTENSION "/block"
+#define BLOCK_EXTENSION "block"
 
-int create_ramdisk(const char* ramdisk_name_requested, char* ramdisk_path_out,
-                   uint64_t blk_size, uint64_t blk_count) {
-    char ramdisk_name[PATH_MAX];
-    size_t ramctl_path_len = strlen(RAMCTL_PATH);
-    size_t requested_name_len = strlen(ramdisk_name_requested);
-    // '16' = Max hex uint64 value.
-    // '1' = Delimeters or NULL.
-    if (ramctl_path_len + 1 +        // /dev/misc/ramctl/...
-        requested_name_len + 1 +     //  my-ramdisk-name-...
-        16 +                         //  (Process koid as hex)...
-        strlen(BLOCK_EXTENSION) + 1  //  /block (+ null terminator)
-        >= PATH_MAX) {
+static mx_status_t driver_watcher_cb(int dirfd, int event, const char* fn, void* cookie) {
+    const char* wanted = *(const char**)cookie;
+    if (event == WATCH_EVENT_ADD_FILE && strcmp(fn, wanted) == 0) {
+        return MX_ERR_STOP;
+    }
+    return MX_OK;
+}
+
+int wait_for_driver_bind(const char* parent, const char* driver) {
+    DIR* dir;
+
+    // Create the watcher before calling readdir; this prevents a
+    // race where the driver shows up between readdir + watching.
+    if ((dir = opendir(parent)) == NULL) {
         return -1;
     }
 
-    // Force the process koid into the ramdisk name.
-    mx_info_handle_basic_t info;
-    if (mx_object_get_info(mx_process_self(), MX_INFO_HANDLE_BASIC, &info, sizeof(info), NULL,
-                           NULL)) {
+    mx_time_t deadline = mx_deadline_after(MX_SEC(3));
+    if (mxio_watch_directory(dirfd(dir), driver_watcher_cb, deadline, &driver) != MX_ERR_STOP) {
+        closedir(dir);
         return -1;
     }
+    closedir(dir);
+    return 0;
+}
 
-    // Create the ramdisk name
-    strcpy(ramdisk_name, ramdisk_name_requested);
-    ramdisk_name[requested_name_len] = '-';
-    snprintf(ramdisk_name + requested_name_len + 1, 17, "%016" PRIx64, info.koid);
-
-    strcpy(ramdisk_path_out, RAMCTL_PATH);
-    ramdisk_path_out[ramctl_path_len] = '/';
-    strcpy(ramdisk_path_out + ramctl_path_len + 1, ramdisk_name);
-    strcat(ramdisk_path_out, BLOCK_EXTENSION);
-
+int create_ramdisk(uint64_t blk_size, uint64_t blk_count, char* out_path) {
     int fd = open(RAMCTL_PATH, O_RDWR);
     if (fd < 0) {
         fprintf(stderr, "Could not open ramctl\n");
@@ -63,16 +62,29 @@ int create_ramdisk(const char* ramdisk_name_requested, char* ramdisk_path_out,
     ramdisk_ioctl_config_t config;
     config.blk_size = blk_size;
     config.blk_count = blk_count;
-    strcpy(config.name, ramdisk_name);
-    ssize_t r = ioctl_ramdisk_config(fd, &config);
-    if (r != NO_ERROR) {
+    ramdisk_ioctl_config_response_t response;
+    ssize_t r = ioctl_ramdisk_config(fd, &config, &response);
+    if (r < 0) {
         fprintf(stderr, "Could not configure ramdev\n");
         return -1;
     }
+    response.name[r] = 0;
     close(fd);
 
-    // TODO(smklein): Remove once MG-468 is resolved
-    usleep(100000);
+    const size_t ramctl_path_len = strlen(RAMCTL_PATH);
+    strcpy(out_path, RAMCTL_PATH);
+    out_path[ramctl_path_len] = '/';
+    strcpy(out_path + ramctl_path_len + 1, response.name);
+
+    // The ramdisk should have been created instantly, but it may take
+    // a moment for the block device driver to bind to it.
+    if (wait_for_driver_bind(out_path, BLOCK_EXTENSION)) {
+        fprintf(stderr, "Error waiting for driver\n");
+        destroy_ramdisk(out_path);
+        return -1;
+    }
+    strcat(out_path, "/" BLOCK_EXTENSION);
+
     return 0;
 }
 
@@ -83,7 +95,7 @@ int destroy_ramdisk(const char* ramdisk_path) {
         return -1;
     }
     ssize_t r = ioctl_ramdisk_unlink(fd);
-    if (r != NO_ERROR) {
+    if (r != MX_OK) {
         fprintf(stderr, "Could not shut off ramdisk\n");
         return -1;
     }

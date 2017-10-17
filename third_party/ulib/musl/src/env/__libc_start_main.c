@@ -6,6 +6,7 @@
 #include <stdatomic.h>
 #include <string.h>
 
+#include <magenta/sanitizer.h>
 #include <magenta/syscalls.h>
 #include <runtime/message.h>
 #include <runtime/processargs.h>
@@ -26,6 +27,7 @@ struct start_params {
     mx_handle_t* handles;
     uint32_t* handle_info;
     int (*main)(int, char**, char**);
+    pthread_t td;
 };
 
 // This gets called via inline assembly below, after switching onto
@@ -33,6 +35,10 @@ struct start_params {
 static _Noreturn void start_main(const struct start_params*)
     __asm__("start_main") __attribute__((used));
 static void start_main(const struct start_params* p) {
+    __sanitizer_startup_hook(p->argc, p->argv, __environ,
+                             p->td->safe_stack.iov_base,
+                             p->td->safe_stack.iov_len);
+
     // Allow companion libraries a chance to claim handles, zeroing out
     // handles[i] and handle_info[i] for handles they claim.
     if (&__libc_extensions_init != NULL)
@@ -65,7 +71,7 @@ __NO_SAFESTACK _Noreturn void __libc_start_main(
     } randoms;
     static_assert(sizeof(randoms) <= MX_CPRNG_DRAW_MAX_LEN, "");
     mx_status_t status = _mx_cprng_draw(&randoms, sizeof(randoms), &actual);
-    if (status != NO_ERROR || actual != sizeof(randoms))
+    if (status != MX_OK || actual != sizeof(randoms))
         __builtin_trap();
     __stack_chk_guard = randoms.stack_guard;
     __setjmp_manglers = randoms.setjmp_manglers;
@@ -81,20 +87,20 @@ __NO_SAFESTACK _Noreturn void __libc_start_main(
     struct start_params p = { .main = main };
     uint32_t nbytes;
     status = mxr_message_size(bootstrap, &nbytes, &p.nhandles);
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         nbytes = p.nhandles = 0;
 
     MXR_PROCESSARGS_BUFFER(buffer, nbytes);
     mx_handle_t handles[p.nhandles];
     p.handles = handles;
     mx_proc_args_t* procargs = NULL;
-    if (status == NO_ERROR)
+    if (status == MX_OK)
         status = mxr_processargs_read(bootstrap, buffer, nbytes,
                                       handles, p.nhandles,
                                       &procargs, &p.handle_info);
 
     uint32_t envc = 0;
-    if (status == NO_ERROR) {
+    if (status == MX_OK) {
         p.argc = procargs->args_num;
         envc = procargs->environ_num;
         p.namec = procargs->names_num;
@@ -116,9 +122,9 @@ __NO_SAFESTACK _Noreturn void __libc_start_main(
     char* names[p.namec + 1];
     p.names = names;
 
-    if (status == NO_ERROR)
+    if (status == MX_OK)
         status = mxr_processargs_strings(buffer, nbytes, p.argv, __environ, p.names);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         p.argc = 0;
         p.argv = __environ = NULL;
         p.namec = 0;
@@ -172,7 +178,7 @@ __NO_SAFESTACK _Noreturn void __libc_start_main(
     atomic_store(&libc.thread_count, 1);
 
     // This consumes the thread handle and sets up the thread pointer.
-    pthread_t td = __init_main_thread(main_thread_handle);
+    p.td = __init_main_thread(main_thread_handle);
 
     // Switch to the allocated stack and call start_main(&p) there.
     // The original stack stays around just to hold argv et al.
@@ -184,15 +190,17 @@ __NO_SAFESTACK _Noreturn void __libc_start_main(
     __asm__("lea -8(%[base], %[len], 1), %%rsp\n"
             "jmp start_main\n"
             "# Target receives %[arg]" : :
-            [base]"r"(td->safe_stack.iov_base),
-            [len]"r"(td->safe_stack.iov_len),
+            [base]"r"(p.td->safe_stack.iov_base),
+            [len]"r"(p.td->safe_stack.iov_len),
+            "m"(p), // Tell the compiler p's fields are all still alive.
             [arg]"D"(&p));
 #elif defined(__aarch64__)
     __asm__("add sp, %[base], %[len]\n"
             "mov x0, %[arg]\n"
             "b start_main" : :
-            [base]"r"(td->safe_stack.iov_base),
-            [len]"r"(td->safe_stack.iov_len),
+            [base]"r"(p.td->safe_stack.iov_base),
+            [len]"r"(p.td->safe_stack.iov_len),
+            "m"(p), // Tell the compiler p's fields are all still alive.
             [arg]"r"(&p));
 #else
 #error what architecture?

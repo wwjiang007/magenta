@@ -21,6 +21,7 @@
 #include <magenta/errors.h>
 #include <inttypes.h>
 #include <platform.h>
+#include <string.h>
 #include <trace.h>
 
 #define LOCAL_TRACE 0
@@ -56,13 +57,11 @@ static_assert(TP_OFFSET(stack_guard) == MX_TLS_STACK_GUARD_OFFSET, "");
 static_assert(TP_OFFSET(unsafe_sp) == MX_TLS_UNSAFE_SP_OFFSET, "");
 #undef TP_OFFSET
 
-#if WITH_SMP
 /* smp boot lock */
 static spin_lock_t arm_boot_cpu_lock = 1;
 static volatile int secondaries_to_init = 0;
 static thread_t _init_thread[SMP_MAX_CPUS - 1];
 arm64_sp_info_t arm64_secondary_sp_list[SMP_MAX_CPUS];
-#endif
 
 static arm64_cache_info_t cache_info[SMP_MAX_CPUS];
 
@@ -73,7 +72,6 @@ uint64_t arm64_get_boot_el(void)
     return arch_boot_el >> 2;
 }
 
-#if WITH_SMP
 status_t arm64_set_secondary_sp(uint cluster, uint cpu,
                                 void* sp, void* unsafe_sp) {
     uint64_t mpid = ARM64_MPID(cluster, cpu);
@@ -83,10 +81,10 @@ status_t arm64_set_secondary_sp(uint cluster, uint cpu,
         i++;
     }
     if (i==SMP_MAX_CPUS)
-        return ERR_NO_RESOURCES;
-    printf("Set mpid 0x%lx sp to %p\n", mpid, sp);
+        return MX_ERR_NO_RESOURCES;
+    LTRACEF("set mpid 0x%lx sp to %p\n", mpid, sp);
 #if __has_feature(safe_stack)
-    printf("Set mpid 0x%lx unsafe-sp to %p\n", mpid, unsafe_sp);
+    LTRACEF("set mpid 0x%lx unsafe-sp to %p\n", mpid, unsafe_sp);
 #else
     DEBUG_ASSERT(unsafe_sp == NULL);
 #endif
@@ -95,9 +93,8 @@ status_t arm64_set_secondary_sp(uint cluster, uint cpu,
     arm64_secondary_sp_list[i].stack_guard = get_current_thread()->arch.stack_guard;
     arm64_secondary_sp_list[i].unsafe_sp = unsafe_sp;
 
-    return NO_ERROR;
+    return MX_OK;
 }
-#endif
 
 static void parse_ccsid(arm64_cache_desc_t* desc, uint64_t ccsid) {
     desc->write_through = BIT(ccsid, 31) > 0;
@@ -179,19 +176,16 @@ void arm64_dump_cache_info(uint32_t cpu) {
 
 static void arm64_cpu_early_init(void)
 {
+    /* make sure the per cpu pointer is set up */
+    arm64_init_percpu_early();
+
     uint64_t mmfr0 = ARM64_READ_SYSREG(ID_AA64MMFR0_EL1);
 
     /* check to make sure implementation supports 16 bit asids */
     ASSERT( (mmfr0 & ARM64_MMFR0_ASIDBITS_MASK) == ARM64_MMFR0_ASIDBITS_16);
 
     /* set the vector base */
-    ARM64_WRITE_SYSREG(VBAR_EL1, (uint64_t)&arm64_exception_base);
-
-    /* switch to EL1 */
-    uint64_t current_el = ARM64_READ_SYSREG(CURRENTEL) >> 2;
-    if (current_el > 1) {
-        arm64_el3_to_el1();
-    }
+    ARM64_WRITE_SYSREG(VBAR_EL1, (uint64_t)&arm64_el1_exception_base);
 
     /* set some control bits in sctlr */
     uint64_t sctlr = ARM64_READ_SYSREG(sctlr_el1);
@@ -233,17 +227,58 @@ void arch_early_init(void)
     platform_init_mmu_mappings();
 }
 
+static void midr_to_core(uint32_t midr, char *str, size_t len)
+{
+    __UNUSED uint32_t implementer = BITS_SHIFT(midr, 31, 24);
+    __UNUSED uint32_t variant = BITS_SHIFT(midr, 23, 20);
+    __UNUSED uint32_t architecture = BITS_SHIFT(midr, 19, 16);
+    __UNUSED uint32_t partnum = BITS_SHIFT(midr, 15, 4);
+    __UNUSED uint32_t revision = BITS_SHIFT(midr, 3, 0);
+
+    const char *partnum_str = "unknown";
+    if (implementer == 'A') {
+        // ARM cores
+        switch (partnum) {
+            case 0xd03: partnum_str = "ARM Cortex-a53"; break;
+            case 0xd04: partnum_str = "ARM Cortex-a35"; break;
+            case 0xd07: partnum_str = "ARM Cortex-a57"; break;
+            case 0xd08: partnum_str = "ARM Cortex-a72"; break;
+            case 0xd09: partnum_str = "ARM Cortex-a73"; break;
+        }
+    } else if (implementer == 'C' && partnum == 0xa1) {
+        // Cavium
+        partnum_str = "Cavium CN88XX";
+    }
+
+    snprintf(str, len, "%s r%up%u", partnum_str, variant, revision);
+}
+
+static void print_cpu_info()
+{
+    uint32_t midr = (uint32_t)ARM64_READ_SYSREG(midr_el1);
+    char cpu_name[128];
+    midr_to_core(midr, cpu_name, sizeof(cpu_name));
+
+    uint64_t mpidr = ARM64_READ_SYSREG(mpidr_el1);
+
+    dprintf(INFO, "ARM cpu %u: midr %#x '%s' mpidr %#" PRIx64 " aff %u:%u:%u:%u\n", arch_curr_cpu_num(), midr, cpu_name,
+            mpidr,
+            (uint32_t)((mpidr & MPIDR_AFF3_MASK) >> MPIDR_AFF3_SHIFT),
+            (uint32_t)((mpidr & MPIDR_AFF2_MASK) >> MPIDR_AFF2_SHIFT),
+            (uint32_t)((mpidr & MPIDR_AFF1_MASK) >> MPIDR_AFF1_SHIFT),
+            (uint32_t)((mpidr & MPIDR_AFF0_MASK) >> MPIDR_AFF0_SHIFT));
+}
+
 void arch_init(void)
 {
-#if WITH_SMP
     arch_mp_init_percpu();
 
-    LTRACEF("midr_el1 %#" PRIx64 "\n", ARM64_READ_SYSREG(midr_el1));
+    print_cpu_info();
 
     uint32_t max_cpus = arch_max_num_cpus();
-    uint32_t cmdline_max_cpus = cmdline_get_uint32("smp.maxcpus", max_cpus);
+    uint32_t cmdline_max_cpus = cmdline_get_uint32("kernel.smp.maxcpus", max_cpus);
     if (cmdline_max_cpus > max_cpus || cmdline_max_cpus <= 0) {
-        printf("invalid smp.maxcpus value, defaulting to %u\n", max_cpus);
+        printf("invalid kernel.smp.maxcpus value, defaulting to %u\n", max_cpus);
         cmdline_max_cpus = max_cpus;
     }
 
@@ -258,7 +293,6 @@ void arch_init(void)
 
     /* flush the release of the lock, since the secondary cpus are running without cache on */
     arch_clean_cache_range((addr_t)&arm_boot_cpu_lock, sizeof(arm_boot_cpu_lock));
-#endif
 }
 
 void arch_quiesce(void)
@@ -298,25 +332,22 @@ void arch_enter_uspace(uintptr_t pc, uintptr_t sp, uintptr_t arg1, uintptr_t arg
     __UNREACHABLE;
 }
 
-#if WITH_SMP
 /* called from assembly */
 extern "C" void arm64_secondary_entry(void)
 {
-    uint cpu = arch_curr_cpu_num();
-
     arm64_cpu_early_init();
 
     spin_lock(&arm_boot_cpu_lock);
     spin_unlock(&arm_boot_cpu_lock);
 
+    uint cpu = arch_curr_cpu_num();
     thread_secondary_cpu_init_early(&_init_thread[cpu - 1]);
     /* run early secondary cpu init routines up to the threading level */
     lk_init_level(LK_INIT_FLAG_SECONDARY_CPUS, LK_INIT_LEVEL_EARLIEST, LK_INIT_LEVEL_THREADING - 1);
 
     arch_mp_init_percpu();
 
-    LTRACEF("cpu num %u\n", cpu);
+    print_cpu_info();
 
     lk_secondary_cpu_entry();
 }
-#endif

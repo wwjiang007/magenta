@@ -18,17 +18,17 @@
 static mx_status_t read_at(mxio_t* io, void* buf, size_t len, off_t offset,
                            size_t* actual_len) {
     mx_status_t status;
-    while ((status = mxio_read_at(io, buf, len, offset)) == ERR_SHOULD_WAIT) {
+    while ((status = mxio_read_at(io, buf, len, offset)) == MX_ERR_SHOULD_WAIT) {
         status = mxio_wait(io, MXIO_EVT_READABLE, MX_TIME_INFINITE, NULL);
-        if (status != NO_ERROR)
+        if (status != MX_OK)
             return status;
     }
     if (status < 0)
         return status;
     if (status == 0) // EOF (?)
-        return ERR_OUT_OF_RANGE;
+        return MX_ERR_OUT_OF_RANGE;
     *actual_len = status;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static mx_status_t read_file_into_vmo(mxio_t* io, mx_handle_t* out_vmo) {
@@ -37,15 +37,15 @@ static mx_status_t read_file_into_vmo(mxio_t* io, mx_handle_t* out_vmo) {
     vnattr_t attr;
     int r = io->ops->misc(io, MXRIO_STAT, 0, sizeof(attr), &attr, 0);
     if (r < 0)
-        return ERR_BAD_HANDLE;
+        return MX_ERR_BAD_HANDLE;
     if (r < (int)sizeof(attr))
-        return ERR_IO;
+        return MX_ERR_IO;
 
     uint64_t size = attr.size;
     uint64_t offset = 0;
 
     mx_status_t status = mx_vmo_create(size, 0, out_vmo);
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         return status;
 
     while (size > 0) {
@@ -56,7 +56,7 @@ static mx_status_t read_file_into_vmo(mxio_t* io, mx_handle_t* out_vmo) {
             size_t xfer = size < sizeof(buffer) ? size : sizeof(buffer);
             size_t nread;
             status = read_at(io, buffer, xfer, offset, &nread);
-            if (status != NO_ERROR) {
+            if (status != MX_OK) {
                 mx_handle_close(*out_vmo);
                 return status;
             }
@@ -68,7 +68,7 @@ static mx_status_t read_file_into_vmo(mxio_t* io, mx_handle_t* out_vmo) {
             }
             if (n != (size_t)nread) {
                 mx_handle_close(*out_vmo);
-                return ERR_IO;
+                return MX_ERR_IO;
             }
             offset += nread;
             size -= nread;
@@ -81,7 +81,7 @@ static mx_status_t read_file_into_vmo(mxio_t* io, mx_handle_t* out_vmo) {
             status = mx_vmar_map(
                 current_vmar_handle, 0, *out_vmo, offset, window,
                 MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE, &start);
-            if (status != NO_ERROR) {
+            if (status != MX_OK) {
                 mx_handle_close(*out_vmo);
                 return status;
             }
@@ -89,7 +89,7 @@ static mx_status_t read_file_into_vmo(mxio_t* io, mx_handle_t* out_vmo) {
             while (chunk > 0) {
                 size_t nread;
                 status = read_at(io, buffer, chunk, offset, &nread);
-                if (status != NO_ERROR) {
+                if (status != MX_OK) {
                     mx_vmar_unmap(current_vmar_handle, start, window);
                     mx_handle_close(*out_vmo);
                     return status;
@@ -103,57 +103,68 @@ static mx_status_t read_file_into_vmo(mxio_t* io, mx_handle_t* out_vmo) {
         }
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static mx_status_t get_file_vmo(mxio_t* io, mx_handle_t* out_vmo) {
     mx_handle_t vmo;
     size_t offset, len;
     mx_status_t status = io->ops->get_vmo(io, &vmo, &offset, &len);
-    if (status == NO_ERROR) {
-        // If the file spans the whole VMO, just return the original
-        // VMO handle, which is already read-only.  This is more
-        // than an optimization in the case where the specific VMO
-        // is magical like the vDSO VMOs.
-        size_t vmo_size;
-        if (offset == 0 &&
-            mx_vmo_get_size(vmo, &vmo_size) == NO_ERROR &&
-            vmo_size == len) {
-            *out_vmo = vmo;
-        } else {
-            // Clone a private copy of it at the offset/length returned with
-            // the handle.
-            // TODO(mcgrathr): Create a plain read only clone when the feature
-            // is implemented in the VM.
-            status = mx_vmo_clone(vmo, MX_VMO_CLONE_COPY_ON_WRITE, offset, len,
-                                  out_vmo);
-            mx_handle_close(vmo);
-        }
-    }
+    if (status != MX_OK)
+        return status;
+    // Clone a private copy of it at the offset/length returned with
+    // the handle.
+    // TODO(mcgrathr): Create a plain read only clone when the feature
+    // is implemented in the VM.
+    status = mx_vmo_clone(vmo, MX_VMO_CLONE_COPY_ON_WRITE, offset, len, out_vmo);
+    mx_handle_close(vmo);
     return status;
 }
 
 mx_status_t mxio_get_vmo(int fd, mx_handle_t* out_vmo) {
     mxio_t* io = fd_to_io(fd);
     if (io == NULL)
-        return ERR_BAD_HANDLE;
+        return MX_ERR_BAD_HANDLE;
 
     mx_handle_t vmo;
     mx_status_t status = get_file_vmo(io, &vmo);
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         status = read_file_into_vmo(io, &vmo);
     mxio_release(io);
 
-    if (status == NO_ERROR) {
-        // Drop unnecessary WRITE rights on the VMO handle.
+    if (status == MX_OK) {
         status = mx_handle_replace(
             vmo,
             MX_RIGHT_READ | MX_RIGHT_EXECUTE | MX_RIGHT_MAP |
-            MX_RIGHT_TRANSFER | MX_RIGHT_DUPLICATE | MX_RIGHT_GET_PROPERTY,
+            MX_RIGHT_TRANSFER | MX_RIGHT_DUPLICATE |
+            MX_RIGHT_GET_PROPERTY | MX_RIGHT_SET_PROPERTY,
             out_vmo);
-        if (status != NO_ERROR)
+        if (status != MX_OK)
             mx_handle_close(vmo);
     }
 
     return status;
+}
+
+mx_status_t mxio_get_exact_vmo(int fd, mx_handle_t* out_vmo) {
+    mxio_t* io = fd_to_io(fd);
+    if (io == NULL)
+        return MX_ERR_BAD_HANDLE;
+
+    mx_handle_t vmo;
+    size_t offset, len;
+    mx_status_t status = io->ops->get_vmo(io, &vmo, &offset, &len);
+    mxio_release(io);
+
+    if (status != MX_OK)
+        return status;
+
+    size_t vmo_size;
+    if (offset != 0 || mx_vmo_get_size(vmo, &vmo_size) != MX_OK || vmo_size != len) {
+        mx_handle_close(vmo);
+        return MX_ERR_NOT_FOUND;
+     }
+
+    *out_vmo = vmo;
+    return MX_OK;
 }

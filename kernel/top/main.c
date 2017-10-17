@@ -28,9 +28,7 @@ extern void (*const __init_array_end[])(void);
 extern int __bss_start;
 extern int _end;
 
-#if WITH_SMP
 static uint secondary_idle_thread_count;
-#endif
 
 static int bootstrap2(void *arg);
 
@@ -63,11 +61,7 @@ void lk_main(void)
     lk_primary_cpu_init_level(LK_INIT_LEVEL_PLATFORM_EARLY, LK_INIT_LEVEL_TARGET_EARLY - 1);
     target_early_init();
 
-#if WITH_SMP
     dprintf(INFO, "\nwelcome to lk/MP\n\n");
-#else
-    dprintf(INFO, "\nwelcome to lk\n\n");
-#endif
 
     // bring up the kernel heap
     lk_primary_cpu_init_level(LK_INIT_LEVEL_TARGET_EARLY, LK_INIT_LEVEL_HEAP - 1);
@@ -117,7 +111,6 @@ static int bootstrap2(void *arg)
     return 0;
 }
 
-#if WITH_SMP
 void lk_secondary_cpu_entry(void)
 {
     uint cpu = arch_curr_cpu_num();
@@ -128,7 +121,6 @@ void lk_secondary_cpu_entry(void)
         return;
     }
 
-    dprintf(SPEW, "running final init tasks on cpu %u\n", cpu);
     /* secondary cpu initialize from threading level up. 0 to threading was handled in arch */
     lk_init_level(LK_INIT_FLAG_SECONDARY_CPUS, LK_INIT_LEVEL_THREADING, LK_INIT_LEVEL_LAST);
 
@@ -144,7 +136,6 @@ void lk_init_secondary_cpus(uint secondary_cpu_count)
         secondary_cpu_count = SMP_MAX_CPUS - 1;
     }
     for (uint i = 0; i < secondary_cpu_count; i++) {
-        dprintf(SPEW, "creating idle thread for cpu %u\n", i + 1);
         thread_t *t = thread_create_idle_thread(i + 1);
         if (!t) {
             dprintf(CRITICAL, "could not allocate idle thread %u\n", i + 1);
@@ -155,4 +146,3 @@ void lk_init_secondary_cpus(uint secondary_cpu_count)
     }
     secondary_idle_thread_count = secondary_cpu_count;
 }
-#endif

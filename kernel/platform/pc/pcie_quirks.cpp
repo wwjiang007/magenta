@@ -10,9 +10,11 @@
 #if WITH_DEV_PCIE
 
 #include <arch/x86/feature.h>
+#include <inttypes.h>
 #include <dev/pcie_bus_driver.h>
 #include <dev/pcie_device.h>
-#include <mxtl/ref_ptr.h>
+#include <fbl/algorithm.h>
+#include <fbl/ref_ptr.h>
 #include <trace.h>
 
 #define LOCAL_TRACE 0
@@ -34,7 +36,7 @@
 // subtract out the region.  If we don't find the register, and cannot be sure
 // that the target we are running on does not need this special treatment, log a
 // big warning so someone can come and update this code to do the right thing.
-static void pcie_tolud_quirk(const mxtl::RefPtr<PcieDevice>& dev) {
+static void pcie_tolud_quirk(const fbl::RefPtr<PcieDevice>& dev) {
     // TODO(johngro): Expand this table as we add support for new
     // processors/chipsets.  Set offset to 0 if no action needs to be taken.
     static const struct {
@@ -44,7 +46,8 @@ static void pcie_tolud_quirk(const mxtl::RefPtr<PcieDevice>& dev) {
     } TOLUD_CHIPSET_LUT[] = {
         // QEMU's emulation of Intel Q35.   No TOLUD register that I know of.
         { .match = 0x808629c0, .mask = 0xFFFFFFFF, .offset = 0x0 },
-
+        // PIIX4
+        { .match = 0x80861237, .mask = 0xFFFFFFFF, .offset = 0x0 },
         // Intel 6th Generation Core Family (Skylake)
         { .match = 0x80861900, .mask = 0xFFFFFF00, .offset = 0xBC },
 
@@ -95,13 +98,13 @@ static void pcie_tolud_quirk(const mxtl::RefPtr<PcieDevice>& dev) {
     // recognize this host bridge.
     size_t i;
     uint32_t vid_did = (static_cast<uint32_t>(dev->vendor_id()) << 16) | dev->device_id();
-    for (i = 0; i < countof(TOLUD_CHIPSET_LUT); ++i) {
+    for (i = 0; i < fbl::count_of(TOLUD_CHIPSET_LUT); ++i) {
         const auto& entry = TOLUD_CHIPSET_LUT[i];
         if ((vid_did & entry.mask) == entry.match)
             break;
     }
 
-    if (i >= countof(TOLUD_CHIPSET_LUT))
+    if (i >= fbl::count_of(TOLUD_CHIPSET_LUT))
         return;
 
     // Looks like we recognize this chip.  Check our table to see if there is a
@@ -116,7 +119,7 @@ static void pcie_tolud_quirk(const mxtl::RefPtr<PcieDevice>& dev) {
         if (tolud_val) {
             LTRACEF("TOLUD Quirk subtracting region [0x%08x, 0x%08x)\n", 0u, tolud_val);
             status_t res = dev->driver().SubtractBusRegion(0u, tolud_val, PciAddrSpace::MMIO);
-            if (res != NO_ERROR)
+            if (res != MX_OK)
                 TRACEF("WARNING : PCIe TOLUD Quirk failed to subtract region "
                        "[0x%08x, 0x%08x) (res %d)!\n", 0u, tolud_val, res);
         }
@@ -127,7 +130,7 @@ static void pcie_tolud_quirk(const mxtl::RefPtr<PcieDevice>& dev) {
 
 STATIC_PCIE_QUIRK_HANDLER(pcie_tolud_quirk);
 
-static void pcie_amd_topmem_quirk(const mxtl::RefPtr<PcieDevice>& dev) {
+static void pcie_amd_topmem_quirk(const fbl::RefPtr<PcieDevice>& dev) {
     // only makes sense on AMD hardware
     if (x86_vendor != X86_VENDOR_AMD)
         return;
@@ -169,7 +172,7 @@ static void pcie_amd_topmem_quirk(const mxtl::RefPtr<PcieDevice>& dev) {
 
     if (top_mem && dev) {
         status_t res = dev->driver().SubtractBusRegion(0u, top_mem, PciAddrSpace::MMIO);
-        if (res != NO_ERROR) {
+        if (res != MX_OK) {
             TRACEF("WARNING : PCIe AMD top_mem quirk failed to subtract region "
                    "[0x0, %#" PRIx64 ") (res %d)!\n", top_mem, res);
         }
@@ -181,7 +184,7 @@ static void pcie_amd_topmem_quirk(const mxtl::RefPtr<PcieDevice>& dev) {
         // TODO: make this subtractive on (0, TOP_MEM2) when we start preloading the
         // upper pci range.
         status_t res = dev->driver().AddBusRegion(top_mem2, max, PciAddrSpace::MMIO);
-        if (res != NO_ERROR) {
+        if (res != MX_OK) {
             TRACEF("WARNING : PCIe AMD top_mem quirk failed to add 64bit region "
                    "[%#" PRIx64 ", %#" PRIx64 ") (res %d)!\n", top_mem2, max, res);
         }

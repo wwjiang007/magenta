@@ -5,11 +5,12 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <launchpad/vmo.h>
+#include <launchpad/loader-service.h>
 #include <magenta/device/dmctl.h>
 #include <magenta/dlfcn.h>
 #include <magenta/processargs.h>
 #include <magenta/syscalls.h>
-#include <mxio/loader-service.h>
+
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
@@ -17,11 +18,19 @@
 
 #include <unittest/unittest.h>
 
+#if __has_feature(address_sanitizer)
+# define LIBPREFIX "/boot/lib/asan/"
+#else
+# define LIBPREFIX "/boot/lib/"
+#endif
+
 bool dlopen_vmo_test(void) {
     BEGIN_TEST;
 
-    mx_handle_t vmo = launchpad_vmo_from_file("/boot/lib/liblaunchpad.so");
-    EXPECT_GT(vmo, 0, "launchpad_vmo_from_file");
+    mx_handle_t vmo = MX_HANDLE_INVALID;
+    mx_status_t status = launchpad_vmo_from_file(LIBPREFIX "liblaunchpad.so", &vmo);
+    EXPECT_EQ(status, MX_OK, "");
+    EXPECT_NE(vmo, MX_HANDLE_INVALID, "launchpad_vmo_from_file");
 
     void* obj = dlopen_vmo(vmo, RTLD_LOCAL);
     EXPECT_NONNULL(obj, "dlopen_vmo");
@@ -40,14 +49,19 @@ bool dlopen_vmo_test(void) {
 // This should be some library that this program links against.
 #define TEST_SONAME "libmxio.so"
 #define TEST_NAME "foobar"
-#define TEST_ACTUAL_NAME "/boot/lib/" TEST_SONAME
+#define TEST_ACTUAL_NAME LIBPREFIX TEST_SONAME
 
 static atomic_bool my_loader_service_ok = false;
 static atomic_int my_loader_service_calls = 0;
 
-static mx_handle_t my_loader_service(void* arg, uint32_t load_op,
-                                     const char* name) {
+static mx_status_t my_loader_service(void* arg, uint32_t load_op,
+                                     mx_handle_t request_handle,
+                                     const char* name,
+                                     mx_handle_t* out) {
     ++my_loader_service_calls;
+
+    EXPECT_EQ(request_handle, MX_HANDLE_INVALID,
+              "called with a request handle");
 
     int cmp = strcmp(name, TEST_NAME);
     EXPECT_EQ(cmp, 0, "called with unexpected name");
@@ -63,14 +77,17 @@ static mx_handle_t my_loader_service(void* arg, uint32_t load_op,
         return MX_HANDLE_INVALID;
     }
 
-    mx_handle_t vmo = launchpad_vmo_from_file(arg);
-    EXPECT_GT(vmo, 0, "launchpad_vmo_from_file");
-    if (vmo <= 0) {
-        return vmo;
+    mx_handle_t vmo = MX_HANDLE_INVALID;
+    mx_status_t status = launchpad_vmo_from_file(arg, &vmo);
+    EXPECT_EQ(status, MX_OK, "");
+    EXPECT_NE(vmo, MX_HANDLE_INVALID, "launchpad_vmo_from_file");
+    if (status < 0) {
+        return status;
     }
 
     my_loader_service_ok = true;
-    return vmo;
+    *out = vmo;
+    return MX_OK;
 }
 
 static void show_dlerror(void) {
@@ -87,13 +104,13 @@ bool loader_service_test(void) {
         show_dlerror();
 
     // Spin up our test service.
-    mx_handle_t my_service =
-        mxio_loader_service(&my_loader_service, (void*)TEST_ACTUAL_NAME);
-    EXPECT_GT(my_service, 0, "mxio_loader_service");
+    mx_handle_t my_service;
+    mx_status_t status = loader_service_simple(&my_loader_service, (void*)TEST_ACTUAL_NAME, &my_service);
+    EXPECT_EQ(status, MX_OK, "mxio_loader_service");
 
     // Install the service.
     mx_handle_t old = dl_set_loader_service(my_service);
-    EXPECT_GT(old, 0, "dl_set_loader_service");
+    EXPECT_NE(old, MX_HANDLE_INVALID, "dl_set_loader_service");
 
     // Now to a lookup that should go through our service.  It
     // should load up the new copy of the file, find that its
@@ -139,13 +156,13 @@ bool ioctl_test(void) {
     int fd = open(DMCTL_PATH, O_RDONLY);
     ASSERT_GE(fd, 0, "can't open " DMCTL_PATH);
 
-    mx_handle_t h;
+    mx_handle_t h = MX_HANDLE_INVALID;
     ssize_t s = ioctl_dmctl_get_loader_service_channel(fd, &h);
     close(fd);
 
     EXPECT_EQ(s, (ssize_t)sizeof(mx_handle_t),
               "unexpected return value from ioctl");
-    EXPECT_GT(h, 0, "invalid handle from ioctl");
+    EXPECT_NE(h, MX_HANDLE_INVALID, "invalid handle from ioctl");
 
     mx_handle_close(h);
 

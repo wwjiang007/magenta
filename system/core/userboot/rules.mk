@@ -20,6 +20,7 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/util.c
 
 MODULE_NAME := userboot
+MODULE_GROUP := core
 
 # This is built as a shared library, but it gets embedded directly in the
 # kernel image and does not need to be installed in the filesystem at all.
@@ -32,12 +33,21 @@ MODULE_SO_INSTALL_NAME := -
 userboot-string-functions := memcmp memcpy memset strlen strncmp memmove
 MODULE_SRCS += \
     $(userboot-string-functions:%=third_party/ulib/musl/src/string/%.c)
+MODULE_COMPILEFLAGS += -Ithird_party/ulib/musl/src/internal
 
 # Make sure there are never any PLT entries generated.
 MODULE_COMPILEFLAGS += -fvisibility=hidden
 
+ifeq ($(call TOBOOL,$(USE_LTO)),true)
+# Make sure that compiler doesn't replace calls to libc functions with builtins.
+# While inlining these builtins is desirable, it causes LTO to optimize away
+# our own versions of these functions which later causes a link failure.
+# TODO(phosek): https://bugs.llvm.org/show_bug.cgi?id=34169
+MODULE_COMPILEFLAGS += -ffreestanding
+endif
+
 # We don't have normal setup, so safe-stack is a non-starter.
-MODULE_COMPILEFLAGS += $(NO_SAFESTACK)
+MODULE_COMPILEFLAGS += $(NO_SAFESTACK) $(NO_SANITIZERS)
 
 # system/ulib/runtime is compiled without safe-stack.  We can't use any other
 # static libs, because they might be built with safe-stack or other
@@ -80,6 +90,6 @@ GENERATED += $(BUILDDIR)/$(LOCAL_DIR)/vdso-syms.ld.h
 MODULE_EXTRA_OBJS := $(BUILDDIR)/$(LOCAL_DIR)/vdso-syms.ld
 
 # userboot is a reentrant DSO (no writable segment) with an entry point.
-MODULE_LDFLAGS := -T scripts/rodso.ld -e _start
+MODULE_LDFLAGS := $(RODSO_LDFLAGS) -e _start
 
 include make/module.mk

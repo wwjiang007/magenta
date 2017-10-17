@@ -7,10 +7,12 @@ LOCAL_DIR := $(GET_LOCAL_DIR)
 MODULE := $(LOCAL_DIR)
 
 MODULE_TYPE := userlib
+MODULE_GROUP := test
 
 MODULE_SRCS += \
     $(LOCAL_DIR)/dso-ctor.cpp
 
+MODULE_STATIC_LIBS := system/ulib/mxcpp
 MODULE_LIBS := system/ulib/unittest system/ulib/c
 
 MODULE_SO_NAME := dso-ctor

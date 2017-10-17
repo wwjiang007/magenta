@@ -5,17 +5,18 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-#ifndef __KERNEL_EVENT_H
-#define __KERNEL_EVENT_H
+#pragma once
 
+#include <err.h>
+#include <kernel/thread.h>
 #include <magenta/compiler.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <sys/types.h>
-#include <kernel/thread.h>
 
-__BEGIN_CDECLS;
+__BEGIN_CDECLS
 
-#define EVENT_MAGIC (0x65766E74)  // "evnt"
+#define EVENT_MAGIC (0x65766E74) // "evnt"
 
 typedef struct event {
     int magic;
@@ -26,13 +27,13 @@ typedef struct event {
 
 #define EVENT_FLAG_AUTOUNSIGNAL 1
 
-#define EVENT_INITIAL_VALUE(e, initial, _flags) \
-{ \
-    .magic = EVENT_MAGIC, \
-    .signaled = initial, \
-    .flags = _flags, \
-    .wait = WAIT_QUEUE_INITIAL_VALUE((e).wait), \
-}
+#define EVENT_INITIAL_VALUE(e, initial, _flags)     \
+    {                                               \
+        .magic = EVENT_MAGIC,                       \
+        .signaled = initial,                        \
+        .flags = _flags,                            \
+        .wait = WAIT_QUEUE_INITIAL_VALUE((e).wait), \
+    }
 
 /* Rules for Events:
  * - Events may be signaled from interrupt context *but* the reschedule
@@ -50,28 +51,72 @@ typedef struct event {
  *     event_unsignal() is called.
 */
 
-void event_init(event_t *, bool initial, uint flags);
-void event_destroy(event_t *);
+void event_init(event_t*, bool initial, uint flags);
+void event_destroy(event_t*);
 
 /* Wait until deadline
- * Interruptable arg allows it to return early with ERR_INTERRUPTED if thread
+ * Interruptable arg allows it to return early with MX_ERR_INTERNAL_INTR_KILLED if thread
  * is signaled for kill.
  */
-status_t event_wait_deadline(event_t *, lk_time_t, bool interruptable);
+status_t event_wait_deadline(event_t*, lk_time_t, bool interruptable);
 
 /* no deadline, non interruptable version of the above. */
-static inline status_t event_wait(event_t *e) { return event_wait_deadline(e, INFINITE_TIME, false); }
+static inline status_t event_wait(event_t* e) {
+    return event_wait_deadline(e, INFINITE_TIME, false);
+}
 
-int event_signal_etc(event_t *, bool reschedule, status_t result);
-int event_signal(event_t *, bool reschedule);
-int event_signal_thread_locked(event_t *);
-status_t event_unsignal(event_t *);
+int event_signal_etc(event_t*, bool reschedule, status_t result);
+int event_signal(event_t*, bool reschedule);
+int event_signal_thread_locked(event_t*);
+status_t event_unsignal(event_t*);
 
-static inline bool event_initialized(const event_t *e) { return e->magic == EVENT_MAGIC; }
+static inline bool event_initialized(const event_t* e) {
+    return e->magic == EVENT_MAGIC;
+}
 
-static inline bool event_signaled(const event_t *e) { return e->signaled; }
+static inline bool event_signaled(const event_t* e) {
+    return e->signaled;
+}
 
-__END_CDECLS;
+__END_CDECLS
 
-#endif
+#ifdef __cplusplus
 
+// C++ wrapper. This should be waited on from only a single thread, but may be
+// signaled from many threads (Signal() is thread-safe).
+class Event {
+public:
+    Event(uint32_t opts = 0) {
+        event_init(&event_, false, opts);
+    }
+    ~Event() {
+        event_destroy(&event_);
+    }
+
+    Event(const Event&) = delete;
+    Event& operator=(const Event&) = delete;
+
+    // Returns:
+    // MX_OK - signaled
+    // MX_ERR_TIMED_OUT - time out expired
+    // MX_ERR_INTERNAL_INTR_KILLED - thread killed
+    // Or the |status| which the caller specified in Event::Signal(status)
+    status_t Wait(lk_time_t deadline) {
+        return event_wait_deadline(&event_, deadline, true);
+    }
+
+    // Returns number of ready threads. If it is bigger than 0
+    // the caller must call thread_reschedule().
+    __WARN_UNUSED_RESULT int Signal(status_t status = MX_OK) {
+        return event_signal_etc(&event_, false, status);
+    }
+
+    status_t Unsignal() {
+        return event_unsignal(&event_);
+    }
+
+private:
+    event_t event_;
+};
+
+#endif // __cplusplus

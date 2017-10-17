@@ -5,16 +5,15 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-#include <magenta/compiler.h>
 #include <debug.h>
+#include <kernel/mp.h>
 #include <kernel/thread.h>
 #include <kernel/timer.h>
-#include <kernel/mp.h>
+#include <magenta/compiler.h>
 
 void kernel_init(void);
 
-void kernel_init(void)
-{
+void kernel_init(void) {
     // initialize the threading system
     dprintf(SPEW, "initializing mp\n");
     mp_init();
@@ -25,6 +24,5 @@ void kernel_init(void)
 
     // initialize kernel timers
     dprintf(SPEW, "initializing timers\n");
-    timer_init();
+    timer_queue_init();
 }
-

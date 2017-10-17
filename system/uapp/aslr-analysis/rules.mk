@@ -7,13 +7,14 @@ LOCAL_DIR := $(GET_LOCAL_DIR)
 MODULE := $(LOCAL_DIR)
 
 MODULE_TYPE := userapp
+MODULE_GROUP := misc
 
 MODULE_SRCS += \
     $(LOCAL_DIR)/main.cpp
 
 MODULE_STATIC_LIBS := \
     system/ulib/mxcpp \
-    system/ulib/mxtl \
+    system/ulib/fbl \
     system/ulib/runtime
 
 MODULE_LIBS := \

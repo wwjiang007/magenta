@@ -8,20 +8,17 @@
 #include <mx/task.h>
 #include <mx/vmar.h>
 #include <mx/vmo.h>
+#include <magenta/process.h>
 
 namespace mx {
 class job;
 class thread;
 
-namespace internal {
-extern "C" mx_handle_t __magenta_process_self;
-}
-
 class process : public task<process> {
 public:
     static constexpr mx_obj_type_t TYPE = MX_OBJ_TYPE_PROCESS;
 
-    process() = default;
+    constexpr process() = default;
 
     explicit process(mx_handle_t value) : task(value) {}
 
@@ -41,12 +38,14 @@ public:
     static mx_status_t create(const job& job, const char* name, uint32_t name_len,
                               uint32_t flags, process* proc, vmar* root_vmar);
 
-    static inline const process& self() {
-        return *reinterpret_cast<process*>(&internal::__magenta_process_self);
-    }
-
     mx_status_t start(const thread& thread_handle, uintptr_t entry,
                       uintptr_t stack, handle arg_handle, uintptr_t arg2) const;
+
+    static inline const unowned<process> self() {
+        return unowned<process>(mx_process_self());
+    }
 };
+
+using unowned_process = const unowned<process>;
 
 } // namespace mx

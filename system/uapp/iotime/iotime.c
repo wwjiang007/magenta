@@ -9,6 +9,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <fs-management/ramdisk.h>
 #include <magenta/syscalls.h>
 #include <magenta/device/ramdisk.h>
 #include <magenta/device/block.h>
@@ -96,30 +97,12 @@ int iotime_lread(int argc, char** argv) {
 
 
 int make_ramdisk(size_t blocks) {
-    int fd = open("/dev/misc/ramctl", O_RDWR);
-    if (fd < 0) {
+    char ramdisk_path[PATH_MAX];
+    if (create_ramdisk(512, blocks / 512, ramdisk_path)) {
         return -1;
     }
 
-    ramdisk_ioctl_config_t cfg = {
-        .blk_size = 512,
-        .blk_count = blocks / 512,
-        .name = "iotime",
-    };
-
-    if (ioctl_ramdisk_config(fd, &cfg) != NO_ERROR) {
-        close(fd);
-        return -1;
-    }
-
-    close(fd);
-    for (unsigned n = 0; n < 10; n++) {
-        if ((fd = open("/dev/misc/ramctl/iotime/block", O_RDWR)) >= 0) {
-            return fd;
-        }
-        mx_nanosleep(100000);
-    }
-    return -1;
+    return open(ramdisk_path, O_RDWR);
 }
 
 int iotime_bread(int argc, char** argv) {
@@ -183,7 +166,7 @@ int iotime_fread(int argc, char** argv) {
     size_t bufsz = number(argv[4]);
 
     mx_handle_t vmo;
-    if (mx_vmo_create(bufsz, 0, &vmo) != NO_ERROR) {
+    if (mx_vmo_create(bufsz, 0, &vmo) != MX_OK) {
         fprintf(stderr, "error: out of memory\n");
         return -1;
     }
@@ -207,7 +190,7 @@ int iotime_fread(int argc, char** argv) {
     }
 
     mx_handle_t dup;
-    if (mx_handle_duplicate(vmo, MX_RIGHT_SAME_RIGHTS, &dup) != NO_ERROR) {
+    if (mx_handle_duplicate(vmo, MX_RIGHT_SAME_RIGHTS, &dup) != MX_OK) {
         fprintf(stderr, "error: cannot duplicate handle\n");
         return -1;
     }
@@ -219,7 +202,7 @@ int iotime_fread(int argc, char** argv) {
     }
 
     fifo_client_t* client;
-    if (block_fifo_create_client(fifo, &client) != NO_ERROR) {
+    if (block_fifo_create_client(fifo, &client) != MX_OK) {
         fprintf(stderr, "err: cannot create block client for '%s'\n", argv[2]);
         return -1;
     }
@@ -236,7 +219,7 @@ int iotime_fread(int argc, char** argv) {
             .vmo_offset = 0,
             .dev_offset = total - n,
         };
-        if (block_fifo_txn(client, &request, 1) != NO_ERROR) {
+        if (block_fifo_txn(client, &request, 1) != MX_OK) {
             fprintf(stderr, "error: block_fifo_txn error\n");
             return -1;
         }

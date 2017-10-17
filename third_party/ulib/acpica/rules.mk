@@ -173,7 +173,7 @@ MODULE_SRCS += \
 	$(SRC_DIR)/common/ahpredef.c \
 	$(SRC_DIR)/common/ahids.c \
 	$(SRC_DIR)/common/ahtable.c \
-	$(SRC_DIR)/os_specific/service_layers/osfuchsia.c
+	$(SRC_DIR)/os_specific/service_layers/osfuchsia.cpp
 else
 MODULE_SRCS += $(LOCAL_DIR)/empty.c
 endif
@@ -185,11 +185,23 @@ MODULE_CFLAGS += -Wno-discarded-qualifiers
 else
 MODULE_CFLAGS += -Wno-incompatible-pointer-types-discards-qualifiers
 endif
-MODULE_CFLAGS += -Wno-strict-aliasing -I$(SRC_DIR)/include/acpica
+# We need to specify -fno-strict-aliasing, since ACPICA has a habit of violating strict aliasing
+# rules in some of its macros.  Rewriting this code would increase the maintenance cost of
+# bringing in the latest upstream ACPICA, so instead we mitigate the problem with a compile-time
+# flag.  We take the more conservative approach of disabling strict-aliasing-based optimizations,
+# rather than disabling warnings.
+MODULE_CFLAGS += -fno-strict-aliasing
+
+MODULE_COMPILEFLAGS += -I$(SRC_DIR)/include/acpica
+
+ifeq ($(call TOBOOL,$(ENABLE_ACPI_DEBUG)),true)
+MODULE_COMPILEFLAGS += -DACPI_DEBUG_OUTPUT
+endif
 
 MODULE_STATIC_LIBS := \
     system/ulib/ddk \
-    system/ulib/magenta
+    system/ulib/fbl \
+    system/ulib/mxcpp \
 
 MODULE_LIBS := \
     system/ulib/c

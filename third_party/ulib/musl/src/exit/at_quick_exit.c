@@ -18,10 +18,11 @@ void __funcs_on_quick_exit(void) {
         func();
         mtx_lock(&lock);
     }
+    mtx_unlock(&lock);
 }
 
 int at_quick_exit(void (*func)(void)) {
-    if (count == 32)
+    if (count == COUNT)
         return -1;
     mtx_lock(&lock);
     funcs[count++] = func;

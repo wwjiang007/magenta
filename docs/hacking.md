@@ -121,3 +121,29 @@ void my_function() {
   thread_print_backtrace(get_current_thread(), __GET_FRAME(0));
 }
 ```
+
+## Exporting debug data during boot
+
+To support testing the system during early boot, there is a mechanism to export
+data files from the kernel to the /boot filesystem. To export a data file,
+create a VMO, give it a name, and pass it to userboot with handle\_info of type
+PA\_VMO\_DEBUG\_FILE (and argument 0). Then userboot will automatically pass it
+throough to devmgr, and devmgr will export the VMO as a file at the path
+
+```
+/boot/kernel/<name-of-vmo>
+```
+
+This mechanism is used by the entropy collector quality tests to export
+relatively large (~1 Mbit) files full of random data.
+
+## How to deprecate #define constants
+
+One can create a deprecated typedef and have the constant definition
+cast to that type.  The ensuing warning/error will include the name
+of the deprecated typedef.
+
+```
+typedef int MX_RESUME_NOT_HANDLED_DEPRECATION __attribute__((deprecated));
+#define MX_RESUME_NOT_HANDLED ((MX_RESUME_NOT_HANDLED_DEPRECATION)(2))
+```

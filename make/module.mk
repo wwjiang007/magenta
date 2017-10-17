@@ -26,6 +26,9 @@
 # MODULE_LIBS : shared libraries for a userapp or userlib to depend on
 # MODULE_STATIC_LIBS : static libraries for a userapp or userlib to depend on
 # MODULE_SO_NAME : linkage name for the shared library
+# MODULE_HOST_LIBS: static libraries for a hostapp or hostlib to depend on
+# MODULE_HOST_SYSLIBS: system libraries for a hostapp or hostlib to depend on
+# MODULE_GROUP: tag for manifest file entry
 
 # the minimum module rules.mk file is as follows:
 #
@@ -52,12 +55,25 @@ $(error Module '$(MODULE)' defined in multiple rules.mk files)
 endif
 DUPMODULES += $(MODULE)
 
+# if there's a manifest group, remove whitespace and wrap it in {}s
+ifneq ($(strip $(MODULE_GROUP)),)
+MODULE_GROUP := {$(strip $(MODULE_GROUP))}
+else
+ifeq ($(strip $(MODULE_TYPE)),usertest)
+MODULE_GROUP := {test}
+endif
+endif
+
 # all library deps go on the deps list
-_MODULE_DEPS := $(MODULE_DEPS) $(MODULE_LIBS) $(MODULE_STATIC_LIBS)
+_MODULE_DEPS := $(MODULE_DEPS) $(MODULE_LIBS) $(MODULE_STATIC_LIBS) \
+                $(MODULE_HOST_LIBS)
 
 # Catch the depends on nonexistant module error case
-# here where we can tell you what module has the bad deps
-$(foreach mod,$(_MODULE_DEPS) $(MODULE_HEADER_DEPS),$(if $(wildcard $(mod)),,\
+# here where we can tell you what module has the bad deps.
+# Strip any .postfixes, as these refer to "sub-modules" defined in the
+# rules.mk file of the base module name.
+$(foreach mod,$(_MODULE_DEPS) $(MODULE_HEADER_DEPS),\
+$(if $(wildcard $(firstword $(subst .,$(SPACE),$(mod)))),,\
 $(error Module '$(MODULE)' depends on '$(mod)' which does not exist)))
 
 # all regular deps contribute to header deps list
@@ -80,16 +96,20 @@ endif
 
 # Introduce local, libc and dependency include paths
 ifneq ($(MODULE_TYPE),)
-ifneq ($(MODULE_TYPE),hostapp)
+ifeq ($(MODULE_TYPE),$(filter $(MODULE_TYPE),hostapp hostlib))
+# host module
+MODULE_SRCDEPS += $(HOST_CONFIG_HEADER)
+MODULE_COMPILEFLAGS += -I$(LOCAL_DIR)/include
+else
 # user module
 MODULE_SRCDEPS += $(USER_CONFIG_HEADER)
 MODULE_COMPILEFLAGS += -Iglobal/include
 MODULE_COMPILEFLAGS += -I$(LOCAL_DIR)/include
 MODULE_COMPILEFLAGS += -Ithird_party/ulib/musl/include
-MODULE_COMPILEFLAGS += $(foreach DEP,$(MODULE_HEADER_DEPS),-I$(DEP)/include)
 MODULE_DEFINES += MODULE_LIBS=\"$(subst $(SPACE),_,$(MODULE_LIBS))\"
 MODULE_DEFINES += MODULE_STATIC_LIBS=\"$(subst $(SPACE),_,$(MODULE_STATIC_LIBS))\"
 endif
+MODULE_COMPILEFLAGS += $(foreach DEP,$(MODULE_HEADER_DEPS),-I$(DEP)/include)
 #TODO: is this right?
 MODULE_SRCDEPS += $(USER_CONFIG_HEADER)
 else
@@ -137,15 +157,35 @@ MODULE_COMPILEFLAGS += -include $(MODULE_CONFIG)
 
 MODULE_SRCDEPS += $(MODULE_CONFIG)
 
+MODULE_ELIDED := false
+ifeq ($(call TOBOOL,$(ENABLE_ULIB_ONLY)),true)
+ifneq ($(MODULE_TYPE),userlib)
+MODULE_ELIDED := true
+endif
+endif
+
+ifeq ($(MODULE_ELIDED),true)
+
+# Ignore additions just made by this module.
+EXTRA_BUILDDEPS := $(SAVED_EXTRA_BUILDDEPS)
+GENERATED := $(SAVED_GENERATED)
+USER_MANIFEST_LINES := $(SAVED_USER_MANIFEST_LINES)
+
+else # MODULE_ELIDED
+
 # include compile rules appropriate to module type
 # typeless modules are kernel modules
 ifeq ($(MODULE_TYPE),)
 include make/compile.mk
 else
-ifeq ($(MODULE_TYPE),hostapp)
+ifeq ($(MODULE_TYPE),$(filter $(MODULE_TYPE),hostapp hostlib))
 include make/hcompile.mk
 else
+ifeq ($(MODULE_TYPE),efilib)
+include make/ecompile.mk
+else
 include make/ucompile.mk
+endif
 endif
 endif
 
@@ -158,12 +198,12 @@ ALLSRCS += $(MODULE_SRCS)
 # track all the objects built
 ALLOBJS += $(MODULE_OBJS)
 
-ifneq ($(MODULE_TYPE),hostapp)
+ifeq (,$(filter $(MODULE_TYPE),hostapp hostlib))
 ALL_TARGET_OBJS += $(MODULE_OBJS)
 endif
 
 # generate an input linker script for all kernel and user modules
-ifneq ($(MODULE_TYPE),hostapp)
+ifeq (,$(filter $(MODULE_TYPE),hostapp hostlib))
 MODULE_OBJECT := $(MODULE_OUTNAME).mod.o
 $(MODULE_OBJECT): $(MODULE_OBJS) $(MODULE_EXTRA_OBJS)
 	@$(MKDIR)
@@ -186,11 +226,12 @@ else
 include make/module-$(patsubst %-static,%,$(MODULE_TYPE)).mk
 endif
 
-
+endif # MODULE_ELIDED
 
 
 # empty out any vars set here
 MODULE :=
+MODULE_ELIDED :=
 MODULE_SRCDIR :=
 MODULE_BUILDDIR :=
 MODULE_DEPS :=
@@ -217,3 +258,10 @@ MODULE_SO_NAME :=
 MODULE_INSTALL_PATH :=
 MODULE_SO_INSTALL_NAME :=
 MODULE_HOST_LIBS :=
+MODULE_HOST_SYSLIBS :=
+MODULE_GROUP :=
+
+# Save these before the next module.
+SAVED_EXTRA_BUILDDEPS := $(EXTRA_BUILDDEPS)
+SAVED_GENERATED := $(GENERATED)
+SAVED_USER_MANIFEST_LINES := $(USER_MANIFEST_LINES)

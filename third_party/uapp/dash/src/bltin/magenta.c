@@ -18,6 +18,8 @@
 #include <magenta/syscalls.h>
 #include <pretty/hexdump.h>
 
+#include <magenta/device/dmctl.h>
+
 int mxc_dump(int argc, char** argv) {
     int fd;
     ssize_t len;
@@ -466,12 +468,59 @@ static int send_dmctl(const char* command, size_t length) {
         return fd;
     }
 
-    int r = write(fd, command, length);
-    close(fd);
+    // commands with ':' get passed through and don't use
+    // socket for results (since there are none)
+    const char* p;
+    for (p = command; p < (command + length); p++) {
+        if (*p == ':') {
+            write(fd, command, length);
+            return 0;
+        }
+    }
 
+    dmctl_cmd_t cmd;
+    if (length >= sizeof(cmd.name)) {
+        fprintf(stderr, "error: dmctl command longer than %zu bytes: '%.*s'\n",
+                sizeof(cmd.name), (int)length, command);
+        return -1;
+    }
+    snprintf(cmd.name, sizeof(cmd.name), command);
+
+    mx_handle_t h;
+    if (mx_socket_create(0, &cmd.h, &h) < 0) {
+        return -1;
+    }
+
+    int r = ioctl_dmctl_command(fd, &cmd);
+    close(fd);
     if (r < 0) {
+        mx_handle_close(h);
         return r;
     }
+
+    for (;;) {
+        mx_status_t status;
+        char buf[32768];
+        size_t actual;
+        if ((status = mx_socket_read(h, 0, buf, sizeof(buf), &actual)) < 0) {
+            if (status == MX_ERR_SHOULD_WAIT) {
+                mx_object_wait_one(h, MX_SOCKET_READABLE | MX_SOCKET_PEER_CLOSED,
+                                   MX_TIME_INFINITE, NULL);
+                continue;
+            }
+            break;
+        }
+        size_t written = 0;
+        while (written < actual) {
+            ssize_t count = write(1, buf + written, actual - written);
+            if (count < 0) {
+                break;
+            } else {
+                written += count;
+            }
+        }
+    }
+    mx_handle_close(h);
 
     return 0;
 }
@@ -529,15 +578,4 @@ int mxc_k(int argc, char** argv) {
     }
 
     return send_dmctl(buffer, command_length);
-}
-
-int mxc_at(int argc, char** argv) {
-    char command[1024];
-    char* command_end = join(command, sizeof(command), argc, argv);
-    if (!command_end) {
-        fprintf(stderr, "error: application environment command too long\n");
-        return -1;
-    }
-
-    return send_dmctl(command, command_end - command);
 }

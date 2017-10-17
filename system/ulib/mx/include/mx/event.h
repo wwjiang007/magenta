@@ -13,7 +13,7 @@ class event : public object<event> {
 public:
     static constexpr mx_obj_type_t TYPE = MX_OBJ_TYPE_EVENT;
 
-    event() = default;
+    constexpr event() = default;
 
     explicit event(mx_handle_t value) : object(value) {}
 
@@ -28,5 +28,7 @@ public:
 
     static mx_status_t create(uint32_t options, event* result);
 };
+
+using unowned_event = const unowned<event>;
 
 } // namespace mx

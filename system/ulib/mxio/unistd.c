@@ -12,7 +12,6 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/select.h>
@@ -115,26 +114,26 @@ mx_status_t mxio_unbind_from_fd(int fd, mxio_t** out) {
     mx_status_t status;
     mtx_lock(&mxio_lock);
     if (fd >= MAX_MXIO_FD) {
-        status = ERR_INVALID_ARGS;
+        status = MX_ERR_INVALID_ARGS;
         goto done;
     }
     mxio_t* io = mxio_fdtab[fd];
     if (io == NULL) {
-        status = ERR_INVALID_ARGS;
+        status = MX_ERR_INVALID_ARGS;
         goto done;
     }
     if (io->dupcount > 1) {
-        status = ERR_UNAVAILABLE;
+        status = MX_ERR_UNAVAILABLE;
         goto done;
     }
     if (atomic_load(&io->refcount) > 1) {
-        status = ERR_UNAVAILABLE;
+        status = MX_ERR_UNAVAILABLE;
         goto done;
     }
     io->dupcount = 0;
     mxio_fdtab[fd] = NULL;
     *out = io;
-    status = NO_ERROR;
+    status = MX_OK;
 done:
     mtx_unlock(&mxio_lock);
     return status;
@@ -184,9 +183,14 @@ static mxio_t* mxio_iodir(const char** path, int dirfd) {
     mtx_lock(&mxio_lock);
     if (*path[0] == '/') {
         iodir = mxio_root_handle;
-        (*path)++;
-        if (*path[0] == 0) {
-            *path = ".";
+        // Since we are sending a request to the root handle, the
+        // rest of the path should be canonicalized as a relative
+        // path (relative to this root handle).
+        while (*path[0] == '/') {
+            (*path)++;
+            if (*path[0] == 0) {
+                *path = ".";
+            }
         }
     } else if (dirfd == AT_FDCWD) {
         iodir = mxio_cwd_handle;
@@ -205,9 +209,9 @@ static mxio_t* mxio_iodir(const char** path, int dirfd) {
 // Checks that if we increment this index forward, we'll
 // still have enough space for a null terminator within
 // PATH_MAX bytes.
-#define CHECK_CAN_INCREMENT(i)               \
-    if (unlikely((i) + 1 >= PATH_MAX - 1)) { \
-        return ERR_BAD_PATH;                 \
+#define CHECK_CAN_INCREMENT(i)           \
+    if (unlikely((i) + 1 >= PATH_MAX)) { \
+        return MX_ERR_BAD_PATH;          \
     }
 
 // Cleans an input path, transforming it to out, according to the
@@ -224,7 +228,7 @@ mx_status_t __mxio_cleanpath(const char* in, char* out, size_t* outlen, bool* is
         strcpy(out, ".");
         *outlen = 1;
         *is_dir = true;
-        return NO_ERROR;
+        return MX_OK;
     }
 
     bool rooted = (in[0] == '/');
@@ -288,32 +292,32 @@ mx_status_t __mxio_cleanpath(const char* in, char* out, size_t* outlen, bool* is
         strcpy(out, ".");
         *outlen = 1;
         *is_dir = true;
-        return NO_ERROR;
+        return MX_OK;
     }
 
     // Append null character
     *outlen = out_index;
     out[out_index++] = 0;
-    return NO_ERROR;
+    return MX_OK;
 }
 
-static mx_status_t __mxio_open_at(mxio_t** io, int dirfd, const char* path, int flags, uint32_t mode) {
+mx_status_t __mxio_open_at(mxio_t** io, int dirfd, const char* path, int flags, uint32_t mode) {
     if (path == NULL) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
     if (path[0] == 0) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_NOT_FOUND;
     }
     mxio_t* iodir = mxio_iodir(&path, dirfd);
     if (iodir == NULL) {
-        return ERR_BAD_HANDLE;
+        return MX_ERR_BAD_HANDLE;
     }
 
     char clean[PATH_MAX];
     size_t outlen;
     bool is_dir;
     mx_status_t status = __mxio_cleanpath(path, clean, &outlen, &is_dir);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         return status;
     }
     flags |= (is_dir ? O_DIRECTORY : 0);
@@ -398,19 +402,19 @@ wat:
 static mx_status_t __mxio_opendir_containing_at(mxio_t** io, int dirfd, const char* path,
                                                 char* out) {
     if (path == NULL) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     mxio_t* iodir = mxio_iodir(&path, dirfd);
     if (iodir == NULL) {
-        return ERR_BAD_HANDLE;
+        return MX_ERR_BAD_HANDLE;
     }
 
     char clean[PATH_MAX];
     size_t pathlen;
     bool is_dir;
     mx_status_t status = __mxio_cleanpath(path, clean, &pathlen, &is_dir);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         mxio_release(iodir);
         return status;
     }
@@ -429,7 +433,7 @@ static mx_status_t __mxio_opendir_containing_at(mxio_t** io, int dirfd, const ch
     size_t namelen = pathlen - i;
     if (namelen + (is_dir ? 1 : 0) > NAME_MAX) {
         mxio_release(iodir);
-        return ERR_BAD_PATH;
+        return MX_ERR_BAD_PATH;
     }
 
     // Copy the trailing 'name' to out.
@@ -484,9 +488,6 @@ void __libc_extensions_init(uint32_t handle_count,
         }
 
         switch (PA_HND_TYPE(handle_info[n])) {
-        case PA_MXIO_ROOT:
-            mxio_root_handle = mxio_remote_create(h, 0);
-            break;
         case PA_MXIO_CWD:
             mxio_cwd_handle = mxio_remote_create(h, 0);
             break;
@@ -521,11 +522,6 @@ void __libc_extensions_init(uint32_t handle_count,
                 mx_handle_close(h);
             }
             break;
-        case PA_SERVICE_ROOT:
-            mxio_svc_root = h;
-            // do not remove handle, so it is available
-            // to higher level service connection code
-            continue;
         case PA_NS_DIR:
             // we always contine here to not steal the
             // handles from higher level code that may
@@ -599,6 +595,37 @@ void __libc_extensions_init(uint32_t handle_count,
     atexit(mxio_exit);
 }
 
+
+mx_status_t mxio_ns_install(mxio_ns_t* ns) {
+    mxio_t* io = mxio_ns_open_root(ns);
+    if (io == NULL) {
+        return MX_ERR_IO;
+    }
+
+    mxio_t* old_root = NULL;
+    mx_status_t status;
+
+    mtx_lock(&mxio_lock);
+    if (mxio_root_ns != NULL) {
+        //TODO: support replacing an active namespace
+        status = MX_ERR_ALREADY_EXISTS;
+    } else {
+        if (mxio_root_handle) {
+            old_root = mxio_root_handle;
+        }
+        mxio_root_handle = io;
+        status = MX_OK;
+    }
+    mtx_unlock(&mxio_lock);
+
+    if (old_root) {
+        mxio_close(old_root);
+        mxio_release(old_root);
+    }
+    return status;
+}
+
+
 mx_status_t mxio_clone_root(mx_handle_t* handles, uint32_t* types) {
     // The root handle is established in the init hook called from
     // libc startup (or, in the special case of devmgr, installed
@@ -606,7 +633,7 @@ mx_status_t mxio_clone_root(mx_handle_t* handles, uint32_t* types) {
     // in normal operation
     mx_status_t r = mxio_root_handle->ops->clone(mxio_root_handle, handles, types);
     if (r > 0) {
-        *types = PA_MXIO_ROOT;
+        *types = PA_MXIO_REMOTE;
     }
     return r;
 }
@@ -623,9 +650,9 @@ mx_status_t mxio_clone_fd(int fd, int newfd, mx_handle_t* handles, uint32_t* typ
     mx_status_t r;
     mxio_t* io;
     if ((io = fd_to_io(fd)) == NULL) {
-        return ERR_BAD_HANDLE;
+        return MX_ERR_BAD_HANDLE;
     }
-    //TODO: implement/honor close-on-exec flag
+    // TODO(MG-973): implement/honor close-on-exec flag
     if ((r = io->ops->clone(io, handles, types)) > 0) {
         for (int i = 0; i < r; i++) {
             types[i] |= (newfd << 16);
@@ -653,7 +680,7 @@ mx_status_t mxio_transfer_fd(int fd, int newfd, mx_handle_t* handles, uint32_t* 
 ssize_t mxio_ioctl(int fd, int op, const void* in_buf, size_t in_len, void* out_buf, size_t out_len) {
     mxio_t* io;
     if ((io = fd_to_io(fd)) == NULL) {
-        return ERR_BAD_HANDLE;
+        return MX_ERR_BAD_HANDLE;
     }
     ssize_t r = io->ops->ioctl(io, op, in_buf, in_len, out_buf, out_len);
     mxio_release(io);
@@ -667,11 +694,11 @@ mx_status_t mxio_wait(mxio_t* io, uint32_t events, mx_time_t deadline,
     io->ops->wait_begin(io, events, &h, &signals);
     if (h == MX_HANDLE_INVALID)
         // Wait operation is not applicable to the handle.
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     mx_signals_t pending;
     mx_status_t status = mx_object_wait_one(h, signals, deadline, &pending);
-    if (status == NO_ERROR || status == ERR_TIMED_OUT) {
+    if (status == MX_OK || status == MX_ERR_TIMED_OUT) {
         io->ops->wait_end(io, pending, &events);
         if (out_pending != NULL)
             *out_pending = events;
@@ -683,7 +710,7 @@ mx_status_t mxio_wait(mxio_t* io, uint32_t events, mx_time_t deadline,
 mx_status_t mxio_wait_fd(int fd, uint32_t events, uint32_t* _pending, mx_time_t deadline) {
     mxio_t* io = fd_to_io(fd);
     if (io == NULL)
-        return ERR_BAD_HANDLE;
+        return MX_ERR_BAD_HANDLE;
 
     mx_status_t status = mxio_wait(io, events, deadline, _pending);
 
@@ -695,15 +722,17 @@ int mxio_stat(mxio_t* io, struct stat* s) {
     vnattr_t attr;
     int r = io->ops->misc(io, MXRIO_STAT, 0, sizeof(attr), &attr, 0);
     if (r < 0) {
-        return ERR_BAD_HANDLE;
+        return MX_ERR_BAD_HANDLE;
     }
     if (r < (int)sizeof(attr)) {
-        return ERR_IO;
+        return MX_ERR_IO;
     }
     memset(s, 0, sizeof(struct stat));
     s->st_mode = attr.mode;
     s->st_ino = attr.inode;
     s->st_size = attr.size;
+    s->st_blksize = attr.blksize;
+    s->st_blocks = attr.blkcount;
     s->st_nlink = attr.nlink;
     s->st_ctim.tv_sec = attr.create_time / MX_SEC(1);
     s->st_ctim.tv_nsec = attr.create_time % MX_SEC(1);
@@ -716,34 +745,47 @@ int mxio_stat(mxio_t* io, struct stat* s) {
 mx_status_t mxio_setattr(mxio_t* io, vnattr_t* vn){
     mx_status_t r = io->ops->misc(io, MXRIO_SETATTR, 0, 0, vn, sizeof(*vn));
     if (r < 0) {
-        return ERR_BAD_HANDLE;
+        return MX_ERR_BAD_HANDLE;
     }
 
     return  r;
 }
 
 
-// TODO: determine complete correct mapping
+// TODO(MG-974): determine complete correct mapping
 int mxio_status_to_errno(mx_status_t status) {
     switch (status) {
-    case ERR_NOT_FOUND: return ENOENT;
-    case ERR_NO_MEMORY: return ENOMEM;
-    case ERR_INVALID_ARGS: return EINVAL;
-    case ERR_BUFFER_TOO_SMALL: return EINVAL;
-    case ERR_TIMED_OUT: return ETIMEDOUT;
-    case ERR_ALREADY_EXISTS: return EEXIST;
-    case ERR_PEER_CLOSED: return ENOTCONN;
-    case ERR_BAD_PATH: return ENAMETOOLONG;
-    case ERR_IO: return EIO;
-    case ERR_NOT_DIR: return ENOTDIR;
-    case ERR_NOT_SUPPORTED: return ENOTSUP;
-    case ERR_OUT_OF_RANGE: return EINVAL;
-    case ERR_NO_RESOURCES: return ENOMEM;
-    case ERR_BAD_HANDLE: return EBADF;
-    case ERR_ACCESS_DENIED: return EACCES;
-    case ERR_SHOULD_WAIT: return EAGAIN;
-    case ERR_FILE_BIG: return EFBIG;
-    case ERR_NO_SPACE: return ENOSPC;
+    case MX_ERR_NOT_FOUND: return ENOENT;
+    case MX_ERR_NO_MEMORY: return ENOMEM;
+    case MX_ERR_INVALID_ARGS: return EINVAL;
+    case MX_ERR_BUFFER_TOO_SMALL: return EINVAL;
+    case MX_ERR_TIMED_OUT: return ETIMEDOUT;
+    case MX_ERR_UNAVAILABLE: return EBUSY;
+    case MX_ERR_ALREADY_EXISTS: return EEXIST;
+    case MX_ERR_PEER_CLOSED: return EPIPE;
+    case MX_ERR_BAD_STATE: return EPIPE;
+    case MX_ERR_BAD_PATH: return ENAMETOOLONG;
+    case MX_ERR_IO: return EIO;
+    case MX_ERR_NOT_FILE: return EISDIR;
+    case MX_ERR_NOT_DIR: return ENOTDIR;
+    case MX_ERR_NOT_SUPPORTED: return ENOTSUP;
+    case MX_ERR_OUT_OF_RANGE: return EINVAL;
+    case MX_ERR_NO_RESOURCES: return ENOMEM;
+    case MX_ERR_BAD_HANDLE: return EBADF;
+    case MX_ERR_ACCESS_DENIED: return EACCES;
+    case MX_ERR_SHOULD_WAIT: return EAGAIN;
+    case MX_ERR_FILE_BIG: return EFBIG;
+    case MX_ERR_NO_SPACE: return ENOSPC;
+    case MX_ERR_NOT_EMPTY: return ENOTEMPTY;
+    case MX_ERR_IO_REFUSED: return ECONNREFUSED;
+    case MX_ERR_CANCELED: return ECANCELED;
+    case MX_ERR_PROTOCOL_NOT_SUPPORTED: return EPROTONOSUPPORT;
+    case MX_ERR_ADDRESS_UNREACHABLE: return ENETUNREACH;
+    case MX_ERR_ADDRESS_IN_USE: return EADDRINUSE;
+    case MX_ERR_NOT_CONNECTED: return ENOTCONN;
+    case MX_ERR_CONNECTION_REFUSED: return ECONNREFUSED;
+    case MX_ERR_CONNECTION_RESET: return ECONNRESET;
+    case MX_ERR_CONNECTION_ABORTED: return ECONNABORTED;
 
     // No specific translation, so return a generic errno value.
     default: return EIO;
@@ -795,15 +837,9 @@ ssize_t writev(int fd, const struct iovec* iov, int num) {
 
 mx_status_t _mmap_file(size_t offset, size_t len, uint32_t mx_flags, int flags, int fd,
                        off_t fd_off, uintptr_t* out) {
-    // Mapping is backed by a file
-    if (flags & MAP_PRIVATE) {
-        // TODO(smklein): Implement by creating a private
-        // COW clone of the underlying vmo before mapping it.
-        return ERR_INVALID_ARGS;
-    }
     mxio_t* io;
     if ((io = fd_to_io(fd)) == NULL) {
-        return ERR_BAD_HANDLE;
+        return MX_ERR_BAD_HANDLE;
     }
 
     // At the moment, these parameters are sent to filesystem servers purely
@@ -814,7 +850,7 @@ mx_status_t _mmap_file(size_t offset, size_t len, uint32_t mx_flags, int flags, 
     mxrio_mmap_data_t data;
     data.offset = fd_off;
     data.length = len;
-    data.flags = mx_flags;
+    data.flags = mx_flags | (flags & MAP_PRIVATE ? MXIO_MMAP_FLAG_PRIVATE : 0);
 
     mx_status_t r = io->ops->misc(io, MXRIO_MMAP, 0, sizeof(data), &data, sizeof(data));
     mxio_release(io);
@@ -832,7 +868,7 @@ mx_status_t _mmap_file(size_t offset, size_t len, uint32_t mx_flags, int flags, 
     }
 
     *out = ptr;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 int unlinkat(int dirfd, const char* path, int flags) {
@@ -849,7 +885,7 @@ int unlinkat(int dirfd, const char* path, int flags) {
 }
 
 ssize_t read(int fd, void* buf, size_t count) {
-    if (buf == NULL) {
+    if (buf == NULL && count > 0) {
         return ERRNO(EINVAL);
     }
 
@@ -860,17 +896,17 @@ ssize_t read(int fd, void* buf, size_t count) {
     mx_status_t status;
     for (;;) {
         status = io->ops->read(io, buf, count);
-        if (status != ERR_SHOULD_WAIT || io->flags & MXIO_FLAG_NONBLOCK) {
+        if (status != MX_ERR_SHOULD_WAIT || io->flags & MXIO_FLAG_NONBLOCK) {
             break;
         }
-        mxio_wait_fd(fd, MXIO_EVT_READABLE, NULL, MX_TIME_INFINITE);
+        mxio_wait_fd(fd, MXIO_EVT_READABLE | MXIO_EVT_PEER_CLOSED, NULL, MX_TIME_INFINITE);
     }
     mxio_release(io);
-    return STATUS(status);
+    return status < 0 ? STATUS(status) : status;
 }
 
 ssize_t write(int fd, const void* buf, size_t count) {
-    if (buf == NULL) {
+    if (buf == NULL && count > 0) {
         return ERRNO(EINVAL);
     }
 
@@ -881,13 +917,13 @@ ssize_t write(int fd, const void* buf, size_t count) {
     mx_status_t status;
     for (;;) {
         status = io->ops->write(io, buf, count);
-        if (status != ERR_SHOULD_WAIT || io->flags & MXIO_FLAG_NONBLOCK) {
+        if (status != MX_ERR_SHOULD_WAIT || io->flags & MXIO_FLAG_NONBLOCK) {
             break;
         }
-        mxio_wait_fd(fd, MXIO_EVT_WRITABLE, NULL, MX_TIME_INFINITE);
+        mxio_wait_fd(fd, MXIO_EVT_WRITABLE | MXIO_EVT_PEER_CLOSED, NULL, MX_TIME_INFINITE);
     }
     mxio_release(io);
-    return STATUS(status);
+    return status < 0 ? STATUS(status) : status;
 }
 
 ssize_t preadv(int fd, const struct iovec* iov, int count, off_t ofs) {
@@ -912,7 +948,7 @@ ssize_t preadv(int fd, const struct iovec* iov, int count, off_t ofs) {
 }
 
 ssize_t pread(int fd, void* buf, size_t size, off_t ofs) {
-    if (buf == NULL) {
+    if (buf == NULL && size > 0) {
         return ERRNO(EINVAL);
     }
 
@@ -923,13 +959,13 @@ ssize_t pread(int fd, void* buf, size_t size, off_t ofs) {
     mx_status_t status;
     for (;;) {
         status = io->ops->read_at(io, buf, size, ofs);
-        if (status != ERR_SHOULD_WAIT || io->flags & MXIO_FLAG_NONBLOCK) {
+        if (status != MX_ERR_SHOULD_WAIT || io->flags & MXIO_FLAG_NONBLOCK) {
             break;
         }
-        mxio_wait_fd(fd, MXIO_EVT_READABLE, NULL, MX_TIME_INFINITE);
+        mxio_wait_fd(fd, MXIO_EVT_READABLE | MXIO_EVT_PEER_CLOSED, NULL, MX_TIME_INFINITE);
     }
     mxio_release(io);
-    return STATUS(status);
+    return status < 0 ? STATUS(status) : status;
 }
 
 ssize_t pwritev(int fd, const struct iovec* iov, int count, off_t ofs) {
@@ -954,7 +990,7 @@ ssize_t pwritev(int fd, const struct iovec* iov, int count, off_t ofs) {
 }
 
 ssize_t pwrite(int fd, const void* buf, size_t size, off_t ofs) {
-    if (buf == NULL) {
+    if (buf == NULL && size > 0) {
         return ERRNO(EINVAL);
     }
 
@@ -965,13 +1001,13 @@ ssize_t pwrite(int fd, const void* buf, size_t size, off_t ofs) {
     mx_status_t status;
     for (;;) {
         status = io->ops->write_at(io, buf, size, ofs);
-        if (status != ERR_SHOULD_WAIT || io->flags & MXIO_FLAG_NONBLOCK) {
+        if (status != MX_ERR_SHOULD_WAIT || io->flags & MXIO_FLAG_NONBLOCK) {
             break;
         }
-        mxio_wait_fd(fd, MXIO_EVT_WRITABLE, NULL, MX_TIME_INFINITE);
+        mxio_wait_fd(fd, MXIO_EVT_WRITABLE | MXIO_EVT_PEER_CLOSED, NULL, MX_TIME_INFINITE);
     }
     mxio_release(io);
-    return STATUS(status);
+    return status < 0 ? STATUS(status) : status;
 }
 
 int close(int fd) {
@@ -987,7 +1023,7 @@ int close(int fd) {
         // still alive in other fdtab slots
         mtx_unlock(&mxio_lock);
         mxio_release(io);
-        return NO_ERROR;
+        return MX_OK;
     } else {
         mtx_unlock(&mxio_lock);
         int r = io->ops->close(io);
@@ -1028,7 +1064,7 @@ int dup3(int oldfd, int newfd, int flags) {
         return ERRNO(EINVAL);
     }
 
-    // TODO(kulakowski) Implement O_CLOEXEC.
+    // TODO(MG-973) Implement O_CLOEXEC.
     return mxio_dup(oldfd, newfd, 0);
 }
 
@@ -1045,7 +1081,7 @@ int fcntl(int fd, int cmd, ...) {
     switch (cmd) {
     case F_DUPFD:
     case F_DUPFD_CLOEXEC: {
-        // TODO(kulakowski) Implement CLOEXEC.
+        // TODO(MG-973) Implement CLOEXEC.
         GET_INT_ARG(starting_fd);
         return mxio_dup(fd, -1, starting_fd);
     }
@@ -1066,39 +1102,63 @@ int fcntl(int fd, int cmd, ...) {
             return ERRNO(EBADF);
         }
         GET_INT_ARG(flags);
-        // TODO(kulakowski) Implement CLOEXEC.
+        // TODO(MG-973) Implement CLOEXEC.
         io->flags &= ~MXIO_FD_FLAGS;
         io->flags |= (int32_t)flags & MXIO_FD_FLAGS;
         mxio_release(io);
         return 0;
     }
     case F_GETFL: {
-        // TODO(kulakowski) File status flags and access modes.
         mxio_t* io = fd_to_io(fd);
         if (io == NULL) {
             return ERRNO(EBADF);
         }
-        int status = 0;
+        uint32_t flags = 0;
+        mx_status_t r = io->ops->misc(io, MXRIO_FCNTL, 0, F_GETFL, &flags, 0);
+        if (r == MX_ERR_NOT_SUPPORTED) {
+            // We treat this as non-fatal, as it's valid for a remote to
+            // simply not support FCNTL, but we still want to correctly
+            // report the state of the (local) NONBLOCK flag
+            flags = 0;
+            r = MX_OK;
+        }
         if (io->flags & MXIO_FLAG_NONBLOCK) {
-            status |= O_NONBLOCK;
+            flags |= O_NONBLOCK;
         }
         mxio_release(io);
-        return status;
+        if (r < 0) {
+            return STATUS(r);
+        }
+        return flags;
     }
     case F_SETFL: {
-        // TODO(kulakowski) File status flags and access modes.
         mxio_t* io = fd_to_io(fd);
         if (io == NULL) {
             return ERRNO(EBADF);
         }
-        GET_INT_ARG(status);
-        if (status & O_NONBLOCK) {
-            io->flags |= MXIO_FLAG_NONBLOCK;
+        GET_INT_ARG(n);
+
+        mx_status_t r;
+        if (n == O_NONBLOCK) {
+            // NONBLOCK is local, so we can avoid the rpc for it
+            // which is good in situations where the remote doesn't
+            // support FCNTL but it's still valid to set non-blocking
+            r = MX_OK;
         } else {
-            io->flags &= ~MXIO_FLAG_NONBLOCK;
+            r = io->ops->misc(io, MXRIO_FCNTL, n & (~O_NONBLOCK), F_SETFL, NULL, 0);
+        }
+        if (r != MX_OK) {
+            n = STATUS(r);
+        } else {
+            if (n & O_NONBLOCK) {
+                io->flags |= MXIO_FLAG_NONBLOCK;
+            } else {
+                io->flags &= ~MXIO_FLAG_NONBLOCK;
+            }
+            n = 0;
         }
         mxio_release(io);
-        return 0;
+        return n;
     }
     case F_GETOWN:
     case F_SETOWN:
@@ -1122,7 +1182,13 @@ off_t lseek(int fd, off_t offset, int whence) {
         return ERRNO(EBADF);
     }
     off_t r = io->ops->seek(io, offset, whence);
-    if (r < 0) {
+    if (r == MX_ERR_WRONG_TYPE) {
+        // Although 'ESPIPE' is a bit of a misnomer, it is the valid errno
+        // for any fd which does not implement seeking (i.e., for pipes,
+        // sockets, etc).
+        errno = ESPIPE;
+        r = -1;
+    } else if (r < 0) {
         r = ERROR(r);
     }
     mxio_release(io);
@@ -1146,7 +1212,7 @@ static int truncateat(int dirfd, const char* path, off_t len) {
     if ((r = __mxio_open_at(&io, dirfd, path, O_WRONLY, 0)) < 0) {
         return ERROR(r);
     }
-    r = STATUS(io->ops->misc(io, MXRIO_TRUNCATE, len, 0, NULL, 0));
+    r = io->ops->misc(io, MXRIO_TRUNCATE, len, 0, NULL, 0);
     mxio_close(io);
     mxio_release(io);
     return STATUS(r);
@@ -1186,16 +1252,14 @@ static int two_path_op_at(uint32_t op, int olddirfd, const char* oldpath,
                           int newdirfd, const char* newpath) {
     char oldname[NAME_MAX + 1];
     mxio_t* io_oldparent;
-    mx_status_t status;
+    mx_status_t status = MX_OK;
     if ((status = __mxio_opendir_containing_at(&io_oldparent, olddirfd, oldpath, oldname)) < 0) {
         return ERROR(status);
     }
 
-    int r;
     char newname[NAME_MAX + 1];
     mxio_t* io_newparent;
     if ((status = __mxio_opendir_containing_at(&io_newparent, newdirfd, newpath, newname)) < 0) {
-        r = ERROR(status);
         goto oldparent_open;
     }
 
@@ -1203,7 +1267,6 @@ static int two_path_op_at(uint32_t op, int olddirfd, const char* oldpath,
     status = io_newparent->ops->ioctl(io_newparent, IOCTL_VFS_GET_TOKEN,
                                       NULL, 0, &token, sizeof(token));
     if (status < 0) {
-        r = ERROR(status);
         goto newparent_open;
     }
 
@@ -1218,7 +1281,6 @@ static int two_path_op_at(uint32_t op, int olddirfd, const char* oldpath,
     name[oldlen + newlen + 1] = '\0';
     status = io_oldparent->ops->misc(io_oldparent, op, token, 0,
                                      (void*)name, oldlen + newlen + 2);
-    r = STATUS(status);
     goto newparent_open;
 newparent_open:
     io_newparent->ops->close(io_newparent);
@@ -1226,7 +1288,7 @@ newparent_open:
 oldparent_open:
     io_oldparent->ops->close(io_oldparent);
     mxio_release(io_oldparent);
-    return r;
+    return STATUS(status);
 }
 
 int renameat(int olddirfd, const char* oldpath, int newdirfd, const char* newpath) {
@@ -1352,6 +1414,58 @@ int stat(const char* fn, struct stat* s) {
     return fstatat(AT_FDCWD, fn, s, 0);
 }
 
+int lstat(const char* path, struct stat* buf) {
+    return stat(path, buf);
+}
+
+char* realpath(const char* restrict filename, char* restrict resolved) {
+    ssize_t r;
+    struct stat st;
+    char tmp[PATH_MAX];
+    size_t outlen;
+    bool is_dir;
+
+    if (!filename) {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    if (filename[0] != '/') {
+        // Convert 'filename' from a relative path to an absolute path.
+        size_t file_len = strlen(filename);
+        mtx_lock(&mxio_cwd_lock);
+        size_t cwd_len = strlen(mxio_cwd_path);
+        if (cwd_len + 1 + file_len >= PATH_MAX) {
+            mtx_unlock(&mxio_cwd_lock);
+            errno = ENAMETOOLONG;
+            return NULL;
+        }
+        char tmp2[PATH_MAX];
+        memcpy(tmp2, mxio_cwd_path, cwd_len);
+        mtx_unlock(&mxio_cwd_lock);
+        tmp2[cwd_len] = '/';
+        strcpy(tmp2 + cwd_len + 1, filename);
+        mx_status_t status = __mxio_cleanpath(tmp2, tmp, &outlen, &is_dir);
+        if (status != MX_OK) {
+            errno = EINVAL;
+            return NULL;
+        }
+    } else {
+        // Clean the provided absolute path
+        mx_status_t status = __mxio_cleanpath(filename, tmp, &outlen, &is_dir);
+        if (status != MX_OK) {
+            errno = EINVAL;
+            return NULL;
+        }
+
+        r = stat(tmp, &st);
+        if (r < 0) {
+            return NULL;
+        }
+    }
+    return resolved ? strcpy(resolved, tmp) : strdup(tmp);
+}
+
 static int mx_utimens(mxio_t* io, const struct timespec times[2], int flags) {
     vnattr_t vn;
     mx_status_t r;
@@ -1382,7 +1496,8 @@ int utimensat(int dirfd, const char *fn,
 
     // TODO(orr): AT_SYMLINK_NOFOLLOW
     if ((flags & AT_SYMLINK_NOFOLLOW) != 0) {
-        return ERRNO(EINVAL);
+        // Allow this flag - don't return an error.  Fuchsia does not support
+        // symlinks, so don't break utilities (like tar) that use this flag.
     }
 
     if ((r = __mxio_open_at(&io, dirfd, fn, 0, 0)) < 0) {
@@ -1627,6 +1742,7 @@ int isatty(int fd) {
     }
 
     int ret;
+    // TODO(MG-972)
     // For now, stdout etc. needs to be a tty for line buffering to
     // work. So let's pretend those are ttys but nothing else is.
     if (fd == 0 || fd == 1 || fd == 2) {
@@ -1688,7 +1804,7 @@ int poll(struct pollfd* fds, nfds_t n, int timeout) {
     mxio_t* ios[n];
     int ios_used_max = -1;
 
-    mx_status_t r = NO_ERROR;
+    mx_status_t r = MX_OK;
     nfds_t nvalid = 0;
 
     mx_wait_item_t items[n];
@@ -1716,7 +1832,7 @@ int poll(struct pollfd* fds, nfds_t n, int timeout) {
         io->ops->wait_begin(io, pfd->events, &h, &sigs);
         if (h == MX_HANDLE_INVALID) {
             // wait operation is not applicable to the handle
-            r = ERR_INVALID_ARGS;
+            r = MX_ERR_INVALID_ARGS;
             break;
         }
         items[nvalid].handle = h;
@@ -1726,11 +1842,11 @@ int poll(struct pollfd* fds, nfds_t n, int timeout) {
     }
 
     int nfds = 0;
-    if (r == NO_ERROR && nvalid > 0) {
+    if (r == MX_OK && nvalid > 0) {
         mx_time_t tmo = (timeout >= 0) ? mx_deadline_after(MX_MSEC(timeout)) : MX_TIME_INFINITE;
         r = mx_object_wait_many(items, nvalid, tmo);
-        // pending signals could be reported on ERR_TIMED_OUT case as well
-        if (r == NO_ERROR || r == ERR_TIMED_OUT) {
+        // pending signals could be reported on MX_ERR_TIMED_OUT case as well
+        if (r == MX_OK || r == MX_ERR_TIMED_OUT) {
             nfds_t j = 0; // j counts up on a valid entry
 
             for (nfds_t i = 0; i < n; i++) {
@@ -1745,7 +1861,7 @@ int poll(struct pollfd* fds, nfds_t n, int timeout) {
                     uint32_t events = 0;
                     io->ops->wait_end(io, items[j].pending, &events);
                     // mask unrequested events except HUP/ERR
-                    pfd->revents = events & (pfd->events | EPOLLHUP | EPOLLERR);
+                    pfd->revents = events & (pfd->events | POLLHUP | POLLERR);
                     if (pfd->revents != 0) {
                         nfds++;
                     }
@@ -1761,7 +1877,7 @@ int poll(struct pollfd* fds, nfds_t n, int timeout) {
         }
     }
 
-    return (r == NO_ERROR || r == ERR_TIMED_OUT) ? nfds : ERROR(r);
+    return (r == MX_OK || r == MX_ERR_TIMED_OUT) ? nfds : ERROR(r);
 }
 
 int select(int n, fd_set* restrict rfds, fd_set* restrict wfds, fd_set* restrict efds,
@@ -1773,7 +1889,7 @@ int select(int n, fd_set* restrict rfds, fd_set* restrict wfds, fd_set* restrict
     mxio_t* ios[n];
     int ios_used_max = -1;
 
-    mx_status_t r = NO_ERROR;
+    mx_status_t r = MX_OK;
     int nvalid = 0;
 
     mx_wait_item_t items[n];
@@ -1783,18 +1899,18 @@ int select(int n, fd_set* restrict rfds, fd_set* restrict wfds, fd_set* restrict
 
         uint32_t events = 0;
         if (rfds && FD_ISSET(fd, rfds))
-            events |= EPOLLIN;
+            events |= POLLIN;
         if (wfds && FD_ISSET(fd, wfds))
-            events |= EPOLLOUT;
+            events |= POLLOUT;
         if (efds && FD_ISSET(fd, efds))
-            events |= EPOLLERR;
+            events |= POLLERR;
         if (events == 0) {
             continue;
         }
 
         mxio_t* io;
         if ((io = fd_to_io(fd)) == NULL) {
-            r = ERR_BAD_HANDLE;
+            r = MX_ERR_BAD_HANDLE;
             break;
         }
         ios[fd] = io;
@@ -1804,7 +1920,7 @@ int select(int n, fd_set* restrict rfds, fd_set* restrict wfds, fd_set* restrict
         mx_signals_t sigs;
         io->ops->wait_begin(io, events, &h, &sigs);
         if (h == MX_HANDLE_INVALID) {
-            r = ERR_INVALID_ARGS;
+            r = MX_ERR_INVALID_ARGS;
             break;
         }
         items[nvalid].handle = h;
@@ -1814,12 +1930,12 @@ int select(int n, fd_set* restrict rfds, fd_set* restrict wfds, fd_set* restrict
     }
 
     int nfds = 0;
-    if (r == NO_ERROR && nvalid > 0) {
+    if (r == MX_OK && nvalid > 0) {
         mx_time_t tmo = (tv == NULL) ? MX_TIME_INFINITE :
             mx_deadline_after(MX_SEC(tv->tv_sec) + MX_USEC(tv->tv_usec));
         r = mx_object_wait_many(items, nvalid, tmo);
-        // pending signals could be reported on ERR_TIMED_OUT case as well
-        if (r == NO_ERROR || r == ERR_TIMED_OUT) {
+        // pending signals could be reported on MX_ERR_TIMED_OUT case as well
+        if (r == MX_OK || r == MX_ERR_TIMED_OUT) {
             int j = 0; // j counts up on a valid entry
 
             for (int fd = 0; fd < n; fd++) {
@@ -1832,21 +1948,21 @@ int select(int n, fd_set* restrict rfds, fd_set* restrict wfds, fd_set* restrict
                     uint32_t events = 0;
                     io->ops->wait_end(io, items[j].pending, &events);
                     if (rfds && FD_ISSET(fd, rfds)) {
-                        if (events & EPOLLIN) {
+                        if (events & POLLIN) {
                             nfds++;
                         } else {
                             FD_CLR(fd, rfds);
                         }
                     }
                     if (wfds && FD_ISSET(fd, wfds)) {
-                        if (events & EPOLLOUT) {
+                        if (events & POLLOUT) {
                             nfds++;
                         } else {
                             FD_CLR(fd, wfds);
                         }
                     }
                     if (efds && FD_ISSET(fd, efds)) {
-                        if (events & EPOLLERR) {
+                        if (events & POLLERR) {
                             nfds++;
                         } else {
                             FD_CLR(fd, efds);
@@ -1874,7 +1990,7 @@ int select(int n, fd_set* restrict rfds, fd_set* restrict wfds, fd_set* restrict
         }
     }
 
-    return (r == NO_ERROR || r == ERR_TIMED_OUT) ? nfds : ERROR(r);
+    return (r == MX_OK || r == MX_ERR_TIMED_OUT) ? nfds : ERROR(r);
 }
 
 int ioctl(int fd, int req, ...) {
@@ -1887,5 +2003,64 @@ int ioctl(int fd, int req, ...) {
     ssize_t r = io->ops->posix_ioctl(io, req, ap);
     va_end(ap);
     mxio_release(io);
+    return STATUS(r);
+}
+
+ssize_t sendto(int fd, const void* buf, size_t buflen, int flags, const struct sockaddr* addr, socklen_t addrlen) {
+    mxio_t* io = fd_to_io(fd);
+    if (io == NULL) {
+        return ERRNO(EBADF);
+    }
+    ssize_t r = io->ops->sendto(io, buf, buflen, flags, addr, addrlen);
+    mxio_release(io);
+    return r < 0 ? STATUS(r) : r;
+}
+
+ssize_t recvfrom(int fd, void* restrict buf, size_t buflen, int flags, struct sockaddr* restrict addr, socklen_t* restrict addrlen) {
+    mxio_t* io = fd_to_io(fd);
+    if (io == NULL) {
+        return ERRNO(EBADF);
+    }
+    if (addr != NULL && addrlen == NULL) {
+        return ERRNO(EFAULT);
+    }
+    ssize_t r = io->ops->recvfrom(io, buf, buflen, flags, addr, addrlen);
+    mxio_release(io);
+    return r < 0 ? STATUS(r) : r;
+}
+
+ssize_t sendmsg(int fd, const struct msghdr *msg, int flags) {
+    mxio_t* io = fd_to_io(fd);
+    if (io == NULL) {
+        return ERRNO(EBADF);
+    }
+    ssize_t r = io->ops->sendmsg(io, msg, flags);
+    mxio_release(io);
+    return r < 0 ? STATUS(r) : r;
+}
+
+ssize_t recvmsg(int fd, struct msghdr* msg, int flags) {
+    mxio_t* io = fd_to_io(fd);
+    if (io == NULL) {
+        return ERRNO(EBADF);
+    }
+    ssize_t r = io->ops->recvmsg(io, msg, flags);
+    mxio_release(io);
+    return r < 0 ? STATUS(r) : r;
+}
+
+int shutdown(int fd, int how) {
+    mxio_t* io;
+    if ((io = fd_to_io(fd)) == NULL) {
+        return ERRNO(EBADF);
+    }
+    mx_status_t r = io->ops->shutdown(io, how);
+    mxio_release(io);
+    if (r == MX_ERR_BAD_STATE) {
+        return ERRNO(ENOTCONN);
+    }
+    if (r == MX_ERR_WRONG_TYPE) {
+        return ERRNO(ENOTSOCK);
+    }
     return STATUS(r);
 }

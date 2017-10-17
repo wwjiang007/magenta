@@ -8,7 +8,7 @@
 /******************************************************************************/
 /* Data. */
 
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__Fuchsia__)
 #  define PAGES_PROT_COMMIT (PROT_READ | PROT_WRITE)
 #  define PAGES_PROT_DECOMMIT (PROT_NONE)
 static int	mmap_flags;
@@ -16,6 +16,100 @@ static int	mmap_flags;
 static bool	os_overcommits;
 
 /******************************************************************************/
+
+#ifdef __Fuchsia__
+
+#include <threads.h>
+
+#include <magenta/process.h>
+#include <magenta/status.h>
+#include <magenta/syscalls.h>
+
+// Reserve a terabyte of address space for heap allocations.
+#define VMAR_SIZE (1ull << 40)
+
+#define MMAP_VMO_NAME "jemalloc-heap"
+
+// malloc wants to manage both address space and memory mapped within
+// chunks of address space. To maintain claims to address space we
+// must use our own vmar.
+static uintptr_t pages_base;
+static mx_handle_t pages_vmar;
+static mx_handle_t pages_vmo;
+
+// Protect reservations to the pages_vmar.
+static mtx_t vmar_lock;
+
+static void* fuchsia_pages_map(void* start, size_t len) {
+	if (len >= PTRDIFF_MAX) {
+		return NULL;
+	}
+
+	// round up to page size
+	len = (len + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+
+	mtx_lock(&vmar_lock);
+
+	// If we are given a base address, then jemalloc's internal
+	// bookkeeping expects to be able to extend an allocation at
+	// that bit of the address space, and so we just directly
+	// compute an offset. If we are not, ask for a new random
+	// region from the pages_vmar.
+
+	// TODO(kulakowski) Extending a region might fail. Investigate
+	// whether it is worthwhile teaching jemalloc about vmars and
+	// vmos at the extent.c or arena.c layer.
+	size_t offset;
+	if (start != NULL) {
+		uintptr_t addr = (uintptr_t)start;
+		if (addr < pages_base)
+			abort();
+		offset = addr - pages_base;
+	} else {
+		// TODO(kulakowski) Use MG-942 instead of having to
+		// allocate and destroy under a lock.
+		mx_handle_t subvmar;
+		uintptr_t subvmar_base;
+		mx_status_t status = _mx_vmar_allocate(pages_vmar, 0u, len,
+		    MX_VM_FLAG_CAN_MAP_READ | MX_VM_FLAG_CAN_MAP_WRITE,
+		    &subvmar, &subvmar_base);
+		if (status != MX_OK)
+			abort();
+		_mx_vmar_destroy(subvmar);
+		_mx_handle_close(subvmar);
+		offset = subvmar_base - pages_base;
+	}
+
+	uintptr_t ptr = 0;
+	uint32_t mx_flags = MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE |
+	    MX_VM_FLAG_SPECIFIC;
+	mx_status_t status = _mx_vmar_map(pages_vmar, offset, pages_vmo,
+	    offset, len, mx_flags, &ptr);
+	if (status != MX_OK) {
+		ptr = 0u;
+	}
+
+	mtx_unlock(&vmar_lock);
+	return (void*)ptr;
+}
+
+static mx_status_t fuchsia_pages_free(void* addr, size_t size) {
+	uintptr_t ptr = (uintptr_t)addr;
+	return _mx_vmar_unmap(pages_vmar, ptr, size);
+}
+
+static void* fuchsia_pages_trim(void* ret, void* addr, size_t size,
+    size_t alloc_size, size_t leadsize) {
+	size_t trailsize = alloc_size - leadsize - size;
+
+	if (leadsize != 0)
+		pages_unmap(addr, leadsize);
+	if (trailsize != 0)
+		pages_unmap((void *)((uintptr_t)ret + size), trailsize);
+	return (ret);
+}
+
+#endif
 
 void *
 pages_map(void *addr, size_t size, bool *commit)
@@ -34,6 +128,8 @@ pages_map(void *addr, size_t size, bool *commit)
 	 */
 	ret = VirtualAlloc(addr, size, MEM_RESERVE | (*commit ? MEM_COMMIT : 0),
 	    PAGE_READWRITE);
+#elif __Fuchsia__
+	ret = fuchsia_pages_map(addr, size);
 #else
 	/*
 	 * We don't use MAP_FIXED here, because it can cause the *replacement*
@@ -66,16 +162,25 @@ pages_unmap(void *addr, size_t size)
 {
 #ifdef _WIN32
 	if (VirtualFree(addr, 0, MEM_RELEASE) == 0)
+#elif __Fuchsia__
+	mx_status_t status = fuchsia_pages_free(addr, size);
+	if (status != MX_OK)
 #else
 	if (munmap(addr, size) == -1)
 #endif
 	{
+#if __Fuchsia__
+		const char* buf = _mx_status_get_string(status);
+#else
 		char buf[BUFERROR_BUF];
-
 		buferror(get_errno(), buf, sizeof(buf));
+#endif
+
 		malloc_printf("<jemalloc>: Error in "
 #ifdef _WIN32
 		              "VirtualFree"
+#elif __Fuchsia__
+		              "unmapping jemalloc heap pages"
 #else
 		              "munmap"
 #endif
@@ -104,6 +209,8 @@ pages_trim(void *addr, size_t alloc_size, size_t leadsize, size_t size,
 			pages_unmap(new_addr, size);
 		return (NULL);
 	}
+#elif __Fuchsia__
+	return fuchsia_pages_trim(ret, addr, size, alloc_size, leadsize);
 #else
 	{
 		size_t trailsize = alloc_size - leadsize - size;
@@ -126,6 +233,8 @@ pages_commit_impl(void *addr, size_t size, bool commit)
 #ifdef _WIN32
 	return (commit ? (addr != VirtualAlloc(addr, size, MEM_COMMIT,
 	    PAGE_READWRITE)) : (!VirtualFree(addr, size, MEM_DECOMMIT)));
+#elif __Fuchsia__
+	not_reached();
 #else
 	{
 		int prot = commit ? PAGES_PROT_COMMIT : PAGES_PROT_DECOMMIT;
@@ -276,11 +385,29 @@ os_overcommits_proc(void)
 void
 pages_boot(void)
 {
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__Fuchsia__)
 	mmap_flags = MAP_PRIVATE | MAP_ANON;
 #endif
 
-#ifdef JEMALLOC_SYSCTL_VM_OVERCOMMIT
+#if defined(__Fuchsia__)
+	uint32_t vmar_flags = MX_VM_FLAG_CAN_MAP_SPECIFIC | MX_VM_FLAG_CAN_MAP_READ |
+	    MX_VM_FLAG_CAN_MAP_WRITE;
+	mx_status_t status = _mx_vmar_allocate(_mx_vmar_root_self(), 0, VMAR_SIZE,
+					       vmar_flags, &pages_vmar, &pages_base);
+	if (status != MX_OK)
+		abort();
+	status = _mx_vmo_create(VMAR_SIZE, 0, &pages_vmo);
+	if (status != MX_OK)
+		abort();
+	status = _mx_object_set_property(pages_vmo, MX_PROP_NAME, MMAP_VMO_NAME,
+	    strlen(MMAP_VMO_NAME));
+	if (status != MX_OK)
+		abort();
+#endif
+
+#if defined(__Fuchsia__)
+	os_overcommits = true;
+#elif defined(JEMALLOC_SYSCTL_VM_OVERCOMMIT)
 	os_overcommits = os_overcommits_sysctl();
 #elif defined(JEMALLOC_PROC_SYS_VM_OVERCOMMIT_MEMORY)
 	os_overcommits = os_overcommits_proc();

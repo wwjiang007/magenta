@@ -5,8 +5,7 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-#ifndef _LIB_UNITTEST_INCLUDE_UNITTEST_H_
-#define _LIB_UNITTEST_INCLUDE_UNITTEST_H_
+#pragma once
 /*
  * Macros for writing unit tests.
  *
@@ -46,7 +45,7 @@
  *      EXPECT_EQ(1, foo_value, "foo_func failed");
  *      ... there are EXPECT_* macros for many conditions...
  *      EXPECT_TRUE(foo_condition(), "condition should be true");
- *      EXPECT_NEQ(ERR_TIMED_OUT, foo_event(), "event timed out");
+ *      EXPECT_NE(MX_ERR_TIMED_OUT, foo_event(), "event timed out");
  *
  *      END_TEST;
  * }
@@ -57,14 +56,14 @@
  *
  * The init function might look something like...
  *
- * static status_t init_foo_test_env(void** context)
+ * static mx_status_t init_foo_test_env(void** context)
  * {
  *      *context = new FooTestEnvironment(...);
  *
  *      if (!(*context))
- *          return ERR_NO_MEMORY;
+ *          return MX_ERR_NO_MEMORY;
  *
- *      return NO_ERROR;
+ *      return MX_OK;
  * }
  *
  * While the cleanup function might look like...
@@ -87,6 +86,7 @@
 #include <string.h>
 
 #include <magenta/compiler.h>
+#include <magenta/types.h>
 #include <trace.h>
 
 __BEGIN_CDECLS
@@ -140,7 +140,7 @@ int unittest_printf(const char* format, ...);
         }                                                                      \
     } while (0)
 
-#define UTCHECK_NEQ(expected, actual, msg, term)                               \
+#define UTCHECK_NE(expected, actual, msg, term)                                \
     do {                                                                       \
         const AUTO_TYPE_VAR(expected) _e = (expected);                         \
         if (_e == (actual)) {                                                  \
@@ -231,7 +231,7 @@ int unittest_printf(const char* format, ...);
 #define UTCHECK_BYTES_EQ(expected, actual, length, msg, term)                  \
     if (!unittest_expect_bytes((expected), #expected,                          \
                                (actual), #actual,                              \
-                               (len), msg, __PRETTY_FUNCTION__, __LINE__,      \
+                               (length), msg, __PRETTY_FUNCTION__, __LINE__,   \
                                true)) {                                        \
         if (term) return false; else all_ok = false;                           \
     }
@@ -239,7 +239,7 @@ int unittest_printf(const char* format, ...);
 #define UTCHECK_BYTES_NE(expected, actual, length, msg, term)                  \
     if (!unittest_expect_bytes((expected), #expected,                          \
                                (actual), #actual,                              \
-                               (len), msg, __PRETTY_FUNCTION__, __LINE__,      \
+                               (length), msg, __PRETTY_FUNCTION__, __LINE__,   \
                                false)) {                                       \
         if (term) return false; else all_ok = false;                           \
     }
@@ -249,7 +249,7 @@ int unittest_printf(const char* format, ...);
  * if the condition fails.
  */
 #define EXPECT_EQ(expected, actual, msg)               UTCHECK_EQ(expected, actual, msg, false)
-#define EXPECT_NEQ(expected, actual, msg)              UTCHECK_NEQ(expected, actual, msg, false)
+#define EXPECT_NE(expected, actual, msg)               UTCHECK_NE(expected, actual, msg, false)
 #define EXPECT_LE(expected, actual, msg)               UTCHECK_LE(expected, actual, msg, false)
 #define EXPECT_LT(expected, actual, msg)               UTCHECK_LT(expected, actual, msg, false)
 #define EXPECT_GE(expected, actual, msg)               UTCHECK_GE(expected, actual, msg, false)
@@ -267,7 +267,7 @@ int unittest_printf(const char* format, ...);
  * abort a test with a filure status if the condition fails.
  */
 #define REQUIRE_EQ(expected, actual, msg)               UTCHECK_EQ(expected, actual, msg, true)
-#define REQUIRE_NEQ(expected, actual, msg)              UTCHECK_NEQ(expected, actual, msg, true)
+#define REQUIRE_NE(expected, actual, msg)               UTCHECK_NE(expected, actual, msg, true)
 #define REQUIRE_LE(expected, actual, msg)               UTCHECK_LE(expected, actual, msg, true)
 #define REQUIRE_LT(expected, actual, msg)               UTCHECK_LT(expected, actual, msg, true)
 #define REQUIRE_GE(expected, actual, msg)               UTCHECK_GE(expected, actual, msg, true)
@@ -315,9 +315,9 @@ bool unittest_expect_bytes(const uint8_t* expected,
                            int line,
                            bool expect_eq);
 
-typedef bool     (*unitest_fn_t)(void* context);
-typedef status_t (*unitest_testcase_init_fn_t)(void** context);
-typedef void     (*unitest_testcase_cleanup_fn_t)(void* context);
+typedef bool        (*unitest_fn_t)(void* context);
+typedef mx_status_t (*unitest_testcase_init_fn_t)(void** context);
+typedef void        (*unitest_testcase_cleanup_fn_t)(void* context);
 
 typedef struct unitest_registration {
     const char*  name;
@@ -340,18 +340,17 @@ typedef struct unitest_testcase_registration {
 #define UNITTEST(_name, _fn) \
     { .name = _name, .fn = _fn },
 
-#define UNITTEST_END_TESTCASE(_global_id, _name, _desc, _init, _cleanup)           \
-    };  /* __unittest_table_##_global_id */                                        \
-    extern const unittest_testcase_registration_t __unittest_case_##_global_id;    \
-    const unittest_testcase_registration_t __unittest_case_##_global_id            \
-    __ALIGNED(sizeof(void *)) __SECTION("unittest_testcases") =                    \
-    {                                                                              \
-        .name = _name,                                                             \
-        .desc = _desc,                                                             \
-        .init = _init,                                                             \
-        .cleanup = _cleanup,                                                       \
-        .tests =  __unittest_table_##_global_id,                                   \
-        .test_cnt =  countof(__unittest_table_##_global_id),                       \
+#define UNITTEST_END_TESTCASE(_global_id, _name, _desc, _init, _cleanup) \
+    };  /* __unittest_table_##_global_id */                             \
+    __ALIGNED(sizeof(void *)) __USED __SECTION("unittest_testcases")    \
+    static const unittest_testcase_registration_t __unittest_case_##_global_id = \
+    {                                                                   \
+        .name = _name,                                                  \
+        .desc = _desc,                                                  \
+        .init = _init,                                                  \
+        .cleanup = _cleanup,                                            \
+        .tests = __unittest_table_##_global_id,                         \
+        .test_cnt = countof(__unittest_table_##_global_id),             \
     }
 #else   // WITH_LIB_UNITTEST
 #define UNITTEST_START_TESTCASE(_global_id)
@@ -360,5 +359,3 @@ typedef struct unitest_testcase_registration {
 #endif  // WITH_LIB_UNITTEST
 
 __END_CDECLS
-
-#endif /* _LIB_UNITTEST_INCLUDE_UNITTEST_H_ */

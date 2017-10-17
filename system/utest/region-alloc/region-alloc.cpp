@@ -20,39 +20,39 @@ static bool ralloc_region_pools_test() {
         // Make sure that it refuses to perform any operations because it has no
         // RegionPool assigned to it yet.
         RegionAllocator::Region::UPtr tmp;
-        EXPECT_EQ(ERR_BAD_STATE, alloc.AddRegion({ 0u, 1u }), "");
-        EXPECT_EQ(ERR_BAD_STATE, alloc.GetRegion(1, tmp), "");
-        EXPECT_EQ(ERR_BAD_STATE, alloc.GetRegion({ 0u, 1u }, tmp), "");
-        EXPECT_NULL(alloc.GetRegion(1), "");
-        EXPECT_NULL(alloc.GetRegion({ 0u, 1u }), "");
+        EXPECT_EQ(MX_ERR_BAD_STATE, alloc.AddRegion({ 0u, 1u }));
+        EXPECT_EQ(MX_ERR_BAD_STATE, alloc.GetRegion(1, tmp));
+        EXPECT_EQ(MX_ERR_BAD_STATE, alloc.GetRegion({ 0u, 1u }, tmp));
+        EXPECT_NULL(alloc.GetRegion(1));
+        EXPECT_NULL(alloc.GetRegion({ 0u, 1u }));
     }
 
     // Make a region pool to manage bookkeeping allocations.
     auto pool = RegionAllocator::RegionPool::Create(REGION_POOL_MAX_SIZE);
-    ASSERT_NONNULL(pool, "");
+    ASSERT_NONNULL(pool);
 
     // Assign our pool to our allocator, but hold onto the pool for now.
-    ASSERT_EQ(NO_ERROR, alloc.SetRegionPool(pool), "");
-    EXPECT_NONNULL(pool, "");
+    ASSERT_EQ(MX_OK, alloc.SetRegionPool(pool));
+    EXPECT_NONNULL(pool);
 
     // Create another allocator and transfer ownership of our region pool
     // reference to it.  Then let the allocator go out of scope.
     {
-        RegionAllocator alloc2(mxtl::move(pool));
-        EXPECT_NULL(pool, "");
+        RegionAllocator alloc2(fbl::move(pool));
+        EXPECT_NULL(pool);
     }
-    EXPECT_NULL(pool, "");
+    EXPECT_NULL(pool);
 
     // Add some regions to our allocator.
-    for (size_t i = 0; i < countof(GOOD_REGIONS); ++i)
-        EXPECT_EQ(NO_ERROR, alloc.AddRegion(GOOD_REGIONS[i]), "");
+    for (size_t i = 0; i < fbl::count_of(GOOD_REGIONS); ++i)
+        EXPECT_EQ(MX_OK, alloc.AddRegion(GOOD_REGIONS[i]));
 
     // Make a new pool and try to assign it to the allocator.  This should fail
     // because the allocator is currently using resources from its currently
     // assigned pool.
     auto pool2 = RegionAllocator::RegionPool::Create(REGION_POOL_MAX_SIZE);
-    ASSERT_NONNULL(pool2, "");
-    EXPECT_EQ(ERR_BAD_STATE, alloc.SetRegionPool(pool2), "");
+    ASSERT_NONNULL(pool2);
+    EXPECT_EQ(MX_ERR_BAD_STATE, alloc.SetRegionPool(pool2));
 
     // Add a bunch of adjacent regions to our pool.  Try to add so many
     // that we would normally run out of bookkeeping space.  We should not
@@ -62,15 +62,15 @@ static bool ralloc_region_pools_test() {
         ralloc_region_t tmp = { .base = GOOD_MERGE_REGION_BASE,
                                 .size = GOOD_MERGE_REGION_SIZE };
         for (size_t i = 0; i < OOM_RANGE_LIMIT; ++i) {
-            ASSERT_EQ(NO_ERROR, alloc.AddRegion(tmp), "");
+            ASSERT_EQ(MX_OK, alloc.AddRegion(tmp));
             tmp.base += tmp.size;
         }
     }
 
     // Attempt (and fail) to add some bad regions (regions which overlap,
     // regions which wrap the address space)
-    for (size_t i = 0; i < countof(BAD_REGIONS); ++i)
-        EXPECT_EQ(ERR_INVALID_ARGS, alloc.AddRegion(BAD_REGIONS[i]), "");
+    for (size_t i = 0; i < fbl::count_of(BAD_REGIONS); ++i)
+        EXPECT_EQ(MX_ERR_INVALID_ARGS, alloc.AddRegion(BAD_REGIONS[i]));
 
     // Force the region bookkeeping pool to run out of memory by adding more and
     // more regions until we eventually run out of room.  Make sure that the
@@ -84,15 +84,15 @@ static bool ralloc_region_pools_test() {
             mx_status_t res;
 
             res = alloc.AddRegion(tmp);
-            if (res != NO_ERROR) {
-                EXPECT_EQ(ERR_NO_MEMORY, res, "");
+            if (res != MX_OK) {
+                EXPECT_EQ(MX_ERR_NO_MEMORY, res);
                 break;
             }
 
             tmp.base += tmp.size + 1;
         }
 
-        EXPECT_LT(i, OOM_RANGE_LIMIT, "");
+        EXPECT_LT(i, OOM_RANGE_LIMIT);
     }
 
     // Reset allocator.  All of the existing available regions we had previously
@@ -101,8 +101,8 @@ static bool ralloc_region_pools_test() {
 
     // Now assign pool2 to the allocator.  Now that it is no longer using any
     // resources, this should succeed.
-    EXPECT_EQ(NO_ERROR, alloc.SetRegionPool(mxtl::move(pool2)), "");
-    EXPECT_NULL(pool2, "");
+    EXPECT_EQ(MX_OK, alloc.SetRegionPool(fbl::move(pool2)));
+    EXPECT_NULL(pool2);
 
     END_TEST;
 }
@@ -113,37 +113,37 @@ static bool ralloc_by_size_test() {
     // Make a pool and attach it to an allocator.  Then add the test regions to it.
     RegionAllocator alloc(RegionAllocator::RegionPool::Create(REGION_POOL_MAX_SIZE));
 
-    for (size_t i = 0; i < countof(ALLOC_BY_SIZE_REGIONS); ++i)
-        ASSERT_EQ(NO_ERROR, alloc.AddRegion(ALLOC_BY_SIZE_REGIONS[i]), "");
+    for (size_t i = 0; i < fbl::count_of(ALLOC_BY_SIZE_REGIONS); ++i)
+        ASSERT_EQ(MX_OK, alloc.AddRegion(ALLOC_BY_SIZE_REGIONS[i]));
 
     // Run the alloc by size tests.  Hold onto the regions it allocates so they
     // don't automatically get returned to the pool.
-    RegionAllocator::Region::UPtr regions[countof(ALLOC_BY_SIZE_TESTS)];
+    RegionAllocator::Region::UPtr regions[fbl::count_of(ALLOC_BY_SIZE_TESTS)];
 
-    for (size_t i = 0; i < countof(ALLOC_BY_SIZE_TESTS); ++i) {
+    for (size_t i = 0; i < fbl::count_of(ALLOC_BY_SIZE_TESTS); ++i) {
         const alloc_by_size_alloc_test_t* TEST = ALLOC_BY_SIZE_TESTS + i;
         mx_status_t res = alloc.GetRegion(TEST->size, TEST->align, regions[i]);
 
         // Make sure we get the test result we were expecting.
-        EXPECT_EQ(TEST->res, res, "");
+        EXPECT_EQ(TEST->res, res);
 
         // If the allocation claimed to succeed, we should have gotten
         // back a non-null region.  Otherwise, we should have gotten a
         // null region back.
-        if (res == NO_ERROR) {
-            ASSERT_NONNULL(regions[i], "");
+        if (res == MX_OK) {
+            ASSERT_NONNULL(regions[i]);
         } else {
-            EXPECT_NULL(regions[i], "");
+            EXPECT_NULL(regions[i]);
         }
 
         // If the allocation succeeded, and we expected it to succeed,
         // the allocation should have come from the test region we
         // expect and be aligned in the way we asked.
-        if ((res == NO_ERROR) && (TEST->res == NO_ERROR)) {
-            ASSERT_LT(TEST->region, countof(ALLOC_BY_SIZE_TESTS), "");
+        if ((res == MX_OK) && (TEST->res == MX_OK)) {
+            ASSERT_LT(TEST->region, fbl::count_of(ALLOC_BY_SIZE_TESTS));
             EXPECT_TRUE(region_contains_region(ALLOC_BY_SIZE_REGIONS + TEST->region,
-                                               regions[i].get()), "");
-            EXPECT_EQ(0u, regions[i]->base & (TEST->align - 1), "");
+                                               regions[i].get()));
+            EXPECT_EQ(0u, regions[i]->base & (TEST->align - 1));
         }
 
     }
@@ -161,28 +161,28 @@ static bool ralloc_specific_test() {
     // Make a pool and attach it to an allocator.  Then add the test regions to it.
     RegionAllocator alloc(RegionAllocator::RegionPool::Create(REGION_POOL_MAX_SIZE));
 
-    for (size_t i = 0; i < countof(ALLOC_SPECIFIC_REGIONS); ++i)
-        ASSERT_EQ(NO_ERROR, alloc.AddRegion(ALLOC_SPECIFIC_REGIONS[i]), "");
+    for (size_t i = 0; i < fbl::count_of(ALLOC_SPECIFIC_REGIONS); ++i)
+        ASSERT_EQ(MX_OK, alloc.AddRegion(ALLOC_SPECIFIC_REGIONS[i]));
 
     // Run the alloc specific tests.  Hold onto the regions it allocates so they
     // don't automatically get returned to the pool.
-    RegionAllocator::Region::UPtr regions[countof(ALLOC_SPECIFIC_TESTS)];
+    RegionAllocator::Region::UPtr regions[fbl::count_of(ALLOC_SPECIFIC_TESTS)];
 
-    for (size_t i = 0; i < countof(ALLOC_SPECIFIC_TESTS); ++i) {
+    for (size_t i = 0; i < fbl::count_of(ALLOC_SPECIFIC_TESTS); ++i) {
         const alloc_specific_alloc_test_t* TEST = ALLOC_SPECIFIC_TESTS + i;
         mx_status_t res = alloc.GetRegion(TEST->req, regions[i]);
 
         // Make sure we get the test result we were expecting.
-        EXPECT_EQ(TEST->res, res, "");
+        EXPECT_EQ(TEST->res, res);
 
         // If the allocation claimed to succeed, we should have gotten back a
         // non-null region which exactly matches our requested region.
-        if (res == NO_ERROR) {
-            ASSERT_NONNULL(regions[i], "");
-            EXPECT_EQ(TEST->req.base, regions[i]->base, "");
-            EXPECT_EQ(TEST->req.size, regions[i]->size, "");
+        if (res == MX_OK) {
+            ASSERT_NONNULL(regions[i]);
+            EXPECT_EQ(TEST->req.base, regions[i]->base);
+            EXPECT_EQ(TEST->req.size, regions[i]->size);
         } else {
-            EXPECT_NULL(regions[i], "");
+            EXPECT_NULL(regions[i]);
         }
     }
 
@@ -200,13 +200,13 @@ static bool ralloc_add_overlap_test() {
     RegionAllocator alloc(RegionAllocator::RegionPool::Create(REGION_POOL_MAX_SIZE));
 
     // Add each of the regions specified by the test and check the expected results.
-    for (size_t i = 0; i < countof(ADD_OVERLAP_TESTS); ++i) {
+    for (size_t i = 0; i < fbl::count_of(ADD_OVERLAP_TESTS); ++i) {
         const alloc_add_overlap_test_t* TEST = ADD_OVERLAP_TESTS + i;
 
         mx_status_t res = alloc.AddRegion(TEST->reg, TEST->ovl);
 
-        EXPECT_EQ(TEST->res, res, "");
-        EXPECT_EQ(TEST->cnt, alloc.AvailableRegionCount(), "");
+        EXPECT_EQ(TEST->res, res);
+        EXPECT_EQ(TEST->cnt, alloc.AvailableRegionCount());
     }
 
     END_TEST;
@@ -219,7 +219,7 @@ static bool ralloc_subtract_test() {
     RegionAllocator alloc(RegionAllocator::RegionPool::Create(REGION_POOL_MAX_SIZE));
 
     // Run the test sequence, adding and subtracting regions and verifying the results.
-    for (size_t i = 0; i < countof(SUBTRACT_TESTS); ++i) {
+    for (size_t i = 0; i < fbl::count_of(SUBTRACT_TESTS); ++i) {
         const alloc_subtract_test_t* TEST = SUBTRACT_TESTS + i;
 
         mx_status_t res;
@@ -228,8 +228,8 @@ static bool ralloc_subtract_test() {
         else
             res = alloc.SubtractRegion(TEST->reg, TEST->incomplete);
 
-        EXPECT_EQ(TEST->res ? NO_ERROR : ERR_INVALID_ARGS, res, "");
-        EXPECT_EQ(TEST->cnt, alloc.AvailableRegionCount(), "");
+        EXPECT_EQ(TEST->res ? MX_OK : MX_ERR_INVALID_ARGS, res);
+        EXPECT_EQ(TEST->cnt, alloc.AvailableRegionCount());
     }
 
     END_TEST;

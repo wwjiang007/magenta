@@ -20,11 +20,10 @@ changes, and locking (via futexes).
 Currently there are some temporary syscalls that have been used for early
 bringup work, which will be going away in the future as the long term
 syscall API/ABI surface is finalized.  The expectation is that there will
-be 10s, not 100s of syscalls.
+be about 100 syscalls.
 
-Magenta syscalls are generally non-blocking.  The wait (one, many, set)
-family of syscalls, ioport reads, and thread sleep being the notable
-exceptions.
+Magenta syscalls are generally non-blocking.  The wait_one, wait_many
+port_wait and thread sleep being the notable exceptions.
 
 This page is a non-comprehensive index of the magenta documentation.
 
@@ -32,9 +31,11 @@ This page is a non-comprehensive index of the magenta documentation.
 + [Contributing Patches](docs/contributing.md)
 + [Testing](docs/testing.md)
 + [Hacking notes](docs/hacking.md)
-+ [Relationship with LK](docs/mg_and_lk.md)
-+ [Kernel Objects](docs/kernel_objects.md)
++ [Memory usage analysis tools](docs/memory.md)
++ [Relationship with LK](docs/mx_and_lk.md)
++ [Kernel Objects](docs/objects.md)
 + [Process Objects](docs/objects/process.md)
 + [Thread Objects](docs/objects/thread.md)
 + [Handles](docs/handles.md)
 + [System Calls](docs/syscalls.md)
++ [Micro-benchmarks](docs/benchmarks/microbenchmarks.md)

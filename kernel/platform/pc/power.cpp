@@ -16,6 +16,7 @@
 
 #include <lib/console.h>
 #include <lib/version.h>
+#include <arch/x86/apic.h>
 
 #if WITH_LIB_DEBUGLOG
 #include <lib/debuglog.h>
@@ -25,20 +26,19 @@ static void reboot(void) {
     // Try legacy reboot path first
     pc_keyboard_reboot();
 
-    // Try 100-Series Chipset Reset Control Register: Hard Reset
-    outp(0xCF9, 0x0E);
+    // Try 100-Series Chipset Reset Control Register: CPU + SYS Reset
+    outp(0xCF9, 0x06);
 }
 
 static volatile int panic_started;
 
 static void halt_other_cpus(void) {
-#if WITH_SMP
     static volatile int halted = 0;
 
     if (atomic_swap(&halted, 1) == 0) {
         // stop the other cpus
         printf("stopping other cpus\n");
-        arch_mp_send_ipi(MP_CPU_ALL_BUT_LOCAL, MP_IPI_HALT);
+        arch_mp_send_ipi(MP_IPI_TARGET_ALL_BUT_LOCAL, 0, MP_IPI_HALT);
 
         // spin for a while
         // TODO: find a better way to spin at this low level
@@ -46,7 +46,11 @@ static void halt_other_cpus(void) {
             __asm volatile ("nop");
         }
     }
-#endif
+}
+
+void platform_halt_cpu(void)
+{
+    apic_send_self_ipi(0x00, DELIVERY_MODE_INIT);
 }
 
 void platform_panic_start(void) {

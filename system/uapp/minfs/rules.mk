@@ -7,6 +7,7 @@ LOCAL_DIR := $(GET_LOCAL_DIR)
 MODULE := $(LOCAL_DIR)
 
 MODULE_TYPE := userapp
+MODULE_GROUP := core
 
 # app main
 MODULE_SRCS := \
@@ -23,15 +24,17 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/minfs-check.cpp \
 
 MODULE_STATIC_LIBS := \
-    system/ulib/block-client \
     system/ulib/fs \
+    system/ulib/async \
+    system/ulib/async.loop \
+    system/ulib/block-client \
     system/ulib/mx \
-    system/ulib/mxalloc \
     system/ulib/mxcpp \
-    system/ulib/mxtl \
+    system/ulib/fbl \
     system/ulib/sync \
 
 MODULE_LIBS := \
+    system/ulib/async.default \
     system/ulib/bitmap \
     system/ulib/magenta \
     system/ulib/mxio \
@@ -56,24 +59,27 @@ MODULE_SRCS := \
     $(LOCAL_DIR)/bcache.cpp \
     $(LOCAL_DIR)/minfs.cpp \
     $(LOCAL_DIR)/minfs-ops.cpp \
-    system/ulib/fs/vfs.cpp \
-    system/ulib/mxalloc/alloc_checker.cpp \
     system/ulib/bitmap/raw-bitmap.cpp \
+    system/ulib/fs/vfs.cpp \
 
 MODULE_COMPILEFLAGS := \
     -Werror-implicit-function-declaration \
     -Wstrict-prototypes -Wwrite-strings \
     -Isystem/ulib/bitmap/include \
-    -Isystem/ulib/mxalloc/include \
     -Isystem/ulib/mxcpp/include \
     -Isystem/ulib/mxio/include \
-    -Isystem/ulib/mxtl/include \
+    -Isystem/ulib/fbl/include \
     -Isystem/ulib/fs/include \
+
+MODULE_HOST_LIBS := \
+    system/ulib/fbl.hostlib
 
 ifeq ($(HOST_PLATFORM),darwin)
 MODULE_DEFINES := O_DIRECTORY=0200000
 else
 MODULE_DEFINES := _POSIX_C_SOURCE=200809L
 endif
+
+MODULE_DEFINES += DISABLE_THREAD_ANNOTATIONS
 
 include make/module.mk

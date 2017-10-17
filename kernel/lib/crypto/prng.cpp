@@ -9,11 +9,12 @@
 #include <assert.h>
 #include <string.h>
 
-#include <boring-crypto/chacha.h>
 #include <err.h>
-#include <kernel/auto_lock.h>
 #include <lib/crypto/cryptolib.h>
 #include <magenta/compiler.h>
+#include <magenta/types.h>
+#include <fbl/auto_lock.h>
+#include <openssl/chacha.h>
 #include <pow2.h>
 
 namespace crypto {
@@ -35,7 +36,7 @@ void PRNG::AddEntropy(const void* data, size_t size) {
     if (likely(is_thread_safe_)) {
         uint64_t total;
         {
-            AutoLock guard(&lock_);
+            fbl::AutoLock guard(&lock_);
             AddEntropyInternal(data, size);
             total = total_entropy_added_;
         }
@@ -65,11 +66,11 @@ void PRNG::AddEntropyInternal(const void* data, size_t size) {
 void PRNG::Draw(void* out, size_t size) {
     DEBUG_ASSERT(out || size == 0);
     if (likely(is_thread_safe_)) {
-        AutoLock guard(&lock_);
+        fbl::AutoLock guard(&lock_);
         if (unlikely(total_entropy_added_ < kMinEntropy)) {
             lock_.Release();
-            status_t status = event_wait(&ready_);
-            ASSERT(status == NO_ERROR);
+            mx_status_t status = event_wait(&ready_);
+            ASSERT(status == MX_OK);
             lock_.Acquire();
         }
         DrawInternal(out, size);

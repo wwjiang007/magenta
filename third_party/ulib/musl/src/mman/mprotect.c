@@ -1,4 +1,5 @@
 #include "libc.h"
+#include "magenta_impl.h"
 #include <errno.h>
 #include <magenta/process.h>
 #include <magenta/syscalls.h>
@@ -16,10 +17,10 @@ int __mprotect(void* addr, size_t len, int prot) {
         return 0;
 
     switch (status) {
-    case ERR_ACCESS_DENIED:
+    case MX_ERR_ACCESS_DENIED:
         errno = EACCES;
         break;
-    case ERR_INVALID_ARGS:
+    case MX_ERR_INVALID_ARGS:
         errno = ENOTSUP;
         break;
     default:

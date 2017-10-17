@@ -8,20 +8,18 @@
 #include <string.h>
 #include <threads.h>
 
-#include <fs/mxio-dispatcher.h>
 #include <fs/vfs.h>
 #include <magenta/device/device.h>
 #include <magenta/device/vfs.h>
 #include <magenta/processargs.h>
 #include <magenta/syscalls.h>
 #include <magenta/thread_annotations.h>
-#include <mxalloc/new.h>
 #include <mxio/debug.h>
-#include <mxio/dispatcher.h>
 #include <mxio/io.h>
 #include <mxio/remoteio.h>
-#include <mxtl/auto_lock.h>
-#include <mxtl/unique_ptr.h>
+#include <fbl/alloc_checker.h>
+#include <fbl/auto_lock.h>
+#include <fbl/unique_ptr.h>
 
 #include "devmgr.h"
 #include "dnode.h"
@@ -33,41 +31,27 @@ namespace memfs {
 
 static VnodeMemfs* global_vfs_root;
 
-void VnodeDir::NotifyAdd(const char* name, size_t len) { watcher_.NotifyAdd(name, len); }
-mx_status_t VnodeDir::WatchDir(mx_handle_t* out) { return watcher_.WatchDir(out); }
+void VnodeDir::Notify(const char* name, size_t len, unsigned event) { watcher_.Notify(name, len, event); }
+mx_status_t VnodeDir::WatchDir(mx::channel* out) { return watcher_.WatchDir(out); }
+mx_status_t VnodeDir::WatchDirV2(fs::Vfs* vfs, const vfs_watch_dir_t* cmd) {
+    return watcher_.WatchDirV2(vfs, this, cmd);
+}
 
 } // namespace memfs
 
 // The following functions exist outside the memfs namespace so they
 // can be exposed to C:
 
-// Acquire the root vnode and return a handle to it through the VFS dispatcher
-mx_handle_t vfs_create_root_handle(VnodeMemfs* vn) {
-    mx_status_t r;
-    if ((r = vn->Open(O_DIRECTORY)) < 0) {
-        return r;
-    }
-    mx_handle_t h1, h2;
-    if ((r = mx_channel_create(0, &h1, &h2)) < 0) {
-        vn->Close();
-        return r;
-    }
-
-    if ((r = vn->Serve(h1, 0)) < 0) { // Consumes 'h1'
-        vn->Close();
-        mx_handle_close(h2);
-        return r;
-    }
-    return h2;
-}
-
-// Initialize the global root VFS node and dispatcher
+// Initialize the global root VFS node
 void vfs_global_init(VnodeDir* root) {
     memfs::global_vfs_root = root;
-    fs::MxioDispatcher::Create(&memfs::memfs_global_dispatcher);
 }
 
 // Return a RIO handle to the global root
 mx_handle_t vfs_create_global_root_handle() {
     return vfs_create_root_handle(memfs::global_vfs_root);
+}
+
+mx_status_t vfs_connect_global_root_handle(mx_handle_t h) {
+    return vfs_connect_root_handle(memfs::global_vfs_root, h);
 }

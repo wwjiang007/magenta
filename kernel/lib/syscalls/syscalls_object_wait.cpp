@@ -8,22 +8,25 @@
 #include <inttypes.h>
 #include <trace.h>
 
-#include <kernel/auto_lock.h>
+#include <kernel/event.h>
+#include <kernel/thread.h>
 #include <platform.h>
 
 #include <lib/ktrace.h>
 #include <lib/user_copy/user_ptr.h>
 
-#include <magenta/magenta.h>
-#include <magenta/port_dispatcher_v2.h>
-#include <magenta/process_dispatcher.h>
-#include <magenta/wait_event.h>
-#include <magenta/wait_state_observer.h>
+#include <object/handles.h>
+#include <object/port_dispatcher.h>
+#include <object/process_dispatcher.h>
+#include <object/wait_state_observer.h>
 
-#include <mxtl/inline_array.h>
-#include <mxtl/ref_ptr.h>
+#include <fbl/auto_lock.h>
+#include <fbl/inline_array.h>
+#include <fbl/ref_ptr.h>
 
 #include "syscalls_priv.h"
+
+using fbl::AutoLock;
 
 #define LOCAL_TRACE 0
 
@@ -36,11 +39,11 @@ mx_status_t sys_object_wait_one(mx_handle_t handle_value,
                                 mx_signals_t signals,
                                 mx_time_t deadline,
                                 user_ptr<mx_signals_t> _observed) {
-    LTRACEF("handle %d\n", handle_value);
+    LTRACEF("handle %x\n", handle_value);
 
-    WaitEvent event;
+    Event event;
 
-    status_t result;
+    mx_status_t result;
     WaitStateObserver wait_state_observer;
 
     auto up = ProcessDispatcher::GetCurrent();
@@ -49,12 +52,12 @@ mx_status_t sys_object_wait_one(mx_handle_t handle_value,
 
         Handle* handle = up->GetHandleLocked(handle_value);
         if (!handle)
-            return ERR_BAD_HANDLE;
-        if (!magenta_rights_check(handle, MX_RIGHT_READ))
-            return ERR_ACCESS_DENIED;
+            return MX_ERR_BAD_HANDLE;
+        if (!handle->HasRights(MX_RIGHT_READ))
+            return MX_ERR_ACCESS_DENIED;
 
         result = wait_state_observer.Begin(&event, handle, signals);
-        if (result != NO_ERROR)
+        if (result != MX_OK)
             return result;
     }
 
@@ -63,8 +66,8 @@ mx_status_t sys_object_wait_one(mx_handle_t handle_value,
     ktrace(TAG_WAIT_ONE, koid, signals, (uint32_t)deadline, (uint32_t)(deadline >> 32));
 #endif
 
-    // event_wait() will return NO_ERROR if already signaled,
-    // even if the deadline has passed.  It will return ERR_TIMED_OUT
+    // event_wait() will return MX_OK if already signaled,
+    // even if the deadline has passed.  It will return MX_ERR_TIMED_OUT
     // after the deadline passes if the event has not been
     // signaled.
     result = event.Wait(deadline);
@@ -77,12 +80,12 @@ mx_status_t sys_object_wait_one(mx_handle_t handle_value,
 #endif
 
     if (_observed) {
-        if (_observed.copy_to_user(signals_state) != NO_ERROR)
-            return ERR_INVALID_ARGS;
+        if (_observed.copy_to_user(signals_state) != MX_OK)
+            return MX_ERR_INVALID_ARGS;
     }
 
     if (signals_state & MX_SIGNAL_HANDLE_CLOSED)
-        return ERR_CANCELED;
+        return MX_ERR_CANCELED;
 
     return result;
 }
@@ -91,32 +94,32 @@ mx_status_t sys_object_wait_many(user_ptr<mx_wait_item_t> _items, uint32_t count
     LTRACEF("count %u\n", count);
 
     if (!count) {
-        mx_status_t result = magenta_sleep(deadline);
-        if (result != NO_ERROR)
+        mx_status_t result = thread_sleep_etc(deadline, /*interruptable=*/true);
+        if (result != MX_OK)
             return result;
-        return ERR_TIMED_OUT;
+        return MX_ERR_TIMED_OUT;
     }
 
     if (!_items)
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     if (count > kMaxWaitHandleCount)
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
-    AllocChecker ac;
-    mxtl::InlineArray<mx_wait_item_t, kWaitManyInlineCount> items(&ac, count);
+    fbl::AllocChecker ac;
+    fbl::InlineArray<mx_wait_item_t, kWaitManyInlineCount> items(&ac, count);
     if (!ac.check())
-        return ERR_NO_MEMORY;
-    if (_items.copy_array_from_user(items.get(), count) != NO_ERROR)
-        return ERR_INVALID_ARGS;
+        return MX_ERR_NO_MEMORY;
+    if (_items.copy_array_from_user(items.get(), count) != MX_OK)
+        return MX_ERR_INVALID_ARGS;
 
-    mxtl::InlineArray<WaitStateObserver, kWaitManyInlineCount> wait_state_observers(&ac, count);
+    fbl::InlineArray<WaitStateObserver, kWaitManyInlineCount> wait_state_observers(&ac, count);
     if (!ac.check())
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
 
-    WaitEvent event;
+    Event event;
 
     // We may need to unwind (which can be done outside the lock).
-    status_t result = NO_ERROR;
+    mx_status_t result = MX_OK;
     size_t num_added = 0;
     {
         auto up = ProcessDispatcher::GetCurrent();
@@ -125,27 +128,27 @@ mx_status_t sys_object_wait_many(user_ptr<mx_wait_item_t> _items, uint32_t count
         for (; num_added != count; ++num_added) {
             Handle* handle = up->GetHandleLocked(items[num_added].handle);
             if (!handle) {
-                result = ERR_BAD_HANDLE;
+                result = MX_ERR_BAD_HANDLE;
                 break;
             }
-            if (!magenta_rights_check(handle, MX_RIGHT_READ)) {
-                result = ERR_ACCESS_DENIED;
+            if (!handle->HasRights(MX_RIGHT_READ)) {
+                result = MX_ERR_ACCESS_DENIED;
                 break;
             }
 
             result = wait_state_observers[num_added].Begin(&event, handle, items[num_added].waitfor);
-            if (result != NO_ERROR)
+            if (result != MX_OK)
                 break;
         }
     }
-    if (result != NO_ERROR) {
+    if (result != MX_OK) {
         for (size_t ix = 0; ix < num_added; ++ix)
             wait_state_observers[ix].End();
         return result;
     }
 
-    // event_wait() will return NO_ERROR if already signaled,
-    // even if deadline has passed.  It will return ERR_TIMED_OUT
+    // event_wait() will return MX_OK if already signaled,
+    // even if deadline has passed.  It will return MX_ERR_TIMED_OUT
     // after the deadline passes if the event has not been
     // signaled.
     result = event.Wait(deadline);
@@ -156,34 +159,34 @@ mx_status_t sys_object_wait_many(user_ptr<mx_wait_item_t> _items, uint32_t count
         combined |= (items[ix].pending = wait_state_observers[ix].End());
     }
 
-    if (_items.copy_array_to_user(items.get(), count) != NO_ERROR)
-        return ERR_INVALID_ARGS;
+    if (_items.copy_array_to_user(items.get(), count) != MX_OK)
+        return MX_ERR_INVALID_ARGS;
 
     if (combined & MX_SIGNAL_HANDLE_CLOSED)
-        return ERR_CANCELED;
+        return MX_ERR_CANCELED;
 
     return result;
 }
 
 mx_status_t sys_object_wait_async(mx_handle_t handle_value, mx_handle_t port_handle,
                                   uint64_t key, mx_signals_t signals, uint32_t options) {
-    LTRACEF("handle %d\n", handle_value);
+    LTRACEF("handle %x\n", handle_value);
 
     auto up = ProcessDispatcher::GetCurrent();
 
-    mxtl::RefPtr<PortDispatcherV2> port;
+    fbl::RefPtr<PortDispatcher> port;
     auto status = up->GetDispatcherWithRights(port_handle, MX_RIGHT_WRITE, &port);
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         return status;
 
     {
         AutoLock lock(up->handle_table_lock());
         Handle* handle = up->GetHandleLocked(handle_value);
         if (!handle)
-            return ERR_BAD_HANDLE;
-        if (!magenta_rights_check(handle, MX_RIGHT_READ))
-            return ERR_ACCESS_DENIED;
+            return MX_ERR_BAD_HANDLE;
+        if (!handle->HasRights(MX_RIGHT_READ))
+            return MX_ERR_ACCESS_DENIED;
 
-        return port->MakeObservers(options, handle, key, signals);
+        return port->MakeObserver(options, handle, key, signals);
     }
 }

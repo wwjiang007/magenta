@@ -7,17 +7,22 @@ LOCAL_DIR := $(GET_LOCAL_DIR)
 MODULE := $(LOCAL_DIR)
 
 MODULE_TYPE := userapp
+MODULE_GROUP := misc
 
 MODULE_SRCS += \
-    $(LOCAL_DIR)/guest.c \
-    $(LOCAL_DIR)/vcpu.c \
-
-MODULE_NAME := guest
+    $(LOCAL_DIR)/guest.cpp \
+    $(LOCAL_DIR)/linux.cpp \
+    $(LOCAL_DIR)/magenta.cpp \
 
 MODULE_LIBS := \
-	system/ulib/c \
-	system/ulib/hypervisor \
-	system/ulib/magenta \
-	system/ulib/mxio \
+    system/ulib/c \
+    system/ulib/hypervisor \
+    system/ulib/magenta \
+    system/ulib/mxio \
+
+MODULE_STATIC_LIBS := \
+    system/ulib/mxcpp \
+    system/ulib/fbl \
+    system/ulib/virtio \
 
 include make/module.mk

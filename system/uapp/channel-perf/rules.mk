@@ -7,11 +7,12 @@ LOCAL_DIR := $(GET_LOCAL_DIR)
 MODULE := $(LOCAL_DIR)
 
 MODULE_TYPE := userapp
+MODULE_GROUP := misc
 
 MODULE_SRCS += \
     $(LOCAL_DIR)/main.cpp \
 
 MODULE_LIBS := system/ulib/magenta system/ulib/mxio system/ulib/c
-MODULE_STATIC_LIBS := system/ulib/mxcpp system/ulib/mxtl
+MODULE_STATIC_LIBS := system/ulib/mxcpp system/ulib/fbl
 
 include make/module.mk

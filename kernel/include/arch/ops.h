@@ -14,7 +14,8 @@
 
 #ifndef ASSEMBLY
 
-#include <magenta/atomic.h>
+#include <arch/defines.h>
+#include <kernel/atomic.h>
 #include <magenta/compiler.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -36,6 +37,7 @@ static uint arch_max_num_cpus(void);
 
 /* Use to align structures on cache lines to avoid cpu aliasing. */
 #define __CPU_ALIGN __ALIGNED(CACHE_LINE)
+#define __CPU_MAX_ALIGN __ALIGNED(MAX_CACHE_LINE)
 
 void arch_disable_cache(uint flags);
 void arch_enable_cache(uint flags);
@@ -65,12 +67,6 @@ void arch_zero_page(void *);
 
 /* give the specific arch a chance to override some routines */
 #include <arch/arch_ops.h>
-
-/* Demand that atomics are implemented using compiler builtins
- * (magenta/atomic.h), not arch specific code. */
-#if ARCH_IMPLEMENTS_ATOMICS
-#error "only built-in atomics supported"
-#endif
 
 __END_CDECLS
 

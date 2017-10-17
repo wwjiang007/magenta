@@ -10,12 +10,10 @@
 #include <debug.h>
 #include <err.h>
 #include <inttypes.h>
-#include <kernel/mutex.h>
-#include <kernel/spinlock.h>
 #include <kernel/vm.h>
 #include <list.h>
 #include <lk/init.h>
-#include <mxtl/limits.h>
+#include <fbl/limits.h>
 #include <dev/interrupt.h>
 #include <string.h>
 #include <trace.h>
@@ -24,7 +22,9 @@
 #include <dev/pci_config.h>
 #include <dev/pcie_bridge.h>
 
-#include <mxalloc/new.h>
+#include <fbl/alloc_checker.h>
+
+using fbl::AutoLock;
 
 #define LOCAL_TRACE 0
 
@@ -38,11 +38,11 @@ PcieBridge::PcieBridge(PcieBusDriver& bus_drv, uint bus_id, uint dev_id, uint fu
     pio_regions_.SetRegionPool(driver().region_bookkeeping());
 }
 
-mxtl::RefPtr<PcieDevice> PcieBridge::Create(PcieUpstreamNode& upstream,
+fbl::RefPtr<PcieDevice> PcieBridge::Create(PcieUpstreamNode& upstream,
                                             uint dev_id,
                                             uint func_id,
                                             uint managed_bus_id) {
-    AllocChecker ac;
+    fbl::AllocChecker ac;
     auto raw_bridge = new (&ac) PcieBridge(upstream.driver(),
                                            upstream.managed_bus_id(), dev_id, func_id,
                                            managed_bus_id);
@@ -53,9 +53,9 @@ mxtl::RefPtr<PcieDevice> PcieBridge::Create(PcieUpstreamNode& upstream,
         return nullptr;
     }
 
-    auto bridge = mxtl::AdoptRef(static_cast<PcieDevice*>(raw_bridge));
+    auto bridge = fbl::AdoptRef(static_cast<PcieDevice*>(raw_bridge));
     status_t res = raw_bridge->Init(upstream);
-    if (res != NO_ERROR) {
+    if (res != MX_OK) {
         TRACEF("Failed to initialize PCIe bridge %02x:%02x.%01x. (res %d)\n",
                 upstream.managed_bus_id(), dev_id, func_id, res);
         return nullptr;
@@ -69,7 +69,7 @@ status_t PcieBridge::Init(PcieUpstreamNode& upstream) {
 
     // Initialize the device portion of ourselves first.
     status_t res = PcieDevice::InitLocked(upstream);
-    if (res != NO_ERROR)
+    if (res != MX_OK)
         return res;
 
     // Sanity checks of bus allocation.
@@ -87,26 +87,26 @@ status_t PcieBridge::Init(PcieUpstreamNode& upstream) {
         TRACEF("PCI-to-PCI bridge detected at %02x:%02x.%01x claims to be bridged to itsef "
                "(primary %02x == secondary %02x)... skipping scan.\n",
                bus_id_, dev_id_, func_id_, primary_id, secondary_id);
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
     }
 
     if (primary_id != bus_id_) {
         TRACEF("PCI-to-PCI bridge detected at %02x:%02x.%01x has invalid primary bus id "
                "(%02x)... skipping scan.\n",
                bus_id_, dev_id_, func_id_, primary_id);
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
     }
 
     if (secondary_id != managed_bus_id()) {
         TRACEF("PCI-to-PCI bridge detected at %02x:%02x.%01x has invalid secondary bus id "
                "(%02x)... skipping scan.\n",
                bus_id_, dev_id_, func_id_, secondary_id);
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
     }
 
     // Parse the state of its I/O and Memory windows.
     res = ParseBusWindowsLocked();
-    if (res != NO_ERROR)
+    if (res != MX_OK)
         return res;
 
     // Things went well, flag the device as plugged in and link ourselves up to
@@ -153,7 +153,7 @@ status_t PcieBridge::ParseBusWindowsLocked() {
     limit = cfg_->Read(PciConfig::kPrefetchableMemoryLimit);
 
     bool supports_64bit_pf_mem = ((base & 0xF) == 0x1) && ((base & 0xF) == (limit& 0xF));
-    pf_mem_base_  = (base & ~0xF) << 16;;
+    pf_mem_base_  = (base & ~0xF) << 16;
     pf_mem_limit_ = (limit << 16) | 0xFFFFF;
     if (supports_64bit_pf_mem) {
         pf_mem_base_  |=
@@ -162,7 +162,7 @@ status_t PcieBridge::ParseBusWindowsLocked() {
             static_cast<uint64_t>(cfg_->Read(PciConfig::kPrefetchableMemoryLimitUpper)) << 32;
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 void PcieBridge::Unplug() {
@@ -175,19 +175,19 @@ status_t PcieBridge::AllocateBars() {
 
     // Start by making sure we can allocate our bridge windows.
     status_t res = AllocateBridgeWindowsLocked();
-    if (res != NO_ERROR)
+    if (res != MX_OK)
         return res;
 
     // Now, attempt to allocate our device BARs.
     res = PcieDevice::AllocateBarsLocked();
-    if (res != NO_ERROR)
+    if (res != MX_OK)
         return res;
 
     // Great, we are good to go.  Leave our device lock and attempt to allocate
     // our downstream devices' resources.
     dev_lock.release();
     PcieUpstreamNode::AllocateDownstreamBars();
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t PcieBridge::AllocateBridgeWindowsLocked() {
@@ -199,7 +199,7 @@ status_t PcieBridge::AllocateBridgeWindowsLocked() {
     // should just fail out now.
     auto upstream = GetUpstream();
     if (upstream == nullptr)
-        return ERR_UNAVAILABLE;
+        return MX_ERR_UNAVAILABLE;
 
     // We are configuring a bridge.  We need to be able to allocate the MMIO and
     // PIO regions this bridge is configured to manage.  Currently, we don't
@@ -212,7 +212,7 @@ status_t PcieBridge::AllocateBridgeWindowsLocked() {
         uint64_t size = static_cast<uint64_t>(io_limit_) - io_base_ + 1;
         ret = upstream->pio_regions().GetRegion({ .base = io_base_, .size = size }, pio_window_);
 
-        if (ret != NO_ERROR) {
+        if (ret != MX_OK) {
             TRACEF("Failed to allocate bridge PIO window [0x%08x, 0x%08x]\n", io_base_, io_limit_);
             return ret;
         }
@@ -230,7 +230,7 @@ status_t PcieBridge::AllocateBridgeWindowsLocked() {
         ret = upstream->mmio_lo_regions().GetRegion({ .base = mem_base_, .size = size },
                                                     mmio_window_);
 
-        if (ret != NO_ERROR) {
+        if (ret != MX_OK) {
             TRACEF("Failed to allocate bridge MMIO window [0x%08x, 0x%08x]\n",
                     mem_base_, mem_limit_);
             return ret;
@@ -240,7 +240,7 @@ status_t PcieBridge::AllocateBridgeWindowsLocked() {
         mmio_lo_regions().AddRegion(*mmio_window_);
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 void PcieBridge::Disable() {

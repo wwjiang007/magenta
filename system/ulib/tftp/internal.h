@@ -34,85 +34,150 @@ typedef struct tftp_data_msg_t {
 
 #define BLOCKSIZE_OPTION 0x01  // RFC 2348
 #define TIMEOUT_OPTION 0x02    // RFC 2349
-#define FILESIZE_OPTION 0x04   // RFC 2349
-#define WINDOWSIZE_OPTION 0x08 // RFC 7440
+#define WINDOWSIZE_OPTION 0x04 // RFC 7440
 
 #define DEFAULT_BLOCKSIZE 512
 #define DEFAULT_TIMEOUT 1
 #define DEFAULT_FILESIZE 0
 #define DEFAULT_WINDOWSIZE 1
 #define DEFAULT_MODE MODE_OCTET
+#define DEFAULT_MAX_TIMEOUTS 5
+#define DEFAULT_USE_OPCODE_PREFIX true
 
 typedef struct tftp_options_t {
-    // Maximum filename really is 505 including \0
-    // max request size (512) - opcode (2) - shortest mode (4) - null (1)
-    char filename[512];
-    tftp_mode mode;
-    uint8_t requested;
+    // A bitmask of the options that have been set
+    uint8_t mask;
 
     uint16_t block_size;
     uint8_t timeout;
-    uint32_t file_size;
-
-    uint32_t window_size;
+    uint16_t window_size;
 } tftp_options;
 
 /**
-TODO: update this after refactoring
  Sender
- NONE -(tftp_generate_write_request)-> WRITE_REQUESTED
- WRITE_REQUESTED -(tftp_handle_msg = OPCODE_OACK)-> TRANSMITTING
- WRITE_REQUESTED -(tftp_handle_msg = OPCODE_ACK)-> TRANSMITTING
- WRITE_REQUESTED -(tftp_handle_msg = OPCODE_ERROR)-> ERROR
- TRANSMITTING -(tftp_handle_msg = OPCODE_ACK)-> TRANSMITTING
- TRANSMITTING -(tftp_handle_msg = OPCODE_ERROR)-> ERROR
- TRANSMITTING -(last packet)-> LAST_PACKET
- LAST_PACKET -(tftp_handle_msg = OPCODE_ERROR)-> ERROR
- LAST_PACKET -(tftp_handle_msg = OPCODE_ACK last packet)-> COMPLETED
- LAST_PACKET -(tftp_handle_msg = OPCODE_ACK not last packet)-> TRANSMITTING
- COMPLETED -(tftp_handle_msg)-> ERROR
+ NONE -(tftp_generate_write_request)-> SENT_WRQ
+ SENT_WRQ -(tftp_process_msg = OPCODE_OACK)-> SENT_FIRST_PKT
+ SENT_WRQ -(tftp_process_msg = OPCODE_ERROR)-> ERROR
+ SENT_FIRST_PKT -(tftp_process_msg = OPCODE_ACK)-> SENT_DATA
+ SENT_FIRST_PKT -(tftp_process_msg = OPCODE_ERROR)-> ERROR
+ SENT_DATA -(tftp_process_msg = OPCODE_ACK)-> SENT_DATA
+ SENT_DATA -(tftp_process_msg = OPCODE_ERROR)-> ERROR
+ SENT_DATA -(OPCODE_ACK is last packet)-> COMPLETED
+ COMPLETED -(tftp_process_msg)-> ERROR
 
  Receiver
- NONE -(tftp_handle_msg = OPCODE_WRQ)-> WRITE_REQUESTED
- NONE -(tftp_handle_msg != OPCODE_WRQ)-> ERROR
- WRITE_REQUESTED -(tftp_handle_msg = OPCODE_DATA) -> TRANSMITTING
- WRITE_REQUESTED -(tftp_handle_msg != OPCODE_DATA) -> ERROR
- TRANSMITTING -(tftp_handle_msg = OPCODE_DATA)-> TRANSMITTING
- TRANSMITTING -(tftp_handle_msg != OPCODE_DATA)-> ERROR
- TRANSMITTING -(last packet)-> COMPLETED
- COMPLETED -(tftp_handle_msg)-> ERROR
+ NONE -(tftp_process_msg = OPCODE_WRQ)-> RECV_WRQ
+ NONE -(tftp_process_msg != OPCODE_WRQ)-> ERROR
+ RECV_WRQ -(tftp_process_msg = OPCODE_DATA) -> RECV_DATA
+ RECV_WRQ -(tftp_process_msg != OPCODE_DATA) -> ERROR
+ RECV_DATA -(tftp_process_msg = OPCODE_DATA)-> RECV_DATA
+ RECV_DATA -(tftp_process_msg != OPCODE_DATA)-> ERROR
+ RECV_DATA -(last packet)-> COMPLETED
+ COMPLETED -(tftp_process_msg)-> ERROR
 **/
 
 typedef enum {
     NONE = 0,
-    WRITE_REQUESTED,
-    TRANSMITTING,
-    LAST_PACKET,
+    SENT_WRQ,
+    RECV_WRQ,
+    SENT_FIRST_DATA,
+    SENT_DATA,
+    RECV_DATA,
     ERROR,
     COMPLETED,
 } tftp_state;
 
-// TODO add a state so time out can be handled properly as well as unexpected traffic
 struct tftp_session_t {
+
+    // For a client, the options we will use on a new connection. For a server, the options we
+    // will override, if possible, when we receive a write request.
     tftp_options options;
+
+    // Tracks the options we used on the last request, so we can compare them to the options
+    // we get back.
+    tftp_options client_sent_opts;
+
+    // Maximum filename really is 505 including \0
+    // max request size (512) - opcode (2) - shortest mode (4) - null (1)
+    char filename[512];
+    tftp_mode mode;
+
+    // General state values
     tftp_state state;
     size_t offset;
-
+    uint32_t consecutive_timeouts;
+    uint8_t opcode_prefix;
     uint32_t block_number;
     uint32_t window_index;
 
+    // Maximum number of times we will retransmit a single msg before aborting
+    uint16_t max_timeouts;
+
+    // Add an 8-bit prefix to the opcode so that retransmissions differ from the
+    // original transmission. This fixes problems with checksums on asix 88179 USB
+    // adapters (they send 0 checksums when they should send 0xffff, which is a
+    // no-no in IPv6). This modification is not RFC-compatible.
+    bool use_opcode_prefix;
+
     // "Negotiated" values
     size_t file_size;
-    tftp_mode mode;
-    uint32_t window_size;
+    uint16_t window_size;
     uint16_t block_size;
     uint8_t timeout;
 
     // Callbacks
-    tftp_open_file open_fn;
-    tftp_read read_fn;
-    tftp_write write_fn;
+    tftp_file_interface file_interface;
+    tftp_transport_interface transport_interface;
 };
+
+// tftp_session_has_pending returns true if the tftp_session has more data to
+// send before waiting for an ack. It is recommended that the caller do a
+// non-blocking read to see if an out-of-order ACK was sent by the remote host
+// before sending additional data packets.
+bool tftp_session_has_pending(tftp_session* session);
+
+// Generates a write request to send to a tftp server. |filename| is the name
+// sent to the server. |datalen| is the size of the data to be sent.
+// If |block_size|, |timeout|, or |window_size| are set, those will be passed
+// to the server in such a way that they cannot be negotiated (normal,
+// negotiable settings can be set using tftp_set_options()). |outgoing| must
+// point to a scratch buffer the library can use to assemble the request.
+// |outlen| is the size of the outgoing scratch buffer, and will be set to
+// the size of the request. |timeout_ms| is set to the next timeout value the
+// user of the library should use when waiting for a response.
+tftp_status tftp_generate_write_request(tftp_session* session,
+                                        const char* filename,
+                                        tftp_mode mode,
+                                        size_t datalen,
+                                        const uint16_t* block_size,
+                                        const uint8_t* timeout,
+                                        const uint16_t* window_size,
+                                        void* outgoing,
+                                        size_t* outlen,
+                                        uint32_t* timeout_ms);
+
+// Handle an incoming tftp packet. |incoming| must point to the packet of size
+// |inlen|. |outgoing| must point to a scratch buffer the library can use to
+// assemble the next packet to send. |outlen| is the size of the outgoing
+// scratch buffer. |timeout_ms| is set to the next timeout value the user of the
+// library should use when waiting for a response. |cookie| will be passed to
+// the tftp callback functions.
+tftp_status tftp_process_msg(tftp_session* session,
+                             void* incoming,
+                             size_t inlen,
+                             void* outgoing,
+                             size_t* outlen,
+                             uint32_t* timeout_ms,
+                             void* cookie);
+
+// Prepare a DATA packet to send to the remote host. This is only required when
+// tftp_session_has_pending(session) returns true, as tftp_process_msg() will
+// prepare the first DATA message in each window.
+tftp_status tftp_prepare_data(tftp_session* session,
+                              void* outgoing,
+                              size_t* outlen,
+                              uint32_t* timeout_ms,
+                              void* cookie);
 
 // Internal handlers
 tftp_status tx_data(tftp_session* session, tftp_data_msg* resp, size_t* outlen, void* cookie);

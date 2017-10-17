@@ -5,13 +5,15 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-#ifndef __PLATFORM_H
-#define __PLATFORM_H
+#pragma once
 
 #include <sys/types.h>
 #include <magenta/compiler.h>
+#include <magenta/types.h>
 
-__BEGIN_CDECLS;
+__BEGIN_CDECLS
+
+#define BOOT_CPU_ID 0
 
 typedef enum {
     HALT_ACTION_HALT = 0,       // Spin forever.
@@ -80,6 +82,12 @@ void platform_halt(platform_halt_action suggested_action,
 /* optionally stop the current cpu in a way the platform finds appropriate */
 void platform_halt_cpu(void);
 
+/* optionally stop the secondary cpus in a way the platform finds appropriate.
+ * Secondary cpus are defined as cpus that are not the boot cpu (as defined
+ * above).
+ */
+void platform_halt_secondary_cpus(void);
+
 /* called during chain loading to make sure drivers and platform is put into a stopped state */
 void platform_quiesce(void);
 
@@ -99,6 +107,17 @@ void *platform_get_ramdisk(size_t *size);
  */
 size_t platform_stow_crashlog(void* log, size_t len);
 
-__END_CDECLS;
+/* If len == 0, return the length of the last crashlog (or 0 if none).
+ * Otherwise call func() to return the last crashlog to the caller,
+ * returning the length the last crashlog.
+ *
+ * func() may be called as many times as necessary (adjusting off)
+ * to return the crashlog in segments.  There will not be gaps,
+ * but the individual segments may range from 1 byte to the full
+ * length requested, depending on the limitations of the underlying
+ * storage model.
+ */
+size_t platform_recover_crashlog(size_t len, void* cookie,
+                                 void (*func)(const void* data, size_t off, size_t len, void* cookie));
 
-#endif
+__END_CDECLS

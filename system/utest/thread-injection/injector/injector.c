@@ -17,7 +17,7 @@
 
 int main(void) {
     mx_handle_t h = mx_get_startup_handle(PA_HND(PA_USER0, 0));
-    if (h < 0) {
+    if (h == MX_HANDLE_INVALID) {
         fprintf(stderr, "mx_get_startup_handle: %d\n", h);
         return 1;
     }
@@ -30,7 +30,7 @@ int main(void) {
     uint32_t nhandles = countof(handles);
     mx_status_t status = mx_channel_read(h, 0, &data, handles, bytes,
                                          nhandles, &bytes, &nhandles);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         fprintf(stderr, "mx_channel_read: %d\n", status);
         return 1;
     }
@@ -52,13 +52,20 @@ int main(void) {
     // already exists (and has another program running in it!).
     launchpad_t* lp;
     status = launchpad_create_with_process(proc, vmar, &lp);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         fprintf(stderr, "launchpad_create_with_process: %d\n", status);
         return 1;
     }
 
-    status = launchpad_elf_load(lp, launchpad_vmo_from_file(HELPER));
-    if (status != NO_ERROR) {
+    mx_handle_t vmo;
+    status = launchpad_vmo_from_file(HELPER, &vmo);
+    if (status != MX_OK) {
+        fprintf(stderr, "launchpad_vmo_from_file: %d\n", status);
+        return 1;
+    }
+
+    status = launchpad_elf_load(lp, vmo);
+    if (status != MX_OK) {
         fprintf(stderr, "launchpad_elf_load: %d\n", status);
         return 1;
     }
@@ -69,7 +76,7 @@ int main(void) {
     snprintf(buf, sizeof(buf), "%#" PRIxPTR, (uintptr_t)data.futex_addr);
     const char *argv[] = { HELPER, buf };
     status = launchpad_set_args(lp, 2, argv);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         fprintf(stderr, "launchpad_arguments: %d\n", status);
         return 1;
     }
@@ -82,7 +89,7 @@ int main(void) {
     // Launchpad will send the bootstrap messages on our end of the pipe.
     status = launchpad_start_injected(lp, "injected", h, data.bootstrap);
     mx_handle_close(h);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         fprintf(stderr, "launchpad_start_injected: %d\n", status);
         return 1;
     }

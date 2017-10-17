@@ -8,6 +8,7 @@
 #include <magenta/syscalls/object.h>
 #include <magenta/types.h>
 #include <pretty/sizes.h>
+#include <task-utils/get.h>
 #include <task-utils/walker.h>
 
 #include <inttypes.h>
@@ -32,7 +33,7 @@ mx_status_t get_maps(mx_koid_t koid, mx_handle_t process,
         mx_status_t s = mx_object_get_info(process, MX_INFO_PROCESS_MAPS,
                                            maps, count * sizeof(mx_info_maps_t),
                                            &actual, &avail);
-        if (s != NO_ERROR) {
+        if (s != MX_OK) {
             fprintf(stderr,
                     "ERROR: couldn't get maps for process with koid %" PRIu64
                     ": %s (%d)\n",
@@ -47,7 +48,7 @@ mx_status_t get_maps(mx_koid_t koid, mx_handle_t process,
         *out_maps = maps;
         *out_count = actual;
         *out_avail = avail;
-        return NO_ERROR;
+        return MX_OK;
     }
 }
 
@@ -127,70 +128,33 @@ mx_status_t print_maps(mx_info_maps_t* maps, size_t count, size_t avail) {
         printf(" ");
         print_range(e->base, e->size);
 
+        int size_width;
         if (e->type == MX_INFO_MAPS_TYPE_MAPPING) {
             printf(" ");
             print_mmu_flags(e->u.mapping.mmu_flags);
+            size_width = 5;
         } else {
-            printf("    ");
+            size_width = 9;
         }
 
         format_size(size_str, sizeof(size_str), e->size);
-        printf(" %*s:sz", (int)(MAX_FORMAT_SIZE_LEN - 1), size_str);
+        printf(" %*s:sz", size_width, size_str);
         if (e->type == MX_INFO_MAPS_TYPE_MAPPING) {
             const mx_info_maps_mapping_t* u = &e->u.mapping;
             format_size(size_str, sizeof(size_str),
                         u->committed_pages * PAGE_SIZE);
-            printf(" %*s:res", (int)(MAX_FORMAT_SIZE_LEN - 1), size_str);
+            printf(" %4s:res", size_str);
+            printf(" %5" PRIu64 ":vmo", u->vmo_koid);
         } else {
-            printf("%12s", "");
+            printf("%19s", "");
         }
 
-        printf("  %s\n", e->name);
+        printf(" '%s'\n", e->name);
     }
     if (avail > count) {
         printf("[%zd entries truncated]\n", avail - count);
     }
-    return NO_ERROR;
-}
-
-// Magic status code we use to short-circuit the process tree walk.
-#define VMAPS_FOUND_KOID (-10101)
-
-mx_koid_t desired_koid;
-mx_handle_t found_handle;
-
-mx_status_t job_callback(int depth, mx_handle_t job, mx_koid_t koid) {
-    if (koid == desired_koid) {
-        fprintf(stderr,
-                "ERROR: koid %" PRIu64 " is a job, not a process\n", koid);
-        return ERR_WRONG_TYPE;
-    }
-    return NO_ERROR;
-}
-
-mx_status_t process_callback(int depth, mx_handle_t process, mx_koid_t koid) {
-    if (koid == desired_koid) {
-        mx_status_t s =
-            mx_handle_duplicate(process, MX_RIGHT_SAME_RIGHTS, &found_handle);
-        if (s != NO_ERROR) {
-            return s;
-        }
-        return VMAPS_FOUND_KOID;
-    }
-    return NO_ERROR;
-}
-
-mx_status_t get_process(mx_koid_t koid, mx_handle_t* out) {
-    desired_koid = koid;
-    found_handle = MX_HANDLE_INVALID;
-    mx_status_t s = walk_root_job_tree(job_callback, process_callback, NULL);
-    if (s == NO_ERROR || s == VMAPS_FOUND_KOID) {
-        desired_koid = 0;
-        *out = found_handle;
-        found_handle = MX_HANDLE_INVALID;
-        return *out == MX_HANDLE_INVALID ? ERR_NOT_FOUND : NO_ERROR;
-    }
-    return s;
+    return MX_OK;
 }
 
 void try_help(char** argv) {
@@ -234,8 +198,13 @@ int main(int argc, char** argv) {
     }
 
     mx_handle_t process;
-    mx_status_t s = get_process(koid, &process);
-    if (s != NO_ERROR) {
+    mx_obj_type_t type;
+    mx_status_t s = get_task_by_koid(koid, &type, &process);
+    if (s == MX_OK && type != MX_OBJ_TYPE_PROCESS) {
+        mx_handle_close(process);
+        s = MX_ERR_WRONG_TYPE;
+    }
+    if (s != MX_OK) {
         fprintf(stderr,
                 "ERROR: couldn't find process with koid %" PRIu64 ": %s (%d)\n",
                 koid, mx_status_get_string(s), s);
@@ -247,10 +216,10 @@ int main(int argc, char** argv) {
     size_t avail;
     s = get_maps(koid, process, &maps, &count, &avail);
     mx_handle_close(process);
-    if (s != NO_ERROR) {
+    if (s != MX_OK) {
         return 1;
     }
     s = print_maps(maps, count, avail);
     free(maps);
-    return s == NO_ERROR ? 0 : 1;
+    return s == MX_OK ? 0 : 1;
 }

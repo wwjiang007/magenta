@@ -690,14 +690,14 @@ int gfx_init_surface(gfx_surface* surface, void* ptr, unsigned width, unsigned h
         break;
     default:
         xprintf("invalid graphics format\n");
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     if (ptr == NULL) {
         // allocate a buffer
         ptr = malloc(surface->len);
         if (ptr == NULL) {
-            return ERR_NO_MEMORY;
+            return MX_ERR_NO_MEMORY;
         }
         assert(ptr);
         surface->flags |= GFX_FLAG_FREE_ON_DESTROY;
@@ -718,17 +718,17 @@ void gfx_surface_destroy(struct gfx_surface* surface) {
     free(surface);
 }
 
-#include "font-1x.h"
-#include "font-2x.h"
+#include <magenta/font/font-9x16.h>
+#include <magenta/font/font-18x32.h>
 
 const gfx_font font9x16 = {
-    .data = FONT1X,
-    .width = FONT1X_WIDTH,
-    .height = FONT1X_HEIGHT,
+    .data = FONT9X16,
+    .width = FONT9X16_WIDTH,
+    .height = FONT9X16_HEIGHT,
 };
 
 const gfx_font font18x32 = {
-    .data = FONT2X,
-    .width = FONT2X_WIDTH,
-    .height = FONT2X_HEIGHT,
+    .data = FONT18X32,
+    .width = FONT18X32_WIDTH,
+    .height = FONT18X32_HEIGHT,
 };

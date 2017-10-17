@@ -7,12 +7,12 @@
 #include <err.h>
 #include <inttypes.h>
 
-#include <magenta/channel_dispatcher.h>
-#include <magenta/handle_owner.h>
-#include <magenta/magenta.h>
-#include <magenta/process_dispatcher.h>
-#include <magenta/resource_dispatcher.h>
-#include <mxtl/ref_ptr.h>
+#include <fbl/ref_ptr.h>
+#include <object/channel_dispatcher.h>
+#include <object/handle_owner.h>
+#include <object/handles.h>
+#include <object/process_dispatcher.h>
+#include <object/resource_dispatcher.h>
 
 #include "syscalls_priv.h"
 
@@ -20,182 +20,60 @@
 // records must be an array of valid resource info records
 // records[0] must be a mx_rrec_type_self describing the resource.
 // On success, a new resource is created and handle is returned
-mx_status_t sys_resource_create(mx_handle_t handle,
-                                user_ptr<const mx_rrec_t> _records, uint32_t count,
+//
+// The range low:high is inclusive on both ends, high must be
+// greater than or equal low.
+//
+// If the parent resource is of type MX_RSRC_KIND_ROOT, then there
+// are no further limitations on the child resource created.
+//
+// Otherwise the kind of the child resource must be the same as
+// the parent and the range of the child resource must be within
+// the range of the parent.
+mx_status_t sys_resource_create(mx_handle_t handle, uint32_t kind,
+                                uint64_t low, uint64_t high,
                                 user_ptr<mx_handle_t> _rsrc_out) {
     auto up = ProcessDispatcher::GetCurrent();
 
+    if (high < low)
+        return MX_ERR_INVALID_ARGS;
+
     // Obtain the parent Resource
+    // WRITE access is required to create a child resource
     mx_status_t result;
-    mxtl::RefPtr<ResourceDispatcher> parent;
+    fbl::RefPtr<ResourceDispatcher> parent;
     result = up->GetDispatcherWithRights(handle, MX_RIGHT_WRITE, &parent);
     if (result)
         return result;
 
-    // Disallow no records (self is required) or excessive number
-    if ((count < 1) || (count > ResourceDispatcher::kMaxRecords))
-        return ERR_OUT_OF_RANGE;
+    uint32_t parent_kind = parent->get_kind();
+    if (parent_kind != MX_RSRC_KIND_ROOT) {
+        if (kind != parent_kind)
+            return MX_ERR_ACCESS_DENIED;
 
-    mx_rrec_t rec;
-    if (_records.copy_array_from_user(&rec, 1, 0) != NO_ERROR)
-        return ERR_INVALID_ARGS;
+        uint64_t parent_low, parent_high;
+        parent->get_range(&parent_low, &parent_high);
 
-    if ((rec.self.type != MX_RREC_SELF) ||
-        (rec.self.subtype != MX_RREC_SELF_GENERIC))
-        return ERR_INVALID_ARGS;
+        if ((low < parent_low) || (high > parent_high))
+            return MX_ERR_OUT_OF_RANGE;
+    }
 
-    // Ensure name is terminated
-    rec.self.name[MX_MAX_NAME_LEN - 1] = 0;
-
-    // Create a new child Resource
+    // Create a new Resource
     mx_rights_t rights;
-    mxtl::RefPtr<ResourceDispatcher> child;
-    result = ResourceDispatcher::Create(&child, &rights, rec.self.name, rec.self.subtype);
-    if (result != NO_ERROR)
-        return result;
-
-    // Add Records to the child, completing its creation
-    result = child->AddRecords(_records, count);
-    if (result != NO_ERROR)
-        return result;
-
-    // Add child to the parent
-    result = parent->AddChild(child);
-    if (result != NO_ERROR)
+    fbl::RefPtr<ResourceDispatcher> child;
+    result = ResourceDispatcher::Create(&child, &rights, kind, low, high);
+    if (result != MX_OK)
         return result;
 
     // Create a handle for the child
-    HandleOwner child_h(MakeHandle(mxtl::RefPtr<Dispatcher>(child.get()), rights));
+    HandleOwner child_h(MakeHandle(fbl::RefPtr<Dispatcher>(child.get()), rights));
     if (!child_h)
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
 
-    if (_rsrc_out.copy_to_user(up->MapHandleToValue(child_h)) != NO_ERROR)
-        return ERR_INVALID_ARGS;
+    if (_rsrc_out.copy_to_user(up->MapHandleToValue(child_h)) != MX_OK)
+        return MX_ERR_INVALID_ARGS;
 
-    up->AddHandle(mxtl::move(child_h));
+    up->AddHandle(fbl::move(child_h));
 
-    return NO_ERROR;
-}
-
-mx_status_t sys_resource_destroy(mx_handle_t handle) {
-    auto up = ProcessDispatcher::GetCurrent();
-
-    mx_status_t result;
-    mxtl::RefPtr<ResourceDispatcher> resource;
-    result = up->GetDispatcherWithRights(handle, MX_RIGHT_DESTROY, &resource);
-    if (result)
-        return result;
-
-    // Obtain the parent Resource
-    mxtl::RefPtr<ResourceDispatcher> parent;
-    if ((result = resource->GetParent(&parent)) != NO_ERROR)
-        return result;
-
-    return parent->DestroyChild(mxtl::move(resource));
-}
-
-// Given a resource handle and an index into its array of rsrc info records
-// Return a handle appropriate to that index (eg VMO for RSRC_INFO_MMIO, etc)
-// resource handle must have RIGHT_READ
-mx_status_t sys_resource_get_handle(mx_handle_t handle, uint32_t index,
-                                    uint32_t options, user_ptr<mx_handle_t> _out) {
-    auto up = ProcessDispatcher::GetCurrent();
-
-    // Obtain the parent Resource
-    mx_status_t result;
-    mxtl::RefPtr<ResourceDispatcher> resource;
-    result = up->GetDispatcherWithRights(handle, MX_RIGHT_EXECUTE, &resource);
-    if (result)
-        return result;
-
-    mxtl::RefPtr<Dispatcher> dispatcher;
-    mx_rights_t rights;
-    result = resource->RecordCreateDispatcher(index, options, &dispatcher, &rights);
-    if (result)
-        return result;
-
-    HandleOwner out_h(MakeHandle(mxtl::move(dispatcher), rights));
-    if (!out_h)
-        return ERR_NO_MEMORY;
-
-    if (_out.copy_to_user(up->MapHandleToValue(out_h)) != NO_ERROR)
-        return ERR_INVALID_ARGS;
-
-    up->AddHandle(mxtl::move(out_h));
-
-    return NO_ERROR;
-}
-
-// Given a resource handle, perform an action that is specific to that
-// resource type (eg, enable/disable PCI bus mastering)
-mx_status_t sys_resource_do_action(mx_handle_t handle, uint32_t index,
-                                   uint32_t action, uint32_t arg0, uint32_t arg1) {
-    auto up = ProcessDispatcher::GetCurrent();
-
-    // Obtain the parent Resource
-    mx_status_t result;
-    mxtl::RefPtr<ResourceDispatcher> resource;
-    result = up->GetDispatcherWithRights(handle, MX_RIGHT_EXECUTE, &resource);
-    if (result)
-        return result;
-
-    return resource->RecordDoAction(index, action, arg0, arg1);
-}
-
-// Given a resource handle and a channel handle attempt to connect
-// that channel to the service behind the resource
-// resource handle must have RIGHT_EXECUTE
-// channel handle must have RIGHT_TRANSFER
-mx_status_t sys_resource_connect(mx_handle_t handle, mx_handle_t channel_hv) {
-    auto up = ProcessDispatcher::GetCurrent();
-
-    mx_status_t result;
-    mxtl::RefPtr<ResourceDispatcher> resource;
-    result = up->GetDispatcherWithRights(handle, MX_RIGHT_EXECUTE, &resource);
-    if (result)
-        return result;
-
-    HandleOwner channel = up->RemoveHandle(channel_hv);
-
-    if (!channel) {
-        return ERR_BAD_HANDLE;
-    } else if (channel->dispatcher()->get_type() != MX_OBJ_TYPE_CHANNEL) {
-        result = ERR_WRONG_TYPE;
-    } else if (!magenta_rights_check(channel.get(), MX_RIGHT_TRANSFER)) {
-        result = ERR_ACCESS_DENIED;
-    } else {
-        result = resource->Connect(&channel);
-    }
-
-    // If we did not succeed, we must return the channel handle
-    // to the caller's handle table
-    if (result != NO_ERROR) {
-        up->AddHandle(mxtl::move(channel));
-    }
-
-    return result;
-}
-
-// Given a resource handle, attempt to accept an inbound connection
-// resource handle must have RIGHT_WRITE
-mx_status_t sys_resource_accept(mx_handle_t handle, user_ptr<mx_handle_t> _out) {
-    auto up = ProcessDispatcher::GetCurrent();
-
-    mx_status_t result;
-    mxtl::RefPtr<ResourceDispatcher> resource;
-    result = up->GetDispatcherWithRights(handle, MX_RIGHT_WRITE, &resource);
-    if (result)
-        return result;
-
-    HandleOwner channel;
-    result = resource->Accept(&channel);
-    if (result)
-        return result;
-
-    if (_out.copy_to_user(up->MapHandleToValue(channel)) != NO_ERROR)
-        return ERR_INVALID_ARGS;
-
-    up->AddHandle(mxtl::move(channel));
-
-    return NO_ERROR;
+    return MX_OK;
 }

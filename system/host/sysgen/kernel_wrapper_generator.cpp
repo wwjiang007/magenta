@@ -38,6 +38,9 @@ static void write_x86_syscall_signature_line(ofstream& os, const Syscall& sc, st
 }
 
 bool KernelWrapperGenerator::header(ofstream& os) {
+    if (!Generator::header(os))
+        return false;
+
     os << "extern \"C\" {\n";
     return os.good();
 }
@@ -64,10 +67,10 @@ bool KernelWrapperGenerator::syscall(ofstream& os, const Syscall& sc) {
 
     // Writes all arguments.
     sc.for_each_kernel_arg([&](const TypeSpec& arg) {
-        if (sc.is_no_wrap() || !arg.arr_spec) {
-            os << arg.name << ", ";
-        } else {
+        if (arg.arr_spec) {
             os << "make_user_ptr(" << arg.name << "), ";
+        } else {
+            os << arg.name << ", ";
         }
     });
 
@@ -81,7 +84,7 @@ bool KernelWrapperGenerator::syscall(ofstream& os, const Syscall& sc) {
     if (sc.is_noreturn()) {
         os << "; // __noreturn__\n";
         os << inin << "/* NOTREACHED */\n";
-        os << inin << "return ERR_BAD_STATE;\n";
+        os << inin << "return MX_ERR_BAD_STATE;\n";
     } else {
         os << ";\n";
     }

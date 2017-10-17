@@ -7,6 +7,7 @@
 #include <magenta/types.h>
 #include <magenta/compiler.h>
 #include <stdint.h>
+#include <unistd.h>
 
 __BEGIN_CDECLS
 
@@ -18,15 +19,37 @@ typedef struct mxio mxio_t;
 // Utilities to help assemble handles for a new process
 // may return up to MXIO_MAX_HANDLES
 mx_status_t mxio_clone_root(mx_handle_t* handles, uint32_t* types);
-mx_status_t mxio_clone_svcroot(mx_handle_t* handles, uint32_t* types);
 mx_status_t mxio_clone_cwd(mx_handle_t* handles, uint32_t* types);
 mx_status_t mxio_clone_fd(int fd, int newfd, mx_handle_t* handles, uint32_t* types);
 mx_status_t mxio_pipe_pair_raw(mx_handle_t* handles, uint32_t* types);
 mx_status_t mxio_transfer_fd(int fd, int newfd, mx_handle_t* handles, uint32_t* types);
 
-void bootfs_parse(mx_handle_t vmo, size_t len,
-                  void (*cb)(void*, const char* fn, size_t off, size_t len),
-                  void* cb_arg);
+// Attempt to create an mxio fd from some handles and their associated types,
+// as returned from mxio_transfer_fd.
+//
+// Can only create fds around:
+// - Remote IO objects
+// - Pipes
+// - Connected sockets
+//
+// This function transfers ownership of handles to the fd on success, and
+// closes them on failure.
+mx_status_t mxio_create_fd(mx_handle_t* handles, uint32_t* types, size_t hcount, int* fd_out);
+
+typedef struct bootfs_entry bootfs_entry_t;
+
+typedef struct bootfs {
+    mx_handle_t vmo;
+    uint32_t dirsize;
+    void* dir;
+} bootfs_t;
+
+mx_status_t bootfs_create(bootfs_t* bfs, mx_handle_t vmo);
+void bootfs_destroy(bootfs_t* bfs);
+mx_status_t bootfs_open(bootfs_t* bfs, const char* name, mx_handle_t* vmo);
+mx_status_t bootfs_parse(bootfs_t* bfs,
+                         mx_status_t (*cb)(void* cookie, const bootfs_entry_t* entry),
+                         void* cookie);
 
 // used for bootstrap
 void mxio_install_root(mxio_t* root);
@@ -39,13 +62,13 @@ void mxio_install_root(mxio_t* root);
 int mxio_bind_to_fd(mxio_t* io, int fd, int starting_fd);
 
 // attempt to detach an mxio_t from the fd table
-// returns ERR_INVALID_ARGS if fd is out of range or doesn't exist
-// returns ERR_UNAVAILABLE if the fd is busy or has been dup'd
+// returns MX_ERR_INVALID_ARGS if fd is out of range or doesn't exist
+// returns MX_ERR_UNAVAILABLE if the fd is busy or has been dup'd
 // returns mxio_t via io_out with refcount 1 on success
 mx_status_t mxio_unbind_from_fd(int fd, mxio_t** io_out);
 
 // If this fd represents a "service" (an rpc channel speaking
-// a non-mxio protocol), this call will return NO_ERROR and
+// a non-mxio protocol), this call will return MX_OK and
 // return the underlying handle.
 // On both success and failure, the fd is effectively closed.
 mx_status_t mxio_get_service_handle(int fd, mx_handle_t* out);
@@ -65,6 +88,11 @@ mxio_t* mxio_service_create(mx_handle_t);
 // this will allocate a per-thread buffer (on demand) to assemble
 // entire log-lines and flush them on newline or buffer full.
 mxio_t* mxio_logger_create(mx_handle_t);
+
+// create a mxio that wraps a function
+// used for plumbing stdout/err to logging subsystems, etc
+mxio_t* mxio_output_create(ssize_t (*func)(void* cookie, const void* data, size_t len),
+                           void* cookie);
 
 // Attempt to connect a channel to a named service.
 // On success the channel is connected.  On failure

@@ -1,3 +1,9 @@
+// Copyright 2017 The Fuchsia Authors
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -45,12 +51,12 @@ static ssize_t get_entropy_from_rdrand(void* buf, size_t len, bool block);
  * and a negative value on error.
  */
 static ssize_t get_entropy_from_cpu(void* buf, size_t len, bool block) {
-    /* TODO(security): Move this to a shared kernel/user lib, so we can write usermode
+    /* TODO(security, MG-984): Move this to a shared kernel/user lib, so we can write usermode
      * tests against this code */
 
     if (len >= SSIZE_MAX) {
-        static_assert(ERR_INVALID_ARGS < 0, "");
-        return ERR_INVALID_ARGS;
+        static_assert(MX_ERR_INVALID_ARGS < 0, "");
+        return MX_ERR_INVALID_ARGS;
     }
 
     if (x86_feature_test(X86_FEATURE_RDSEED)) {
@@ -60,8 +66,8 @@ static ssize_t get_entropy_from_cpu(void* buf, size_t len, bool block) {
     }
 
     /* We don't have an entropy source */
-    static_assert(ERR_NOT_SUPPORTED < 0, "");
-    return ERR_NOT_SUPPORTED;
+    static_assert(MX_ERR_NOT_SUPPORTED < 0, "");
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 __attribute__((target("rdrnd,rdseed")))
@@ -100,7 +106,7 @@ static ssize_t get_entropy_from_rdseed(void* buf, size_t len, bool block) {
 }
 
 static ssize_t get_entropy_from_rdrand(void* buf, size_t len, bool block) {
-    // TODO(security): This method is not compliant with Intel's "Digital Random
+    // TODO(security, MG-983): This method is not compliant with Intel's "Digital Random
     // Number Generator (DRNG) Software Implementation Guide".  We are using
     // rdrand in a way that is explicitly against their recommendations.  This
     // needs to be corrected, but this fallback is a compromise to allow our

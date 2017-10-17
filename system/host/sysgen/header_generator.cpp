@@ -6,6 +6,7 @@
 
 using std::map;
 using std::string;
+using std::vector;
 
 static const string add_attribute(map<string, string> attributes,
                                   const string& attribute) {
@@ -13,21 +14,46 @@ static const string add_attribute(map<string, string> attributes,
     return (ft == attributes.end()) ? string() : ft->second;
 }
 
-bool HeaderGenerator::syscall(std::ofstream& os, const Syscall& sc) {
-    if (skip_vdso_calls_ && sc.is_vdso()) {
-        return true;
-    }
+static vector<int> collect_nonnull(const Syscall& sc) {
+    vector<int> nonnull;
+    int out_idx = sc.arg_spec.size();
+    sc.for_each_return([&](const TypeSpec& type) {
+            ++out_idx;
+            if (!has_attribute("optional", type.attributes))
+                nonnull.push_back(out_idx);
+        });
+    return nonnull;
+}
 
+bool HeaderGenerator::syscall(std::ofstream& os, const Syscall& sc) {
     constexpr uint32_t indent_spaces = 4u;
 
-    for (auto name_prefix : name_prefixes_) {
-        auto syscall_name = name_prefix + sc.name;
+    for (const auto& name_prefix : name_prefixes_) {
+        if (name_prefix.second(sc))
+            continue;
+
+        auto syscall_name = name_prefix.first + sc.name;
 
         os << function_prefix_;
 
-        write_syscall_signature_line(os, sc, name_prefix, "\n", "\n" + string(indent_spaces, ' '),
-                                     allow_pointer_wrapping_ && !sc.is_no_wrap() && !sc.is_vdso(),
-                                     no_args_type_);
+        write_syscall_signature_line(
+            os, sc, name_prefix.first,
+            "\n" + string(indent_spaces, ' '),
+            "\n" + string(indent_spaces, ' '),
+            allow_pointer_wrapping_ && !sc.is_vdso(),
+            no_args_type_);
+
+        if (!allow_pointer_wrapping_) {
+            const vector<int> nonnull = collect_nonnull(sc);
+            if (!nonnull.empty()) {
+                os << " __NONNULL((";
+                for (int idx : nonnull) {
+                    os << idx << ", ";
+                }
+                os.seekp(-2, std::ios_base::end);
+                os << "))";
+            }
+        }
 
         os << " ";
 
@@ -38,11 +64,12 @@ bool HeaderGenerator::syscall(std::ofstream& os, const Syscall& sc) {
                 os << a << " ";
         }
 
+        if (sc.ret_spec.size() > 0)
+            write_argument_annotation(os, sc.ret_spec[0]);
+
         os.seekp(-1, std::ios_base::end);
 
         os << ";\n\n";
-
-        syscall_name = "_" + syscall_name;
     }
 
     return os.good();

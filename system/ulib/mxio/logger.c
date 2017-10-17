@@ -64,7 +64,7 @@ static mx_status_t log_close(mxio_t* io) {
     mx_handle_t h = log_io->handle;
     log_io->handle = 0;
     mx_handle_close(h);
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static mx_status_t log_clone(mxio_t* io, mx_handle_t* handles, uint32_t* types) {
@@ -80,7 +80,11 @@ static mx_status_t log_clone(mxio_t* io, mx_handle_t* handles, uint32_t* types) 
 
 static mxio_ops_t log_io_ops = {
     .read = mxio_default_read,
+    .read_at = mxio_default_read_at,
     .write = log_write,
+    .write_at = mxio_default_write_at,
+    .recvfrom = mxio_default_recvfrom,
+    .sendto = mxio_default_sendto,
     .recvmsg = mxio_default_recvmsg,
     .sendmsg = mxio_default_sendmsg,
     .seek = mxio_default_seek,
@@ -91,6 +95,8 @@ static mxio_ops_t log_io_ops = {
     .ioctl = mxio_default_ioctl,
     .wait_begin = mxio_default_wait_begin,
     .wait_end = mxio_default_wait_end,
+    .unwrap = mxio_default_unwrap,
+    .shutdown = mxio_default_shutdown,
     .posix_ioctl = mxio_default_posix_ioctl,
     .get_vmo = mxio_default_get_vmo,
 };

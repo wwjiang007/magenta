@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 #include <fs-management/mount.h>
-#include <fs/vfs-client.h>
+#include <fs/client.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -35,6 +35,10 @@ static const uint8_t gpt_magic[16] = {
     0x00, 0x00, 0x01, 0x00, 0x5c, 0x00, 0x00, 0x00,
 };
 
+static const uint8_t fvm_magic[8] = {
+    0x46, 0x56, 0x4d, 0x20, 0x50, 0x41, 0x52, 0x54,
+};
+
 disk_format_t detect_disk_format(int fd) {
     uint8_t data[HEADER_SIZE];
     if (read(fd, data, sizeof(data)) != sizeof(data)) {
@@ -42,7 +46,9 @@ disk_format_t detect_disk_format(int fd) {
         return -1;
     }
 
-    if (!memcmp(data + 0x200, gpt_magic, sizeof(gpt_magic))) {
+    if (!memcmp(data, fvm_magic, sizeof(fvm_magic))) {
+        return DISK_FORMAT_FVM;
+    } else if (!memcmp(data + 0x200, gpt_magic, sizeof(gpt_magic))) {
         return DISK_FORMAT_GPT;
     } else if (!memcmp(data, minfs_magic, sizeof(minfs_magic))) {
         return DISK_FORMAT_MINFS;
@@ -67,7 +73,7 @@ static mx_status_t mount_prepare_handles(int devicefd, mx_handle_t* mount_handle
                                          mx_handle_t* hnd, uint32_t* ids, size_t* n) {
     mx_status_t status;
     mx_handle_t mountee_handle;
-    if ((status = mx_channel_create(0, &mountee_handle, mount_handle_out)) != NO_ERROR) {
+    if ((status = mx_channel_create(0, &mountee_handle, mount_handle_out)) != MX_OK) {
         close(devicefd);
         return status;
     }
@@ -80,10 +86,10 @@ static mx_status_t mount_prepare_handles(int devicefd, mx_handle_t* mount_handle
         mx_handle_close(mountee_handle);
         mx_handle_close(*mount_handle_out);
         close(devicefd);
-        return status != 0 ? status : ERR_BAD_STATE;
+        return status != 0 ? status : MX_ERR_BAD_STATE;
     }
     *n = *n + status;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 // Describes the mountpoint of the to-be-mounted root,
@@ -101,8 +107,8 @@ static mx_status_t launch_and_mount(LaunchCallback cb, const mount_options_t* op
                                     const char** argv, int argc, mx_handle_t* hnd,
                                     uint32_t* ids, size_t n, mountpoint_t* mp, mx_handle_t root) {
     mx_status_t status;
-    if ((status = cb(argc, argv, hnd, ids, n)) != NO_ERROR) {
-        return status;
+    if ((status = cb(argc, argv, hnd, ids, n)) != MX_OK) {
+        goto fail;
     }
 
     if (options->wait_until_ready) {
@@ -110,15 +116,15 @@ static mx_status_t launch_and_mount(LaunchCallback cb, const mount_options_t* op
         mx_signals_t observed;
         status = mx_object_wait_one(root, MX_USER_SIGNAL_0 | MX_CHANNEL_PEER_CLOSED,
                                     MX_TIME_INFINITE, &observed);
-        if ((status != NO_ERROR) || (observed & MX_CHANNEL_PEER_CLOSED)) {
-            status = (status != NO_ERROR) ? status : ERR_BAD_STATE;
+        if ((status != MX_OK) || (observed & MX_CHANNEL_PEER_CLOSED)) {
+            status = (status != MX_OK) ? status : MX_ERR_BAD_STATE;
             goto fail;
         }
     }
 
     // Install remote handle.
     if (options->create_mountpoint) {
-        int fd = open("/", O_RDONLY | O_DIRECTORY);
+        int fd = open("/", O_RDONLY | O_DIRECTORY | O_ADMIN);
         if (fd < 0) {
             goto fail;
         }
@@ -132,23 +138,14 @@ static mx_status_t launch_and_mount(LaunchCallback cb, const mount_options_t* op
         config->fs_root = root;
         config->flags = mp->flags;
         strcpy(config->name, mp->path);
+        // Ioctl will close root for us if an error occurs
         status = ioctl_vfs_mount_mkdir_fs(fd, config, config_size);
-        // Currently, the recipient of the ioctl is sending the unmount signal
-        // if an error occurs.
         close(fd);
         free(config);
         return status;
-    } else {
-        if ((status = ioctl_vfs_mount_fs(mp->fd, &root)) != NO_ERROR) {
-            // TODO(smklein): Retreive the root handle if mounting fails.
-            // Currently, the recipient of the ioctl is sending the unmount signal
-            // if an error occurs.
-            return status;
-        }
     }
-
-    return NO_ERROR;
-
+    // Ioctl will close root for us if an error occurs
+    return ioctl_vfs_mount_fs(mp->fd, &root);
 fail:
     // We've entered a failure case where the filesystem process (which may or may not be alive)
     // had a *chance* to be spawned, but cannot be attached to a vnode (for whatever reason).
@@ -168,14 +165,14 @@ static mx_status_t mount_mxfs(const char* binary, int devicefd, mountpoint_t* mp
     size_t n = 0;
     mx_handle_t root;
     mx_status_t status;
-    if ((status = mount_prepare_handles(devicefd, &root, hnd, ids, &n)) != NO_ERROR) {
+    if ((status = mount_prepare_handles(devicefd, &root, hnd, ids, &n)) != MX_OK) {
         return status;
     }
 
     if (options->verbose_mount) {
         printf("fs_mount: Launching %s\n", binary);
     }
-    const char* argv[] = { binary, "mount" };
+    const char* argv[] = {binary, "mount"};
     return launch_and_mount(cb, options, argv, countof(argv), hnd, ids, n, mp, root);
 }
 
@@ -186,7 +183,7 @@ static mx_status_t mount_fat(int devicefd, mountpoint_t* mp, const mount_options
     size_t n = 0;
     mx_handle_t root;
     mx_status_t status;
-    if ((status = mount_prepare_handles(devicefd, &root, hnd, ids, &n)) != NO_ERROR) {
+    if ((status = mount_prepare_handles(devicefd, &root, hnd, ids, &n)) != MX_OK) {
         return status;
     }
 
@@ -219,7 +216,7 @@ mx_status_t fmount_common(int devicefd, mountpoint_t* mp, disk_format_t df,
         return mount_fat(devicefd, mp, options, cb);
     default:
         close(devicefd);
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 }
 
@@ -242,8 +239,8 @@ mx_status_t mount(int devicefd, const char* mountpath, disk_format_t df,
         mp.path = mountpath;
     } else {
         // Open mountpoint; use it directly
-        if ((mp.fd = open(mountpath, O_RDONLY | O_DIRECTORY)) < 0) {
-            return ERR_BAD_STATE;
+        if ((mp.fd = open(mountpath, O_RDONLY | O_DIRECTORY | O_ADMIN)) < 0) {
+            return MX_ERR_BAD_STATE;
         }
     }
 
@@ -266,10 +263,10 @@ mx_status_t fumount(int mountfd) {
 }
 
 mx_status_t umount(const char* mountpath) {
-    int fd = open(mountpath, O_DIRECTORY | O_NOREMOTE);
+    int fd = open(mountpath, O_DIRECTORY | O_NOREMOTE | O_ADMIN);
     if (fd < 0) {
         fprintf(stderr, "Could not open directory: %s\n", strerror(errno));
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
     }
     mx_status_t status = fumount(fd);
     close(fd);

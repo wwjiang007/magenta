@@ -9,7 +9,9 @@
 #include <err.h>
 #include <string.h>
 #include <kernel/mp.h>
-#include <kernel/vm/vm_aspace.h>
+#include <vm/pmm.h>
+#include <vm/vm_aspace.h>
+#include <fbl/algorithm.h>
 #include <arch/ops.h>
 
 #include <arch/x86.h>
@@ -66,7 +68,7 @@ static inline void idt_set_type(
     entry->w1 = (entry->w1 & ~(0xf << 8)) | ((uint32_t)typ << 8);
 }
 
-__NO_SAFESTACK void idt_set_vector(
+void idt_set_vector(
         struct idt *idt,
         uint8_t vec,
         uint16_t code_segment_sel,
@@ -90,7 +92,7 @@ void idt_set_ist_index(struct idt *idt, uint8_t vec, uint8_t ist_idx)
     entry->w1 = (entry->w1 & ~0x7) | ist_idx;
 }
 
-__NO_SAFESTACK void idt_setup(struct idt *idt)
+void idt_setup(struct idt *idt)
 {
     extern uintptr_t const _isr_table[];
 
@@ -105,7 +107,7 @@ __NO_SAFESTACK void idt_setup(struct idt *idt)
     enum idt_entry_type typ;
     sel = CODE_64_SELECTOR;
     typ = IDT_INTERRUPT_GATE64;
-    for (size_t i = 0; i < countof(idt->entries); ++i) {
+    for (size_t i = 0; i < fbl::count_of(idt->entries); ++i) {
         uintptr_t offset = _isr_table[i] + clac_shift;
         enum idt_dpl dpl;
         switch (i) {
@@ -136,7 +138,7 @@ void idt_setup_readonly(void) {
                                          vaddr_to_paddr(&_idt),
                                          0 /* vmm flags */,
                                          ARCH_MMU_FLAG_PERM_READ);
-    ASSERT(status == NO_ERROR);
+    ASSERT(status == MX_OK);
     idt_load(_idt_ro);
 }
 

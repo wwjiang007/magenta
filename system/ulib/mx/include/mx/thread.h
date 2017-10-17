@@ -6,6 +6,7 @@
 
 #include <mx/object.h>
 #include <mx/task.h>
+#include <magenta/process.h>
 
 namespace mx {
 class process;
@@ -14,7 +15,7 @@ class thread : public task<thread> {
 public:
     static constexpr mx_obj_type_t TYPE = MX_OBJ_TYPE_THREAD;
 
-    thread() = default;
+    constexpr thread() = default;
 
     explicit thread(mx_handle_t value) : task(value) {}
 
@@ -41,6 +42,12 @@ public:
 
     // TODO(abarth): mx_thread_read_state
     // TODO(abarth): mx_thread_write_state
+
+    static inline const unowned<thread> self() {
+        return unowned<thread>(mx_thread_self());
+    }
 };
+
+using unowned_thread = const unowned<thread>;
 
 } // namespace mx

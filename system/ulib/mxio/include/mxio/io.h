@@ -5,8 +5,8 @@
 #pragma once
 
 #include <limits.h>
+#include <poll.h>
 #include <stdbool.h>
-#include <sys/epoll.h>
 #include <unistd.h> // for ssize_t
 
 #include <magenta/types.h>
@@ -27,12 +27,14 @@
 #define MXIO_PROTOCOL_VMOFILE 3
 #define MXIO_PROTOCOL_SOCKET 4
 #define MXIO_PROTOCOL_SERVICE 5
+#define MXIO_PROTOCOL_SOCKET_CONNECTED 6
 
 // events for mxio_wait_fd()
-#define MXIO_EVT_READABLE EPOLLIN
-#define MXIO_EVT_WRITABLE EPOLLOUT
-#define MXIO_EVT_ERROR EPOLLERR
-#define MXIO_EVT_ALL (EPOLLIN | EPOLLOUT | EPOLLERR)
+#define MXIO_EVT_READABLE POLLIN
+#define MXIO_EVT_WRITABLE POLLOUT
+#define MXIO_EVT_ERROR POLLERR
+#define MXIO_EVT_PEER_CLOSED POLLRDHUP
+#define MXIO_EVT_ALL (POLLIN | POLLOUT | POLLERR | POLLRDHUP)
 
 __BEGIN_CDECLS
 
@@ -40,7 +42,7 @@ __BEGIN_CDECLS
 mx_status_t mxio_wait_fd(int fd, uint32_t events, uint32_t* pending, mx_time_t deadline);
 
 // create a fd that works with wait APIs (epoll, select, etc.) from a handle
-// and expected signals (signals_in/signals_out correspond to EPOLLIN/EPOLLOUT
+// and expected signals (signals_in/signals_out correspond to POLLIN/POLLOUT
 // events respectively). the handle will be closed when the fd is closed, unless
 // shared_handle is true.
 int mxio_handle_fd(mx_handle_t h, mx_signals_t signals_in, mx_signals_t signals_out, bool shared_handle);
@@ -53,9 +55,15 @@ ssize_t mxio_ioctl(int fd, int op, const void* in_buf, size_t in_len, void* out_
 mx_status_t mxio_pipe_half(mx_handle_t* handle, uint32_t* type);
 
 // Get a read-only VMO containing the whole contents of the file.
-// This uses an underlying VMO when possible, falling back to
-// eagerly reading the contents into a freshly-created VMO.
+// This function creates a clone of the underlying VMO when possible, falling
+// back to eagerly reading the contents into a freshly-created VMO.
 mx_status_t mxio_get_vmo(int fd, mx_handle_t* out_vmo);
+
+// Get a read-only handle to the exact VMO used by the file system server to
+// represent the file. This function fails if the server does not have an exact
+// VMO representation of the file (e.g., if mxio_get_vmo would need to copy the
+// data into a new VMO).
+mx_status_t mxio_get_exact_vmo(int fd, mx_handle_t* out_vmo);
 
 // create a fd that is backed by the given range of the vmo.
 // This function takes ownership of the vmo and will close the vmo when the fd

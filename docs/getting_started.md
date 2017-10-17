@@ -1,6 +1,12 @@
 # Quick Start Recipes
 
-## Checking out the source code
+## Checking out the Magenta source code
+
+*** note
+NOTE: The Fuchsia source includes Magenta. See Fuchsia's
+[Getting Started](https://fuchsia.googlesource.com/docs/+/master/getting_started.md)
+doc. Follow this doc to work on only Magenta.
+***
 
 The Magenta Git repository is located
 at: https://fuchsia.googlesource.com/magenta
@@ -8,7 +14,7 @@ at: https://fuchsia.googlesource.com/magenta
 To clone the repository, assuming you setup the $SRC variable
 in your environment:
 ```shell
-$ git clone https://fuchsia.googlesource.com/magenta $SRC/magenta
+git clone https://fuchsia.googlesource.com/magenta $SRC/magenta
 ```
 
 For the purpose of this document, we will assume that Magenta is checked
@@ -176,6 +182,14 @@ For QEMU, use the -x option to the run-magenta-* scripts to specify an extra boo
 
 ## Network Booting
 
+Network booting is supported via two mechanisms: Gigaboot and Magentaboot.
+Gigaboot is an EFI based bootloader whereas magentaboot is a mechanism that
+allows a minimal magenta system to serve as a bootloader for magenta.
+
+On systems that boot via EFI (such as Acer and NUC), either option is viable.
+On other systems, magentaboot may be the only option for network booting.
+
+### Via Gigaboot
 The [GigaBoot20x6](https://fuchsia.googlesource.com/magenta/+/master/bootloader) bootloader speaks a simple network boot protocol (over IPV6 UDP)
 which does not require any special host configuration or privileged access to use.
 
@@ -198,6 +212,16 @@ By default bootserver will continue to run and every time it obsveres a netboot
 beacon it will send the kernel (and bootfs if provided) to that device.  If you
 pass the -1 option, bootserver will exit after a successful boot instead.
 
+
+### Via Magentaboot
+Magentaboot is a mechanism that allows a magenta system to serve as the
+bootloader for magenta itself. Magentaboot speaks the same boot protocol as
+Gigaboot described above.
+
+To use magentaboot, pass the `netsvc.netboot=true` argument to magenta via the
+kernel command line. When magentaboot starts, it will attempt to fetch and boot
+into a magenta system from a bootserver running on the attached host.
+
 ## Network Log Viewing
 
 The default build of Magenta includes a network log service that multicasts the
@@ -215,7 +239,7 @@ $BUILDDIR/tools/loglistener
 ## Debugging
 
 For random tips on debugging in the magenta environment see
-[debugging](debugging.md).
+[debugging](debugging/tips.md).
 
 ## Contribute changes
 * See [contributing.md](contributing.md).

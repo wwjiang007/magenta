@@ -17,10 +17,12 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/prng.cpp \
     $(LOCAL_DIR)/prng_unittest.cpp
 
-MODULE_DEPS += kernel/dev/hw_rng
-MODULE_DEPS += third_party/lib/boring-crypto
+MODULE_DEPS += third_party/lib/uboringssl
 MODULE_DEPS += third_party/lib/cryptolib
-MODULE_DEPS += kernel/lib/mxtl
+MODULE_DEPS += kernel/lib/explicit-memory
+MODULE_DEPS += kernel/lib/fbl
 MODULE_DEPS += kernel/lib/unittest
+
+include $(LOCAL_DIR)/entropy/rules.mk
 
 include make/module.mk

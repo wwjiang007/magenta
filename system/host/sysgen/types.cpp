@@ -153,40 +153,56 @@ bool Syscall::is_noreturn() const {
     return has_attribute("noreturn", attributes);
 }
 
-bool Syscall::is_no_wrap() const {
-    return has_attribute("no_wrap", attributes);
-}
-
 bool Syscall::is_blocking() const {
     return has_attribute("blocking", attributes);
+}
+
+bool Syscall::is_internal() const {
+    return has_attribute("internal", attributes);
 }
 
 size_t Syscall::num_kernel_args() const {
     return is_noreturn() ? arg_spec.size() : arg_spec.size() + ret_spec.size() - 1;
 }
 
-void Syscall::for_each_kernel_arg(const std::function<void(const TypeSpec&)>& cb) const {
-    std::for_each(arg_spec.begin(), arg_spec.end(), cb);
+void Syscall::for_each_return(const std::function<void(const TypeSpec&)>& cb) const {
     if (ret_spec.size() > 1) {
         std::for_each(ret_spec.begin() + 1, ret_spec.end(), cb);
     }
+}
+
+void Syscall::for_each_kernel_arg(const std::function<void(const TypeSpec&)>& cb) const {
+    std::for_each(arg_spec.begin(), arg_spec.end(), cb);
+    for_each_return(cb);
 }
 
 bool Syscall::validate() const {
     if (ret_spec.size() > 0 && is_noreturn()) {
         print_error("noreturn should have zero return arguments");
         return false;
-    } else if (num_kernel_args() > kMaxArgs) {
+    }
+
+    if (num_kernel_args() > kMaxArgs) {
         print_error("invalid number of arguments");
         return false;
-    } else if (ret_spec.size() >= 1 && !ret_spec[0].name.empty()) {
+    }
+
+    if (ret_spec.size() >= 1 && !ret_spec[0].name.empty()) {
         print_error("the first return argument cannot be named, yet...");
         return false;
-    } else if (is_blocking() &&
-               (ret_spec.size() == 0 || ret_spec[0].type != "mx_status_t")) {
+    }
+
+    if (is_blocking() &&
+        (ret_spec.size() == 0 || ret_spec[0].type != "mx_status_t")) {
         print_error("blocking must have first return be of type mx_status_t");
         return false;
     }
+
+    if (is_vdso() && (is_blocking() || is_internal())) {
+        print_error("vdsocall cannot be blocking or internal");
+        return false;
+    }
+
     bool valid_args = true;
     for_each_kernel_arg([this, &valid_args](const TypeSpec& arg) {
         if (arg.name.empty()) {
@@ -255,7 +271,7 @@ bool Syscall::is_void_return() const {
 }
 
 bool Syscall::will_wrap(const string& type) const {
-    return !is_no_wrap() && type.find("reinterpret_cast") != string::npos;
+    return type.find("reinterpret_cast") != string::npos;
 }
 
 // TODO(andymutton): Rework this after changing arm and removing the invocation generator.

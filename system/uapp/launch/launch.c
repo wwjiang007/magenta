@@ -4,12 +4,15 @@
 
 #include <assert.h>
 #include <launchpad/launchpad.h>
+#include <launchpad/loader-service.h>
 #include <launchpad/vmo.h>
 #include <magenta/process.h>
 #include <magenta/processargs.h>
 #include <magenta/syscalls.h>
 #include <magenta/syscalls/object.h>
-#include <mxio/loader-service.h>
+#include <magenta/syscalls/policy.h>
+
+#include <mxio/io.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,13 +26,14 @@ static void option_usage(FILE* out,
 static _Noreturn void usage(const char* progname, bool error) {
     FILE* out = error ? stderr : stdout;
     fprintf(out, "Usage: %s [OPTIONS] [--] PROGRAM [ARGS...]\n", progname);
-    option_usage(out, "-b", "use basic ELF loading, no PT_INTERP support");
     option_usage(out, "-d FD", "pass FD with the same descriptor number");
     option_usage(out, "-d FD:NEWFD", "pass FD as descriptor number NEWFD");
     option_usage(out, "-e VAR=VALUE", "pass environment variable");
     option_usage(out, "-f FILE", "execute FILE but pass PROGRAM as argv[0]");
     option_usage(out, "-F FD", "execute FD");
     option_usage(out, "-h", "display this usage message and exit");
+    option_usage(out, "-H",
+                 "enable exception-on-bad-handle job policy (implies -j)");
     option_usage(out, "-j", "start process in a new job");
     option_usage(out, "-l",
                  "pass mxio_loader_service handle in main bootstrap message");
@@ -57,22 +61,19 @@ int main(int argc, char** argv) {
     size_t envsize = 0;
     const char* program = NULL;
     int program_fd = -1;
-    bool basic = false;
     bool send_root = false;
     struct fd { int from, to; } *fds = NULL;
     size_t nfds = 0;
     bool send_loader_message = false;
     bool pass_loader_handle = false;
     bool new_job = false;
+    bool enable_bad_handle_policy = false;
     const char* exec_vmo_file = NULL;
     int exec_vmo_fd = -1;
     size_t stack_size = -1;
 
-    for (int opt; (opt = getopt(argc, argv, "bd:e:f:F:hjlLrsS:v:")) != -1;) {
+    for (int opt; (opt = getopt(argc, argv, "d:e:f:F:hHjlLrsS:v:")) != -1;) {
         switch (opt) {
-        case 'b':
-            basic = true;
-            break;
         case 'd':;
             int from, to;
             switch (sscanf(optarg, "%u:%u", &from, &to)) {
@@ -111,6 +112,10 @@ int main(int argc, char** argv) {
             break;
         case 'h':
             usage(argv[0], false);
+            break;
+        case 'H':
+            enable_bad_handle_policy = true;
+            new_job = true;
             break;
         case 'j':
             new_job = true;
@@ -154,21 +159,21 @@ int main(int argc, char** argv) {
 
     mx_handle_t vmo;
     if (program_fd != -1) {
-        vmo = launchpad_vmo_from_fd(program_fd);
-        if (vmo == ERR_IO) {
+        mx_status_t status = mxio_get_vmo(program_fd, &vmo);
+        if (status == MX_ERR_IO) {
             perror("launchpad_vmo_from_fd");
             return 2;
         }
-        check("launchpad_vmo_from_fd", vmo);
+        check("launchpad_vmo_from_fd", status);
     } else {
         if (program == NULL)
             program = argv[optind];
-        vmo = launchpad_vmo_from_file(program);
-        if (vmo == ERR_IO) {
+        mx_status_t status = launchpad_vmo_from_file(program, &vmo);
+        if (status == MX_ERR_IO) {
             perror(program);
             return 2;
         }
-        check("launchpad_vmo_from_file", vmo);
+        check("launchpad_vmo_from_file", status);
     }
 
     mx_handle_t job = mx_job_default();
@@ -184,6 +189,15 @@ int main(int argc, char** argv) {
         mx_handle_close(job);
         job = child_job;
     }
+    if (enable_bad_handle_policy) {
+        mx_policy_basic_t policy[] = {
+            { MX_POL_BAD_HANDLE, MX_POL_ACTION_EXCEPTION },
+        };
+        mx_status_t status = mx_job_set_policy(
+            job, MX_JOB_POL_RELATIVE, MX_JOB_POL_BASIC,
+            &policy, countof(policy));
+        check("mx_job_set_policy", status);
+    }
 
     launchpad_t* lp;
     mx_status_t status = launchpad_create(job, program, &lp);
@@ -197,8 +211,8 @@ int main(int argc, char** argv) {
     check("launchpad_environ", status);
 
     if (send_root) {
-        status = launchpad_clone(lp, LP_CLONE_MXIO_ROOT);
-        check("launchpad_clone_mxio_root", status);
+        status = launchpad_clone(lp, LP_CLONE_MXIO_NAMESPACE);
+        check("launchpad_clone(LP_CLONE_MXIO_NAMESPACE)", status);
     }
 
     for (size_t i = 0; i < nfds; ++i) {
@@ -206,19 +220,15 @@ int main(int argc, char** argv) {
         check("launchpad_clone_fd", status);
     }
 
-    if (basic) {
-        status = launchpad_elf_load_basic(lp, vmo);
-        check("launchpad_elf_load_basic", status);
-    } else {
-        status = launchpad_elf_load(lp, vmo);
-        check("launchpad_elf_load", status);
-    }
+    status = launchpad_load_from_vmo(lp, vmo);
+    check("launchpad_load_from_vmo", status);
 
     if (send_loader_message) {
         bool already_sending = launchpad_send_loader_message(lp, true);
         if (!already_sending) {
-            mx_handle_t loader_svc = mxio_loader_service(NULL, NULL);
-            check("mxio_loader_service", loader_svc);
+            mx_handle_t loader_svc;
+            status = loader_service_get_default(&loader_svc);
+            check("mxio_loader_service", status);
             mx_handle_t old = launchpad_use_loader_service(lp, loader_svc);
             check("launchpad_use_loader_service", old);
             if (old != MX_HANDLE_INVALID) {
@@ -230,33 +240,36 @@ int main(int argc, char** argv) {
     }
 
     if (pass_loader_handle) {
-        mx_handle_t loader_svc = mxio_loader_service(NULL, NULL);
-        check("mxio_loader_service", loader_svc);
+        mx_handle_t loader_svc;
+        status = loader_service_get_default(&loader_svc);
+        check("mxio_loader_service", status);
         status = launchpad_add_handle(lp, loader_svc, PA_SVC_LOADER);
         check("launchpad_add_handle", status);
     }
 
     // Note that if both -v and -V were passed, we'll add two separate
-    // MX_HND_TYPE_EXEC_VMO handles to the startup message, which is
+    // PA_VMO_EXECUTABLE handles to the startup message, which is
     // unlikely to be useful.  But this program is mainly to test the
     // library, so it makes all the library calls the user asks for.
     if (exec_vmo_file != NULL) {
-        mx_handle_t exec_vmo = launchpad_vmo_from_file(exec_vmo_file);
-        if (exec_vmo == ERR_IO) {
+        mx_handle_t exec_vmo;
+        status = launchpad_vmo_from_file(exec_vmo_file, &exec_vmo);
+        if (status == MX_ERR_IO) {
             perror(exec_vmo_file);
             return 2;
         }
-        check("launchpad_vmo_from_file", exec_vmo);
+        check("launchpad_vmo_from_file", status);
         status = launchpad_add_handle(lp, exec_vmo, PA_VMO_EXECUTABLE);
     }
 
     if (exec_vmo_fd != -1) {
-        mx_handle_t exec_vmo = launchpad_vmo_from_fd(exec_vmo_fd);
-        if (exec_vmo == ERR_IO) {
+        mx_handle_t exec_vmo;
+        status = mxio_get_vmo(exec_vmo_fd, &exec_vmo);
+        if (status == MX_ERR_IO) {
             perror("launchpad_vmo_from_fd");
             return 2;
         }
-        check("launchpad_vmo_from_fd", exec_vmo);
+        check("launchpad_vmo_from_fd", status);
         status = launchpad_add_handle(lp, exec_vmo, PA_VMO_EXECUTABLE);
     }
 

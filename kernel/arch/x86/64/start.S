@@ -86,7 +86,7 @@
 
 .section .text.boot, "ax", @progbits
 .code32
-FUNCTION(_multiboot_start)
+FUNCTION_LABEL(_multiboot_start)
     cmpl $MULTIBOOT_BOOTLOADER_MAGIC, %eax
     jne .Lcommon_boot
     movl %ebx, PHYS(_multiboot_info)
@@ -174,6 +174,15 @@ high_entry:
     /* reload the gdtr */
     lgdt _gdtr
 
+    // Set %gs.base to &bp_percpu.  It's statically initialized
+    // with kernel_unsafe_sp set, so after this it's safe to call
+    // into C code that might use safe-stack and/or stack-protector.
+    lea bp_percpu(%rip), %rax
+    mov %rax, %rdx
+    shr $32, %rdx
+    mov $X86_MSR_IA32_GS_BASE, %ecx
+    wrmsr
+
     /* set up the idt */
     mov $_idt_startup, %rdi
     call idt_setup
@@ -205,7 +214,7 @@ high_entry:
 
     /* 64bit entry point from a secondary loader */
 .align 8
-FUNCTION(_entry64)
+FUNCTION_LABEL(_entry64)
     mov %esi, PHYS(_bootdata_base)
     /* ensure the stack pointer is sane */
 

@@ -34,6 +34,8 @@
 
 ## Jobs
 + [job_create](syscalls/job_create.md) - create a new job within a job
++ [job_set_policy](syscalls/job_set_policy.md) - modify policies for a job and its descendants
++ [job_set_relative_importance](syscalls/job_set_relative_importance.md) - update a global ordering of jobs
 
 ## Tasks (Thread, Process, or Job)
 + [task_resume](syscalls/task_resume.md) - cause a suspended task to continue running
@@ -60,17 +62,10 @@
 + [event_create](syscalls/event_create.md) - create an event
 + [eventpair_create](syscalls/eventpair_create.md) - create a connected pair of events
 
-## Wait Sets
-+ [waitset_create](syscalls/waitset_create.md) - create a new waitset
-+ [waitset_add](syscalls/waitset_add.md) - add an entry to a waitset
-+ [waitset_remove](syscalls/waitset_remove.md) - remove an entry from a waitset
-+ [waitset_wait](syscalls/waitset_wait.md) - wait for one or more entries to be signalled
-
 ## Ports
 + [port_create](syscalls/port_create.md) - create a port
 + [port_queue](syscalls/port_queue.md) - send a packet to a port
 + [port_wait](syscalls/port_wait.md) - wait for packets to arrive on a port
-+ [port_bind](syscalls/port_bind.md) - bind an object to a port
 + [port_cancel](syscalls/port_cancel.md) - cancel notificaitons from async_wait
 
 ## Futexes
@@ -82,6 +77,7 @@
 + [vmo_create](syscalls/vmo_create.md) - create a new vmo
 + [vmo_read](syscalls/vmo_read.md) - read from a vmo
 + [vmo_write](syscalls/vmo_write.md) - write to a vmo
++ [vmo_clone](syscalls/vmo_clone.md) - clone a vmo
 + [vmo_get_size](syscalls/vmo_get_size.md) - obtain the size of a vmo
 + [vmo_set_size](syscalls/vmo_set_size.md) - adjust the size of a vmo
 + [vmo_op_range](syscalls/vmo_op_range.md) - perform an operation on a range of a vmo
@@ -102,6 +98,11 @@
 + [time_get](syscalls/time_get.md) - read a system clock
 + [ticks_get](syscalls/ticks_get.md) - read high-precision timer ticks
 + [ticks_per_second](syscalls/ticks_per_second.md) - read the number of high-precision timer ticks in a second
+
+## Timers
++ [timer_create](syscalls/timer_create.md) - create a timer object
++ [timer_set](syscalls/timer_set.md) - start a timer
++ [timer_cancel](syscalls/timer_cancel.md) - cancel a timer
 
 ## Global system information
 + [system_get_num_cpus](syscalls/system_get_num_cpus.md) - get number of CPUs

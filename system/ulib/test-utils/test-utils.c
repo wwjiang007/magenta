@@ -8,6 +8,7 @@
 #include <launchpad/vmo.h>
 #include <magenta/process.h>
 #include <magenta/syscalls.h>
+#include <magenta/syscalls/port.h>
 #include <magenta/status.h>
 #include <runtime/thread.h>
 #include <test-utils/test-utils.h>
@@ -57,7 +58,7 @@ void tu_fatal(const char *what, mx_status_t status)
 void tu_handle_close(mx_handle_t handle)
 {
     mx_status_t status = mx_handle_close(handle);
-    // TODO(dje): It's still an open question as to whether errors other than ERR_BAD_HANDLE are "advisory".
+    // TODO(dje): It's still an open question as to whether errors other than MX_ERR_BAD_HANDLE are "advisory".
     if (status < 0) {
         tu_fatal(__func__, status);
     }
@@ -75,9 +76,9 @@ void tu_thread_create_c11(thrd_t* t, thrd_start_t entry, void* arg,
         // The translation doesn't have to be perfect.
         switch (ret) {
         case thrd_nomem:
-            tu_fatal(__func__, ERR_NO_MEMORY);
+            tu_fatal(__func__, MX_ERR_NO_MEMORY);
         default:
-            tu_fatal(__func__, ERR_BAD_STATE);
+            tu_fatal(__func__, MX_ERR_BAD_STATE);
         }
         __UNREACHABLE;
     }
@@ -135,7 +136,7 @@ bool tu_channel_wait_readable(mx_handle_t channel)
     mx_signals_t pending;
     int64_t timeout = TU_WATCHDOG_DURATION_NANOSECONDS;
     mx_status_t result = tu_wait(&channel, &signals, 1, NULL, timeout, &pending);
-    if (result != NO_ERROR)
+    if (result != MX_OK)
         tu_fatal(__func__, result);
     if ((pending & MX_CHANNEL_READABLE) == 0) {
         unittest_printf("%s: peer closed\n", __func__);
@@ -144,14 +145,14 @@ bool tu_channel_wait_readable(mx_handle_t channel)
     return true;
 }
 
-mx_handle_t tu_launch(const char* name,
+mx_handle_t tu_launch(mx_handle_t job, const char* name,
                       int argc, const char* const* argv,
                       const char* const* envp,
                       size_t num_handles, mx_handle_t* handles,
                       uint32_t* handle_ids)
 {
     launchpad_t* lp;
-    launchpad_create(0u, name, &lp);
+    launchpad_create(job, name, &lp);
     launchpad_load_from_file(lp, argv[0]);
     launchpad_set_args(lp, argc, argv);
     launchpad_set_environ(lp, envp);
@@ -166,7 +167,7 @@ mx_handle_t tu_launch(const char* name,
     return child;
 }
 
-launchpad_t* tu_launch_mxio_init(const char* name,
+launchpad_t* tu_launch_mxio_init(mx_handle_t job, const char* name,
                                  int argc, const char* const* argv,
                                  const char* const* envp,
                                  size_t hnds_count, mx_handle_t* handles,
@@ -180,7 +181,7 @@ launchpad_t* tu_launch_mxio_init(const char* name,
     if (name == NULL)
         name = filename;
 
-    launchpad_create(0u, name, &lp);
+    launchpad_create(job, name, &lp);
     launchpad_load_from_file(lp, filename);
     launchpad_set_args(lp, argc, argv);
     launchpad_set_environ(lp, envp);
@@ -205,7 +206,7 @@ void tu_process_wait_signaled(mx_handle_t process)
     mx_signals_t pending;
     int64_t timeout = TU_WATCHDOG_DURATION_NANOSECONDS;
     mx_status_t result = tu_wait(&process, &signals, 1, NULL, timeout, &pending);
-    if (result != NO_ERROR)
+    if (result != MX_OK)
         tu_fatal(__func__, result);
     if ((pending & MX_PROCESS_TERMINATED) == 0) {
         unittest_printf_critical("%s: unexpected return from tu_wait\n", __func__);
@@ -244,10 +245,19 @@ int tu_process_wait_exit(mx_handle_t process)
     return tu_process_get_return_code(process);
 }
 
-mx_handle_t tu_io_port_create(uint32_t options)
+mx_handle_t tu_job_create(mx_handle_t job)
+{
+    mx_handle_t child_job;
+    mx_status_t status = mx_job_create(job, 0, &child_job);
+    if (status < 0)
+        tu_fatal(__func__, status);
+    return child_job;
+}
+
+mx_handle_t tu_io_port_create(void)
 {
     mx_handle_t handle;
-    mx_status_t status = mx_port_create(options, &handle);
+    mx_status_t status = mx_port_create(0, &handle);
     if (status < 0)
         tu_fatal(__func__, status);
     return handle;
@@ -295,7 +305,7 @@ mx_handle_t tu_get_thread(mx_handle_t proc, mx_koid_t tid)
 {
     mx_handle_t thread;
     mx_status_t status = mx_object_get_child(proc, tid, MX_RIGHT_SAME_RIGHTS, &thread);
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         tu_fatal(__func__, status);
     return thread;
 }
@@ -315,7 +325,7 @@ int tu_run_program(const char *progname, int argc, const char** argv)
 
     unittest_printf("%s: running %s\n", __func__, progname);
 
-    launchpad_create(0, progname, &lp);
+    launchpad_create(MX_HANDLE_INVALID, progname, &lp);
     launchpad_clone(lp, LP_CLONE_ALL);
     launchpad_load_from_file(lp, argv[0]);
     launchpad_set_args(lp, argc, argv);

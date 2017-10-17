@@ -16,9 +16,10 @@
 #include <sync/completion.h>
 #include <ddk/device.h>
 #include <ddk/driver.h>
-#include <ddk/ioctl.h>
+
 #include <ddk/iotxn.h>
-#include <ddk/protocol/device.h>
+#include <magenta/device/device.h>
+#include <magenta/device/vfs.h>
 
 #include <magenta/processargs.h>
 #include <magenta/syscalls.h>
@@ -32,8 +33,6 @@
 
 #define CAN_WRITE(ios) (((03 & ios->flags) == O_RDWR) || ((03 & ios->flags) == O_WRONLY))
 #define CAN_READ(ios) (((03 & ios->flags) == O_RDWR) || ((03 & ios->flags) == O_RDONLY))
-
-mxio_dispatcher_t* devhost_rio_dispatcher;
 
 devhost_iostate_t* create_devhost_iostate(mx_device_t* dev) {
     devhost_iostate_t* ios;
@@ -52,13 +51,13 @@ static mx_status_t devhost_get_handles(mx_handle_t rh, mx_device_t* dev,
 
     if ((newios = create_devhost_iostate(dev)) == NULL) {
         mx_handle_close(rh);
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
 
     // detect pipeline directive and discard all other
     // protocol flags
-    bool pipeline = flags & MXRIO_OFLAG_PIPELINE;
-    flags &= (~MXRIO_OFLAG_MASK);
+    bool pipeline = flags & O_PIPELINE;
+    flags &= (~O_PIPELINE);
 
     newios->flags = flags;
 
@@ -93,12 +92,20 @@ done:
             obj.status = r;
             obj.hcount = 0;
         } else {
-            obj.status = NO_ERROR;
+            obj.status = MX_OK;
             obj.type = MXIO_PROTOCOL_REMOTE;
             obj.hcount = r;
         }
         r = mx_channel_write(rh, 0, &obj, MXRIO_OBJECT_MINSIZE,
                              obj.handle, obj.hcount);
+
+        // Regardless of obj.status, if the mx_channel_write fails
+        // we must close the handles that didn't get transmitted.
+        if (r < 0) {
+            for (size_t i = 0; i < obj.hcount; i++) {
+                mx_handle_close(obj.handle[i]);
+            }
+        }
 
         // If we were reporting an error, we've already closed
         // the device and destroyed the iostate, so no matter
@@ -122,7 +129,7 @@ done:
         printf("devhost_get_handles: failed to start iostate\n");
         goto fail;
     }
-    return NO_ERROR;
+    return MX_OK;
 
 fail:
     device_close(dev, flags);
@@ -137,9 +144,23 @@ static void sync_io_complete(iotxn_t* txn, void* cookie) {
 }
 
 static ssize_t do_sync_io(mx_device_t* dev, uint32_t opcode, void* buf, size_t count, mx_off_t off) {
+    if (dev->ops->iotxn_queue == NULL) {
+        size_t actual;
+        mx_status_t r;
+        if (opcode == IOTXN_OP_READ) {
+            r = dev_op_read(dev, buf, count, off, &actual);
+        } else {
+            r = dev_op_write(dev, buf, count, off, &actual);
+        }
+        if (r < 0) {
+            return r;
+        } else {
+            return actual;
+        }
+    }
     iotxn_t* txn;
     mx_status_t status = iotxn_alloc(&txn, IOTXN_ALLOC_CONTIGUOUS | IOTXN_ALLOC_POOL, MXIO_CHUNK_SIZE);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         return status;
     }
 
@@ -161,7 +182,7 @@ static ssize_t do_sync_io(mx_device_t* dev, uint32_t opcode, void* buf, size_t c
     iotxn_queue(dev, txn);
     completion_wait(&completion, MX_TIME_INFINITE);
 
-    if (txn->status != NO_ERROR) {
+    if (txn->status != MX_OK) {
         size_t txn_status = txn->status;
         iotxn_release(txn);
         return txn_status;
@@ -183,69 +204,73 @@ static ssize_t do_ioctl(mx_device_t* dev, uint32_t op, const void* in_buf, size_
     case IOCTL_DEVICE_BIND: {
         char* drv_libname = in_len > 0 ? (char*)in_buf : NULL;
         if (in_len > PATH_MAX) {
-            r = ERR_BAD_PATH;
-        } else {
-            drv_libname[in_len] = 0;
-            r = device_bind(dev, drv_libname);
+            return MX_ERR_BAD_PATH;
         }
-        break;
+        drv_libname[in_len] = 0;
+        return device_bind(dev, drv_libname);
     }
     case IOCTL_DEVICE_GET_EVENT_HANDLE: {
         if (out_len < sizeof(mx_handle_t)) {
-            r = ERR_BUFFER_TOO_SMALL;
-        } else {
-            mx_handle_t* event = out_buf;
-            r = mx_handle_duplicate(dev->event, MX_RIGHT_DUPLICATE | MX_RIGHT_TRANSFER | MX_RIGHT_READ, event);
-            if (r == NO_ERROR) {
-                r = sizeof(mx_handle_t);
-            }
+            return MX_ERR_BUFFER_TOO_SMALL;
         }
-        break;
+        mx_handle_t* event = out_buf;
+        r = mx_handle_duplicate(dev->event, MX_RIGHT_DUPLICATE | MX_RIGHT_TRANSFER | MX_RIGHT_READ, event);
+        if (r == MX_OK) {
+            r = sizeof(mx_handle_t);
+        }
+        return r;
     }
     case IOCTL_DEVICE_GET_DRIVER_NAME: {
         if (!dev->driver) {
-            r = ERR_NOT_SUPPORTED;
-        } else if (!out_buf) {
-            r = ERR_INVALID_ARGS;
-        } else {
-            const char* name = dev->driver->name;
-            if (name == NULL) {
-                name = "unknown";
-            }
-            r = strlen(name);
-            if (out_len < (size_t)r) {
-                r = ERR_BUFFER_TOO_SMALL;
-            } else {
-                strncpy(out_buf, name, r);
-            }
+            return MX_ERR_NOT_SUPPORTED;
         }
-        break;
+        const char* name = dev->driver->name;
+        if (name == NULL) {
+            name = "unknown";
+        }
+        r = strlen(name);
+        if (out_len < (size_t)r) {
+            r = MX_ERR_BUFFER_TOO_SMALL;
+        } else {
+            strncpy(out_buf, name, r);
+        }
+        return r;
     }
     case IOCTL_DEVICE_GET_DEVICE_NAME: {
-        if (!out_buf) {
-            r = ERR_INVALID_ARGS;
-        } else {
-            r = strlen(dev->name);
-            if (out_len < (size_t)r) {
-                r = ERR_BUFFER_TOO_SMALL;
-            } else {
-                strncpy(out_buf, dev->name, r);
-            }
+        r = strlen(dev->name);
+        if (out_len < (size_t)r) {
+            return MX_ERR_BUFFER_TOO_SMALL;
         }
-        break;
+        strncpy(out_buf, dev->name, r);
+        return r;
+    }
+    case IOCTL_DEVICE_GET_TOPO_PATH: {
+        size_t actual;
+        if ((r = devhost_get_topo_path(dev, out_buf, out_len, &actual)) < 0) {
+            return r;
+        }
+        return actual;
     }
     case IOCTL_DEVICE_DEBUG_SUSPEND: {
-        r = device_op_suspend(dev, 0);
-        break;
+        return dev_op_suspend(dev, 0);
     }
     case IOCTL_DEVICE_DEBUG_RESUME: {
-        r = device_op_resume(dev, 0);
-        break;
+        return dev_op_resume(dev, 0);
+    }
+    case IOCTL_VFS_QUERY_FS: {
+        const char* devhost_name = "devfs:host";
+        if (out_len < sizeof(vfs_query_info_t) + strlen(devhost_name)) {
+            return MX_ERR_INVALID_ARGS;
+        }
+        vfs_query_info_t* info = (vfs_query_info_t*) out_buf;
+        memset(info, 0, sizeof(*info));
+        memcpy(info->name, devhost_name, strlen(devhost_name));
+        return sizeof(vfs_query_info_t) + strlen(devhost_name);
     }
     default: {
         size_t actual = 0;
-        r = device_op_ioctl(dev, op, in_buf, in_len, out_buf, out_len, &actual);
-        if (r == NO_ERROR) {
+        r = dev_op_ioctl(dev, op, in_buf, in_len, out_buf, out_len, &actual);
+        if (r == MX_OK) {
             r = actual;
         }
     }
@@ -262,7 +287,7 @@ mx_status_t devhost_rio_handler(mxrio_msg_t* msg, void* cookie) {
 
     // ensure handle count specified by opcode matches reality
     if (msg->hcount != MXRIO_HC(msg->op)) {
-        return ERR_IO;
+        return MX_ERR_IO;
     }
     msg->hcount = 0;
 
@@ -273,7 +298,7 @@ mx_status_t devhost_rio_handler(mxrio_msg_t* msg, void* cookie) {
         // Put an invalid pointer in its dev field to ensure any use-after-release
         // attempts explode.
         ios->dev = (void*) 0xdead;
-        return NO_ERROR;
+        return MX_OK;
     case MXRIO_OPEN:
         if ((len < 1) || (len > 1024)) {
             mx_handle_close(msg->handle[0]);
@@ -292,14 +317,14 @@ mx_status_t devhost_rio_handler(mxrio_msg_t* msg, void* cookie) {
             }
         } else {
             xprintf("devhost_rio_handler() clone dev %p name '%s'\n", dev, dev->name);
-            flags = ios->flags | (flags & MXRIO_OFLAG_MASK);
+            flags = ios->flags | (flags & O_PIPELINE);
         }
         devhost_get_handles(msg->handle[0], dev, path, flags);
         return ERR_DISPATCHER_INDIRECT;
     }
     case MXRIO_READ: {
         if (!CAN_READ(ios)) {
-            return ERR_ACCESS_DENIED;
+            return MX_ERR_ACCESS_DENIED;
         }
         mx_status_t r = do_sync_io(dev, IOTXN_OP_READ, msg->data, arg, ios->io_off);
         if (r >= 0) {
@@ -311,7 +336,7 @@ mx_status_t devhost_rio_handler(mxrio_msg_t* msg, void* cookie) {
     }
     case MXRIO_READ_AT: {
         if (!CAN_READ(ios)) {
-            return ERR_ACCESS_DENIED;
+            return MX_ERR_ACCESS_DENIED;
         }
         mx_status_t r = do_sync_io(dev, IOTXN_OP_READ, msg->data, arg, msg->arg2.off);
         if (r >= 0) {
@@ -321,7 +346,7 @@ mx_status_t devhost_rio_handler(mxrio_msg_t* msg, void* cookie) {
     }
     case MXRIO_WRITE: {
         if (!CAN_WRITE(ios)) {
-            return ERR_ACCESS_DENIED;
+            return MX_ERR_ACCESS_DENIED;
         }
         mx_status_t r = do_sync_io(dev, IOTXN_OP_WRITE, msg->data, len, ios->io_off);
         if (r >= 0) {
@@ -332,18 +357,18 @@ mx_status_t devhost_rio_handler(mxrio_msg_t* msg, void* cookie) {
     }
     case MXRIO_WRITE_AT: {
         if (!CAN_WRITE(ios)) {
-            return ERR_ACCESS_DENIED;
+            return MX_ERR_ACCESS_DENIED;
         }
         mx_status_t r = do_sync_io(dev, IOTXN_OP_WRITE, msg->data, len, msg->arg2.off);
         return r;
     }
     case MXRIO_SEEK: {
         size_t end, n;
-        end = device_op_get_size(dev);
+        end = dev_op_get_size(dev);
         switch (arg) {
         case SEEK_SET:
             if ((msg->arg2.off < 0) || ((size_t)msg->arg2.off > end)) {
-                return ERR_INVALID_ARGS;
+                return MX_ERR_INVALID_ARGS;
             }
             n = msg->arg2.off;
             break;
@@ -355,13 +380,13 @@ mx_status_t devhost_rio_handler(mxrio_msg_t* msg, void* cookie) {
                 // if negative seek
                 if (n > ios->io_off) {
                     // wrapped around
-                    return ERR_INVALID_ARGS;
+                    return MX_ERR_INVALID_ARGS;
                 }
             } else {
                 // positive seek
                 if (n < ios->io_off) {
                     // wrapped around
-                    return ERR_INVALID_ARGS;
+                    return MX_ERR_INVALID_ARGS;
                 }
             }
             break;
@@ -371,32 +396,32 @@ mx_status_t devhost_rio_handler(mxrio_msg_t* msg, void* cookie) {
                 // if negative or exact-end seek
                 if (n > end) {
                     // wrapped around
-                    return ERR_INVALID_ARGS;
+                    return MX_ERR_INVALID_ARGS;
                 }
             } else {
                 if (n < end) {
                     // wrapped around
-                    return ERR_INVALID_ARGS;
+                    return MX_ERR_INVALID_ARGS;
                 }
             }
             break;
         default:
-            return ERR_INVALID_ARGS;
+            return MX_ERR_INVALID_ARGS;
         }
         if (n > end) {
             // devices may not seek past the end
-            return ERR_INVALID_ARGS;
+            return MX_ERR_INVALID_ARGS;
         }
         ios->io_off = n;
         msg->arg2.off = ios->io_off;
-        return NO_ERROR;
+        return MX_OK;
     }
     case MXRIO_STAT: {
         msg->datalen = sizeof(vnattr_t);
         vnattr_t* attr = (void*)msg->data;
         memset(attr, 0, sizeof(vnattr_t));
         attr->mode = V_TYPE_CDEV | V_IRUSR | V_IWUSR;
-        attr->size = device_op_get_size(dev);
+        attr->size = dev_op_get_size(dev);
         attr->nlink = 1;
         return msg->datalen;
     }
@@ -408,7 +433,7 @@ mx_status_t devhost_rio_handler(mxrio_msg_t* msg, void* cookie) {
             (arg > (ssize_t)sizeof(msg->data)) ||
             (IOCTL_KIND(msg->arg2.op) != IOCTL_KIND_SET_HANDLE)) {
             mx_handle_close(msg->handle[0]);
-            return ERR_INVALID_ARGS;
+            return MX_ERR_INVALID_ARGS;
         }
         if (len < sizeof(mx_handle_t)) {
             len = sizeof(mx_handle_t);
@@ -425,7 +450,7 @@ mx_status_t devhost_rio_handler(mxrio_msg_t* msg, void* cookie) {
 
         mx_status_t r = do_ioctl(dev, msg->arg2.op, in_buf, len, msg->data, arg);
 
-        if (r == ERR_NOT_SUPPORTED) {
+        if (r == MX_ERR_NOT_SUPPORTED) {
             mx_handle_close(msg->handle[0]);
         } else if (r >= 0) {
             msg->datalen = r;
@@ -436,7 +461,7 @@ mx_status_t devhost_rio_handler(mxrio_msg_t* msg, void* cookie) {
         if ((len > MXIO_IOCTL_MAX_INPUT) ||
             (arg > (ssize_t)sizeof(msg->data)) ||
             (IOCTL_KIND(msg->arg2.op) == IOCTL_KIND_SET_HANDLE)) {
-            return ERR_INVALID_ARGS;
+            return MX_ERR_INVALID_ARGS;
         }
 
         char in_buf[MXIO_IOCTL_MAX_INPUT];
@@ -468,6 +493,6 @@ mx_status_t devhost_rio_handler(mxrio_msg_t* msg, void* cookie) {
         for (unsigned i = 0; i < MXRIO_HC(msg->op); i++) {
             mx_handle_close(msg->handle[i]);
         }
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 }

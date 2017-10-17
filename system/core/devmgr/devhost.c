@@ -4,12 +4,13 @@
 
 #include <dlfcn.h>
 #include <inttypes.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-#include <driver/driver-api.h>
+#include <ddk/debug.h>
 #include <ddk/device.h>
 #include <ddk/driver.h>
 #include <ddk/binding.h>
@@ -72,70 +73,133 @@ static const char* mkdevpath(mx_device_t* dev, char* path, size_t max) {
     return end;
 }
 
-static mx_status_t dh_find_driver(const char* libname, mx_handle_t vmo, mx_driver_rec_t** out) {
+static uint32_t logflagval(char* flag) {
+    if (!strcmp(flag, "error")) {
+        return DDK_LOG_ERROR;
+    }
+    if (!strcmp(flag, "info")) {
+        return DDK_LOG_INFO;
+    }
+    if (!strcmp(flag, "trace")) {
+        return DDK_LOG_TRACE;
+    }
+    if (!strcmp(flag, "spew")) {
+        return DDK_LOG_SPEW;
+    }
+    if (!strcmp(flag, "debug1")) {
+        return DDK_LOG_DEBUG1;
+    }
+    if (!strcmp(flag, "debug2")) {
+        return DDK_LOG_DEBUG2;
+    }
+    if (!strcmp(flag, "debug3")) {
+        return DDK_LOG_DEBUG3;
+    }
+    if (!strcmp(flag, "debug4")) {
+        return DDK_LOG_DEBUG4;
+    }
+    return strtoul(flag, NULL, 0);
+}
+
+static void logflag(char* flag, uint32_t* flags) {
+    if (*flag == '+') {
+        *flags |= logflagval(flag + 1);
+    } else if (*flag == '-') {
+        *flags &= ~logflagval(flag + 1);
+    }
+}
+
+static mx_status_t dh_find_driver(const char* libname, mx_handle_t vmo, mx_driver_t** out) {
     // check for already-loaded driver first
-    mx_driver_rec_t* rec;
-    list_for_every_entry(&dh_drivers, rec, mx_driver_rec_t, node) {
-        if (!strcmp(libname, rec->libname)) {
-            *out = rec;
+    mx_driver_t* drv;
+    list_for_every_entry(&dh_drivers, drv, mx_driver_t, node) {
+        if (!strcmp(libname, drv->libname)) {
+            *out = drv;
             mx_handle_close(vmo);
-            return rec->status;
+            return drv->status;
         }
     }
 
     int len = strlen(libname) + 1;
-    rec = calloc(1, sizeof(mx_driver_rec_t) + len);
-    if (rec == NULL) {
+    drv = calloc(1, sizeof(mx_driver_t) + len);
+    if (drv == NULL) {
         mx_handle_close(vmo);
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
-    memcpy((void*) (rec + 1), libname, len);
-    rec->libname = (const char*) (rec + 1);
-    list_add_tail(&dh_drivers, &rec->node);
-    *out = rec;
+    memcpy((void*) (drv + 1), libname, len);
+    drv->libname = (const char*) (drv + 1);
+    list_add_tail(&dh_drivers, &drv->node);
+    *out = drv;
 
     void* dl = dlopen_vmo(vmo, RTLD_NOW);
     if (dl == NULL) {
         log(ERROR, "devhost: cannot load '%s': %s\n", libname, dlerror());
-        rec->status = ERR_IO;
+        drv->status = MX_ERR_IO;
         goto done;
     }
 
-    const magenta_driver_info_t* di = dlsym(dl, "__magenta_driver__");
-    if (di == NULL) {
-        log(ERROR, "devhost: driver '%s' missing __magenta_driver__ symbol\n", libname);
-        rec->status = ERR_IO;
+    const magenta_driver_note_t* dn = dlsym(dl, "__magenta_driver_note__");
+    if (dn == NULL) {
+        log(ERROR, "devhost: driver '%s' missing __magenta_driver_note__ symbol\n", libname);
+        drv->status = MX_ERR_IO;
         goto done;
     }
-    if (!di->driver->ops) {
+    mx_driver_rec_t* dr = dlsym(dl, "__magenta_driver_rec__");
+    if (dr == NULL) {
+        log(ERROR, "devhost: driver '%s' missing __magenta_driver_rec__ symbol\n", libname);
+        drv->status = MX_ERR_IO;
+        goto done;
+    }
+    if (!dr->ops) {
         log(ERROR, "devhost: driver '%s' has NULL ops\n", libname);
-        rec->status = ERR_INVALID_ARGS;
+        drv->status = MX_ERR_INVALID_ARGS;
         goto done;
     }
-    if (di->driver->ops->version != DRIVER_OPS_VERSION) {
+    if (dr->ops->version != DRIVER_OPS_VERSION) {
         log(ERROR, "devhost: driver '%s' has bad driver ops version %" PRIx64
             ", expecting %" PRIx64 "\n", libname,
-            di->driver->ops->version, DRIVER_OPS_VERSION);
-        rec->status = ERR_INVALID_ARGS;
+            dr->ops->version, DRIVER_OPS_VERSION);
+        drv->status = MX_ERR_INVALID_ARGS;
         goto done;
     }
 
-    rec->name = di->driver->name;
-    rec->ops = di->driver->ops;
+    drv->name = dn->payload.name;
+    drv->ops = dr->ops;
+    dr->driver = drv;
 
-    if (rec->ops->init) {
-        rec->status = rec->ops->init(&rec->ctx);
-        if (rec->status < 0) {
+    // check for dprintf log level flags
+    char tmp[128];
+    snprintf(tmp, sizeof(tmp), "driver.%s.log", drv->name);
+    char* log = getenv(tmp);
+    if (log) {
+        while (log) {
+            char* sep = strchr(log, ',');
+            if (sep) {
+                *sep = 0;
+                logflag(log, &dr->log_flags);
+                *sep = ',';
+                log = sep + 1;
+            } else {
+                logflag(log, &dr->log_flags);
+                break;
+            }
+        }
+        log(INFO, "devhost: driver '%s': log flags set to: 0x%x\n", drv->name, dr->log_flags);
+    }
+
+    if (drv->ops->init) {
+        drv->status = drv->ops->init(&drv->ctx);
+        if (drv->status < 0) {
             log(ERROR, "devhost: driver '%s' failed in init: %d\n",
-                libname, rec->status);
+                libname, drv->status);
         }
     } else {
-        rec->status = NO_ERROR;
+        drv->status = MX_OK;
     }
 
 done:
     mx_handle_close(vmo);
-    return rec->status;
+    return drv->status;
 }
 
 static void dh_handle_open(mxrio_msg_t* msg, size_t len,
@@ -174,12 +238,12 @@ static mx_status_t dh_handle_rpc_read(mx_handle_t h, iostate_t* ios) {
     // handle remoteio open messages only
     if ((msize >= MXRIO_HDR_SZ) && (MXRIO_OP(msg.op) == MXRIO_OPEN)) {
         if (hcount != 1) {
-            r = ERR_INTERNAL;
+            r = MX_ERR_INTERNAL;
             goto fail;
         }
         log(RPC_RIO, "devhost[%s] remoteio OPEN\n", path);
         dh_handle_open((void*) &msg, msize, hin[0], ios);
-        return NO_ERROR;
+        return MX_OK;
     }
 
     const void* data;
@@ -193,12 +257,12 @@ static mx_status_t dh_handle_rpc_read(mx_handle_t h, iostate_t* ios) {
         log(RPC_IN, "devhost[%s] create device stub drv='%s'\n", path, name);
         if (hcount < 1 || hcount > 2) {
             printf("HCOUNT %d\n", hcount);
-            r = ERR_INVALID_ARGS;
+            r = MX_ERR_INVALID_ARGS;
             goto fail;
         }
         iostate_t* newios = calloc(1, sizeof(iostate_t));
         if (newios == NULL) {
-            r = ERR_NO_MEMORY;
+            r = MX_ERR_NO_MEMORY;
             break;
         }
 
@@ -206,7 +270,7 @@ static mx_status_t dh_handle_rpc_read(mx_handle_t h, iostate_t* ios) {
         // no name means a dummy shadow device
         if ((newios->dev = calloc(1, sizeof(mx_device_t))) == NULL) {
             free(newios);
-            r = ERR_NO_MEMORY;
+            r = MX_ERR_NO_MEMORY;
             break;
         }
         mx_device_t* dev = newios->dev;
@@ -222,13 +286,13 @@ static mx_status_t dh_handle_rpc_read(mx_handle_t h, iostate_t* ios) {
         newios->ph.handle = hin[0];
         newios->ph.waitfor = MX_CHANNEL_READABLE | MX_CHANNEL_PEER_CLOSED;
         newios->ph.func = dh_handle_dc_rpc;
-        if ((r = port_watch(&dh_port, &newios->ph)) < 0) {
+        if ((r = port_wait(&dh_port, &newios->ph)) < 0) {
             free(newios->dev);
             free(newios);
             break;
         }
         log(RPC_IN, "devhost[%s] created '%s' ios=%p\n", path, name, newios);
-        return NO_ERROR;
+        return MX_OK;
 
     case DC_OP_CREATE_DEVICE: {
         // This does not operate under the devhost api lock,
@@ -241,42 +305,42 @@ static mx_status_t dh_handle_rpc_read(mx_handle_t h, iostate_t* ios) {
         if (hcount == 2) {
             hin[2] = MX_HANDLE_INVALID;
         } else if (hcount != 3) {
-            r = ERR_INVALID_ARGS;
+            r = MX_ERR_INVALID_ARGS;
             break;
         }
         iostate_t* newios = calloc(1, sizeof(iostate_t));
         if (newios == NULL) {
-            r = ERR_NO_MEMORY;
+            r = MX_ERR_NO_MEMORY;
             break;
         }
 
         // named driver -- ask it to create the device
-        mx_driver_rec_t* rec;
-        if ((r = dh_find_driver(name, hin[1], &rec)) < 0) {
+        mx_driver_t* drv;
+        if ((r = dh_find_driver(name, hin[1], &drv)) < 0) {
             free(newios);
             log(ERROR, "devhost[%s] driver load failed: %d\n", path, r);
             break;
         }
-        if (rec->ops->create) {
+        if (drv->ops->create) {
             // magic cookie for device create handshake
             mx_device_t parent = {
                 .name = "device_create dummy",
-                .owner = rec,
+                .owner = drv,
             };
             device_create_setup(&parent);
-            if ((r = rec->ops->create(rec->ctx, &parent, "shadow", args, hin[2])) < 0) {
+            if ((r = drv->ops->create(drv->ctx, &parent, "shadow", args, hin[2])) < 0) {
                 log(ERROR, "devhost[%s] driver create() failed: %d\n", path, r);
                 device_create_setup(NULL);
                 break;
             }
             if ((newios->dev = device_create_setup(NULL)) == NULL) {
                 log(ERROR, "devhost[%s] driver create() failed to create a device!", path);
-                r = ERR_BAD_STATE;
+                r = MX_ERR_BAD_STATE;
                 break;
             }
         } else {
             log(ERROR, "devhost[%s] driver create() not supported\n", path);
-            r = ERR_NOT_SUPPORTED;
+            r = MX_ERR_NOT_SUPPORTED;
             break;
         }
         //TODO: inform devcoord
@@ -285,35 +349,54 @@ static mx_status_t dh_handle_rpc_read(mx_handle_t h, iostate_t* ios) {
         newios->ph.handle = hin[0];
         newios->ph.waitfor = MX_CHANNEL_READABLE | MX_CHANNEL_PEER_CLOSED;
         newios->ph.func = dh_handle_dc_rpc;
-        if ((r = port_watch(&dh_port, &newios->ph)) < 0) {
+        if ((r = port_wait(&dh_port, &newios->ph)) < 0) {
             free(newios);
             break;
         }
         log(RPC_IN, "devhost[%s] created '%s' ios=%p\n", path, name, newios);
-        return NO_ERROR;
+        return MX_OK;
     }
 
     case DC_OP_BIND_DRIVER:
         if (hcount != 1) {
-            r = ERR_INVALID_ARGS;
+            r = MX_ERR_INVALID_ARGS;
             break;
         }
         //TODO: api lock integration
         log(RPC_IN, "devhost[%s] bind driver '%s'\n", path, name);
-        mx_driver_rec_t* rec;
-        if ((r = dh_find_driver(name, hin[0], &rec)) < 0) {
+        mx_driver_t* drv;
+        if (ios->dev->flags & DEV_FLAG_DEAD) {
+            log(ERROR, "devhost[%s] bind to removed device disallowed\n", path);
+            r = MX_ERR_IO_NOT_PRESENT;
+        } else if ((r = dh_find_driver(name, hin[0], &drv)) < 0) {
             log(ERROR, "devhost[%s] driver load failed: %d\n", path, r);
         } else {
-            if (rec->ops->bind) {
-                // set owner first so device_add() will be able to find the driver
-                ios->dev->owner = rec;
-                r = rec->ops->bind(rec->ctx, ios->dev, &ios->dev->owner_cookie);
+            void* cookie = NULL;
+            if (drv->ops->bind) {
+                r = drv->ops->bind(drv->ctx, ios->dev, &cookie);
             } else {
-                r = ERR_NOT_SUPPORTED;
+                r = MX_ERR_NOT_SUPPORTED;
             }
             if (r < 0) {
                 log(ERROR, "devhost[%s] bind driver '%s' failed: %d\n", path, name, r);
-                ios->dev->owner = NULL;
+            } else {
+                //TODO: Best behaviour for multibind? maybe retire "owner"?
+                //      For now this is extermely rare, so we mostly can ignore
+                //      it.
+                if (drv->ops->unbind || cookie) {
+                    log(INFO, "devhost[%s] driver '%s' unbind=%p, cookie=%p\n",
+                        path, name, drv->ops->unbind, cookie);
+
+                    DM_LOCK();
+                    if (ios->dev->owner) {
+                        log(ERROR, "devhost[%s] driver '%s' device already owned!\n", path, name);
+                    } else {
+                        ios->dev->owner = drv;
+                        ios->dev->owner_cookie = cookie;
+                        ios->dev->refcount++;
+                    }
+                    DM_UNLOCK();
+                }
             }
         }
         dc_msg_t reply = {
@@ -322,11 +405,11 @@ static mx_status_t dh_handle_rpc_read(mx_handle_t h, iostate_t* ios) {
             .status = r,
         };
         mx_channel_write(h, 0, &reply, sizeof(reply), NULL, 0);
-        return NO_ERROR;
+        return MX_OK;
 
     default:
         log(ERROR, "devhost[%s] invalid rpc op %08x\n", path, msg.op);
-        r = ERR_NOT_SUPPORTED;
+        r = MX_ERR_NOT_SUPPORTED;
     }
 
 fail:
@@ -345,17 +428,17 @@ static mx_status_t dh_handle_dc_rpc(port_handler_t* ph, mx_signals_t signals, ui
         // of an iostate, to ensure that's the *last*
         // packet about the iostate that we get
         free(ios);
-        return ERR_STOP;
+        return MX_ERR_STOP;
     }
     if (ios->dead) {
-        // ports v2 does not let us cancel packets that are
+        // ports does not let us cancel packets that are
         // alread in the queue, so the dead flag enables us
         // to ignore them
-        return ERR_STOP;
+        return MX_ERR_STOP;
     }
     if (signals & MX_CHANNEL_READABLE) {
         mx_status_t r = dh_handle_rpc_read(ph->handle, ios);
-        if (r != NO_ERROR) {
+        if (r != MX_OK) {
             log(ERROR, "devhost: devmgr rpc unhandleable ios=%p r=%d. fatal.\n", ios, r);
             exit(0);
         }
@@ -366,7 +449,7 @@ static mx_status_t dh_handle_dc_rpc(port_handler_t* ph, mx_signals_t signals, ui
         exit(0);
     }
     log(ERROR, "devhost: no work? %08x\n", signals);
-    return NO_ERROR;
+    return MX_OK;
 }
 
 // handles remoteio rpc
@@ -376,20 +459,20 @@ static mx_status_t dh_handle_rio_rpc(port_handler_t* ph, mx_signals_t signals, u
     mx_status_t r;
     mxrio_msg_t msg;
     if (signals & MX_CHANNEL_READABLE) {
-        if ((r = mxrio_handle_rpc(ph->handle, &msg, devhost_rio_handler, ios)) == NO_ERROR) {
-            return NO_ERROR;
+        if ((r = mxrio_handle_rpc(ph->handle, &msg, devhost_rio_handler, ios)) == MX_OK) {
+            return MX_OK;
         }
     } else if (signals & MX_CHANNEL_PEER_CLOSED) {
         mxrio_handle_close(devhost_rio_handler, ios);
-        r = ERR_STOP;
+        r = MX_ERR_STOP;
     } else {
         printf("dh_handle_rio_rpc: invalid signals %x\n", signals);
         exit(0);
     }
 
     // We arrive here if handle_rpc was a clean close (ERR_DISPATCHER_DONE),
-    // or close-due-to-error (non-NO_ERROR), or if the channel was closed
-    // out from under us (ERR_STOP).  In all cases, the ios's reference to
+    // or close-due-to-error (non-MX_OK), or if the channel was closed
+    // out from under us (MX_ERR_STOP).  In all cases, the ios's reference to
     // the device was released, and will no longer be used, so we will free
     // it before returning.
     mx_handle_close(ios->ph.handle);
@@ -397,18 +480,76 @@ static mx_status_t dh_handle_rio_rpc(port_handler_t* ph, mx_signals_t signals, u
     return r;
 }
 
+#define LOGBUF_MAX (MX_LOG_RECORD_MAX - sizeof(mx_log_record_t))
+
+static mx_handle_t devhost_log_handle;
+
+static ssize_t _devhost_log_write(uint32_t flags, const void* _data, size_t len) {
+    static thread_local struct {
+        uint32_t next;
+        mx_handle_t handle;
+        char data[LOGBUF_MAX];
+    }* ctx = NULL;
+
+    if (ctx == NULL) {
+        if ((ctx = calloc(1, sizeof(*ctx))) == NULL) {
+            return len;
+        }
+        ctx->handle = devhost_log_handle;
+    }
+
+    const char* data = _data;
+    size_t r = len;
+
+    while (len-- > 0) {
+        char c = *data++;
+        if (c == '\n') {
+            if (ctx->next) {
+flush_ctx:
+                mx_log_write(ctx->handle, ctx->next, ctx->data, flags);
+                ctx->next = 0;
+            }
+            continue;
+        }
+        if (c < ' ') {
+            continue;
+        }
+        ctx->data[ctx->next++] = c;
+        if (ctx->next == LOGBUF_MAX) {
+            goto flush_ctx;
+        }
+    }
+    return r;
+}
+
+__EXPORT void driver_printf(uint32_t flags, const char* fmt, ...) {
+    char buffer[512];
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vsnprintf(buffer, sizeof(buffer), fmt, ap);
+    va_end(ap);
+
+    if (r > (int)sizeof(buffer)) {
+        r = sizeof(buffer);
+    }
+
+    _devhost_log_write(flags, buffer, r);
+}
+
+static ssize_t devhost_log_write(void* cookie, const void* data, size_t len) {
+    return _devhost_log_write(0, data, len);
+}
 
 static void devhost_io_init(void) {
-    mx_handle_t h;
-    if (mx_log_create(MX_LOG_FLAG_DEVICE, &h) < 0) {
+    if (mx_log_create(0, &devhost_log_handle) < 0) {
         return;
     }
-    mxio_t* logger;
-    if ((logger = mxio_logger_create(h)) == NULL) {
+    mxio_t* io;
+    if ((io = mxio_output_create(devhost_log_write, NULL)) == NULL) {
         return;
     }
     close(1);
-    mxio_bind_to_fd(logger, 1, 0);
+    mxio_bind_to_fd(io, 1, 0);
     dup2(1, 2);
 }
 
@@ -429,7 +570,7 @@ mx_status_t devhost_add(mx_device_t* parent, mx_device_t* child,
     mx_status_t r;
     iostate_t* ios = calloc(1, sizeof(*ios));
     if (ios == NULL) {
-        r = ERR_NO_MEMORY;
+        r = MX_ERR_NO_MEMORY;
         goto fail;
     }
 
@@ -450,18 +591,20 @@ mx_status_t devhost_add(mx_device_t* parent, mx_device_t* child,
     }
     handle[1] = resource;
 
+    dc_status_t rsp;
     if ((r = dc_msg_rpc(parent->rpc, &msg, msglen,
-                        handle, (resource != MX_HANDLE_INVALID) ? 2 : 1)) < 0) {
+                        handle, (resource != MX_HANDLE_INVALID) ? 2 : 1,
+                        &rsp, sizeof(rsp))) < 0) {
         log(ERROR, "devhost[%s] add '%s': rpc failed: %d\n", path, child->name, r);
     } else {
         ios->dev = child;
         ios->ph.handle = hrpc;
         ios->ph.waitfor = MX_CHANNEL_READABLE | MX_CHANNEL_PEER_CLOSED;
         ios->ph.func = dh_handle_dc_rpc;
-        if ((r = port_watch(&dh_port, &ios->ph)) == NO_ERROR) {
+        if ((r = port_wait(&dh_port, &ios->ph)) == MX_OK) {
             child->rpc = hrpc;
             child->ios = ios;
-            return NO_ERROR;
+            return MX_OK;
         }
 
     }
@@ -477,8 +620,9 @@ fail:
     return r;
 }
 
-static mx_status_t devhost_simple_rpc(mx_device_t* dev, uint32_t op,
-                                      const char* args, const char* opname) {
+static mx_status_t devhost_rpc(mx_device_t* dev, uint32_t op,
+                               const char* args, const char* opname,
+                               dc_status_t* rsp, size_t rsp_len) {
     char buffer[512];
     const char* path = mkdevpath(dev, buffer, sizeof(buffer));
     log(RPC_OUT, "devhost[%s] %s args='%s'\n", path, opname, args ? args : "");
@@ -490,7 +634,7 @@ static mx_status_t devhost_simple_rpc(mx_device_t* dev, uint32_t op,
     }
     msg.op = op;
     msg.protocol_id = 0;
-    if ((r = dc_msg_rpc(dev->rpc, &msg, msglen, NULL, 0)) < 0) {
+    if ((r = dc_msg_rpc(dev->rpc, &msg, msglen, NULL, 0, rsp, rsp_len)) < 0) {
         log(ERROR, "devhost: rpc:%s failed: %d\n", opname, r);
     }
     return r;
@@ -502,7 +646,7 @@ mx_status_t devhost_remove(mx_device_t* dev) {
     devhost_iostate_t* ios = dev->ios;
     if (ios == NULL) {
         log(ERROR, "removing device %p, ios is NULL\n", dev);
-        return ERR_INTERNAL;
+        return MX_ERR_INTERNAL;
     }
 
     log(DEVLC, "removing device %p, ios %p\n", dev, ios);
@@ -516,12 +660,13 @@ mx_status_t devhost_remove(mx_device_t* dev) {
     ios->dead = true;
 
     // ensure we get no further events
-    //TODO: this does not work yet, ports v2 limitation
+    //TODO: this does not work yet, ports limitation
     port_cancel(&dh_port, &ios->ph);
     ios->ph.handle = MX_HANDLE_INVALID;
     dev->ios = NULL;
 
-    devhost_simple_rpc(dev, DC_OP_REMOVE_DEVICE, NULL, "remove-device");
+    dc_status_t rsp;
+    devhost_rpc(dev, DC_OP_REMOVE_DEVICE, NULL, "remove-device", &rsp, sizeof(rsp));
 
     // shut down our rpc channel
     mx_handle_close(dev->rpc);
@@ -530,14 +675,35 @@ mx_status_t devhost_remove(mx_device_t* dev) {
     // queue an event to destroy the iostate
     port_queue(&dh_port, &ios->ph, 1);
 
-    return NO_ERROR;
+    return MX_OK;
+}
+
+mx_status_t devhost_get_topo_path(mx_device_t* dev, char* path, size_t max, size_t* actual) {
+    struct {
+        dc_status_t rsp;
+        char path[DC_PATH_MAX];
+    } reply;
+    mx_status_t r;
+    if ((r = devhost_rpc(dev, DC_OP_GET_TOPO_PATH, NULL, "get-topo-path",
+                         &reply.rsp, sizeof(reply))) < 0) {
+        return r;
+    }
+    reply.path[DC_PATH_MAX - 1] = 0;
+    size_t len = strlen(reply.path) + 1;
+    if (len > max) {
+        return MX_ERR_BUFFER_TOO_SMALL;
+    }
+
+    memcpy(path, reply.path, len);
+    *actual = len;
+    return MX_OK;
 }
 
 mx_status_t devhost_device_bind(mx_device_t* dev, const char* drv_libname) {
-    return devhost_simple_rpc(dev, DC_OP_BIND_DEVICE, drv_libname, "bind-device");
+    dc_status_t rsp;
+    return devhost_rpc(dev, DC_OP_BIND_DEVICE, drv_libname, "bind-device", &rsp, sizeof(rsp));
 }
 
-extern driver_api_t devhost_api;
 
 mx_handle_t root_resource_handle;
 
@@ -546,15 +712,13 @@ mx_status_t devhost_start_iostate(devhost_iostate_t* ios, mx_handle_t h) {
     ios->ph.handle = h;
     ios->ph.waitfor = MX_CHANNEL_READABLE | MX_CHANNEL_PEER_CLOSED;
     ios->ph.func = dh_handle_rio_rpc;
-    return port_watch(&dh_port, &ios->ph);
+    return port_wait(&dh_port, &ios->ph);
 }
 
-int main(int argc, char** argv) {
+__EXPORT int device_host_main(int argc, char** argv) {
     devhost_io_init();
 
     log(TRACE, "devhost: main()\n");
-
-    driver_api_init(&devhost_api);
 
     root_ios.ph.handle = mx_get_startup_handle(PA_HND(PA_USER0, 0));
     if (root_ios.ph.handle == MX_HANDLE_INVALID) {
@@ -572,13 +736,12 @@ int main(int argc, char** argv) {
         log(ERROR, "devhost: could not create port: %d\n", r);
         return -1;
     }
-    if ((r = port_watch(&dh_port, &root_ios.ph)) < 0) {
+    if ((r = port_wait(&dh_port, &root_ios.ph)) < 0) {
         log(ERROR, "devhost: could not watch rpc channel: %d\n", r);
         return -1;
     }
-    do {
-        r = port_dispatch(&dh_port, MX_TIME_INFINITE);
-    } while (r == NO_ERROR);
+
+    r = port_dispatch(&dh_port, MX_TIME_INFINITE, false);
     log(ERROR, "devhost: port dispatch finished: %d\n", r);
 
     return 0;

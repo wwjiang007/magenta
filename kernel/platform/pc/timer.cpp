@@ -10,14 +10,17 @@
 #include <assert.h>
 #include <debug.h>
 #include <err.h>
+#include <inttypes.h>
 #include <reg.h>
 #include <trace.h>
 
 #include <arch/x86.h>
 #include <arch/x86/apic.h>
+#include <arch/x86/timer_freq.h>
 #include <arch/x86/feature.h>
 #include <lib/fixed_point.h>
 #include <lk/init.h>
+#include <fbl/algorithm.h>
 #include <kernel/cmdline.h>
 #include <kernel/spinlock.h>
 #include <kernel/thread.h>
@@ -28,10 +31,9 @@
 #include <platform/pc.h>
 #include <platform/pc/acpi.h>
 #include <platform/pc/hpet.h>
+#include <platform/pc/timer.h>
 #include <platform/timer.h>
 #include "platform_p.h"
-
-#define MSR_PLATFORM_INFO 0xCE
 
 // Current timer scheme:
 // The HPET is used to calibrate the local APIC timers and the TSC.  If the
@@ -61,16 +63,14 @@ const char *clock_name[] = {
     [CLOCK_HPET] = "HPET",
     [CLOCK_TSC] = "TSC",
 };
-static_assert(countof(clock_name) == CLOCK_COUNT, "");
+static_assert(fbl::count_of(clock_name) == CLOCK_COUNT, "");
 
-
-static platform_timer_callback t_callback[SMP_MAX_CPUS] = {NULL};
-static void *callback_arg[SMP_MAX_CPUS] = {NULL};
 
 // PIT time accounting info
 static struct fp_32_64 us_per_pit;
 static volatile uint64_t pit_ticks;
 static uint16_t pit_divisor;
+static uint32_t ns_per_pit_rounded_up;
 
 // Whether or not we have an Invariant TSC (controls whether we use the PIT or
 // not after initialization).  The Invariant TSC is rate-invariant under P-, C-,
@@ -94,9 +94,11 @@ static uint8_t apic_divisor = 0;
 static uint64_t tsc_ticks_per_ms;
 static struct fp_32_64 ns_per_tsc;
 static struct fp_32_64 tsc_per_ns;
+static uint32_t ns_per_tsc_rounded_up;
 
 // HPET calibration values
 static struct fp_32_64 ns_per_hpet;
+static uint32_t ns_per_hpet_rounded_up;
 
 #define INTERNAL_FREQ 1193182U
 #define INTERNAL_FREQ_3X 3579546U
@@ -116,7 +118,7 @@ lk_time_t current_time(void)
     switch (wall_clock) {
         case CLOCK_TSC: {
             uint64_t tsc = rdtsc();
-            time = u64_mul_u64_fp32_64(tsc, ns_per_tsc);
+            time = ticks_to_nanos(tsc);
             break;
         }
         case CLOCK_HPET: {
@@ -138,22 +140,29 @@ lk_time_t current_time(void)
 // Round up t to a clock tick, so that when the APIC timer fires, the wall time
 // will have elapsed.
 static lk_time_t discrete_time_roundup(lk_time_t t) {
+    lk_time_t value = t;
     switch (wall_clock) {
         case CLOCK_TSC: {
-            // Add 1ns to conservatively deal with rounding
-            return t + u64_mul_u64_fp32_64(1, ns_per_tsc) + 1;
+            value += ns_per_tsc_rounded_up;
+            break;
         }
         case CLOCK_HPET: {
-            // Add 1ns to conservatively deal with rounding
-            return t + u64_mul_u64_fp32_64(1, ns_per_hpet) + 1;
+            value += ns_per_hpet_rounded_up;
+            break;
         }
         case CLOCK_PIT: {
-            // Add 1us to the PIT tick rate to dea lwith rounding
-            return t + (u64_mul_u64_fp32_64(1, us_per_pit) + 1) * 1000;
+            value += ns_per_pit_rounded_up;
+            break;
         }
         default:
             panic("Invalid wall clock source\n");
     }
+
+    // Check for overflow
+    if (unlikely(t > value)) {
+        return UINT64_MAX;
+    }
+    return value;
 }
 
 uint64_t ticks_per_second(void)
@@ -174,19 +183,7 @@ static enum handler_return pit_timer_tick(void *arg)
 
 // The APIC timers will call this when they fire
 enum handler_return platform_handle_apic_timer_tick(void) {
-    DEBUG_ASSERT(arch_ints_disabled());
-    uint cpu = arch_curr_cpu_num();
-
-    lk_time_t time = current_time();
-    //lk_time_t btime = current_time();
-    //printf_xy(71, 0, WHITE, "%08u", (uint32_t) time);
-    //printf_xy(63, 1, WHITE, "%016llu", (uint64_t) btime);
-
-    if (t_callback[cpu]) {
-        return t_callback[cpu](callback_arg[cpu], time);
-    } else {
-        return INT_NO_RESCHEDULE;
-    }
+    return timer_tick(current_time());
 }
 
 static void set_pit_frequency(uint32_t frequency)
@@ -221,6 +218,9 @@ static void set_pit_frequency(uint32_t frequency)
      * point representation of the configured timer delta.
      */
     fp_32_64_div_32_32(&us_per_pit, 1000 * 1000 * 3 * count, INTERNAL_FREQ_3X);
+
+    // Add 1us to the PIT tick rate to deal with rounding
+    ns_per_pit_rounded_up = (u32_mul_u64_fp32_64(1, us_per_pit) + 1) * 1000;
 
     //dprintf(DEBUG, "set_pit_frequency: pit_divisor=%04x\n", pit_divisor);
 
@@ -279,70 +279,21 @@ static inline void hpet_calibration_cycle_cleanup(void)
     hpet_disable();
 }
 
-static uint64_t lookup_core_crystal_freq(void) {
-    // The APIC frequency is the core crystal clock frequency if it is
-    // enumerated in the CPUID leaf 0x15, or the processor's bus clock
-    // frequency.
-    const struct cpuid_leaf *tsc_leaf = x86_get_cpuid_leaf(X86_CPUID_TSC);
-    if (tsc_leaf && tsc_leaf->c != 0) {
-        return tsc_leaf->c;
-    }
-
-    switch (x86_microarch) {
-        case X86_MICROARCH_INTEL_SKYLAKE:
-        case X86_MICROARCH_INTEL_KABYLAKE:
-            return 24u * 1000 * 1000;
-        case X86_MICROARCH_INTEL_SANDY_BRIDGE:
-        case X86_MICROARCH_INTEL_IVY_BRIDGE:
-        case X86_MICROARCH_INTEL_HASWELL:
-        case X86_MICROARCH_INTEL_BROADWELL: {
-            uint64_t platform_info;
-            if (read_msr_safe(MSR_PLATFORM_INFO, &platform_info) == NO_ERROR) {
-                uint64_t bus_freq_mult = (platform_info >> 8) & 0xf;
-                return bus_freq_mult * 100 * 1000 * 1000;
-            }
-            break;
-        }
-        case X86_MICROARCH_AMD_BULLDOZER:
-        case X86_MICROARCH_AMD_JAGUAR:
-        case X86_MICROARCH_AMD_ZEN:
-            // TODO: figure out how to look up frequency
-            break;
-        case X86_MICROARCH_UNKNOWN:
-            break;
-    }
-
-    return 0;
-}
-
-static uint64_t lookup_tsc_freq(void) {
-    const uint64_t core_crystal_clock_freq = lookup_core_crystal_freq();
-
-    // If this leaf is present, then 18.18.3 (Determining the Processor Base
-    // Frequency) documents this as the nominal TSC frequency.
-    const struct cpuid_leaf *tsc_leaf = x86_get_cpuid_leaf(X86_CPUID_TSC);
-    if (tsc_leaf) {
-        return (core_crystal_clock_freq * tsc_leaf->b) / tsc_leaf->a;
-    }
-
-    return 0;
-}
-
 static void calibrate_apic_timer(void)
 {
     ASSERT(arch_ints_disabled());
 
-    const uint64_t apic_freq = lookup_core_crystal_freq();
+    const uint64_t apic_freq = x86_lookup_core_crystal_freq();
     if (apic_freq != 0) {
         ASSERT(apic_freq / 1000 <= UINT32_MAX);
         apic_ticks_per_ms = static_cast<uint32_t>(apic_freq / 1000);
         apic_divisor = 1;
         fp_32_64_div_32_32(&apic_ticks_per_ns, apic_ticks_per_ms, 1000 * 1000);
-        TRACEF("APIC frequency: %" PRIu32 " ticks/ms\n", apic_ticks_per_ms);
+        printf("APIC frequency: %" PRIu32 " ticks/ms\n", apic_ticks_per_ms);
         return;
     }
 
-    TRACEF("Could not find APIC frequency! Calibrating APIC with %s\n",
+    printf("Could not find APIC frequency: Calibrating APIC with %s\n",
            clock_name[calibration_clock]);
 
     apic_divisor = 1;
@@ -367,7 +318,7 @@ outer:
                         UINT32_MAX,
                         apic_divisor,
                         true);
-                ASSERT(status == NO_ERROR);
+                ASSERT(status == MX_OK);
 
                 switch (calibration_clock) {
                     case CLOCK_HPET:
@@ -411,7 +362,7 @@ outer:
     }
     ASSERT(apic_divisor != 0);
 
-    LTRACEF("APIC timer calibrated: %" PRIu32 " ticks/ms, %d divisor\n",
+    printf("APIC timer calibrated: %" PRIu32 " ticks/ms, divisor %d\n",
             apic_ticks_per_ms, apic_divisor);
 }
 
@@ -419,78 +370,77 @@ static void calibrate_tsc(void)
 {
     ASSERT(arch_ints_disabled());
 
-    const uint64_t tsc_freq = lookup_tsc_freq();
+    const uint64_t tsc_freq = x86_lookup_tsc_freq();
     if (tsc_freq != 0) {
         tsc_ticks_per_ms = tsc_freq / 1000;
-        ASSERT(tsc_ticks_per_ms <= UINT32_MAX);
-        fp_32_64_div_32_32(&ns_per_tsc, 1000 * 1000, static_cast<uint32_t>(tsc_ticks_per_ms));
-        fp_32_64_div_32_32(&tsc_per_ns, static_cast<uint32_t>(tsc_ticks_per_ms), 1000 * 1000);
-        TRACEF("TSC frequency: %" PRIu64 " ticks/ms\n", tsc_ticks_per_ms);
-        return;
-    }
+        printf("TSC frequency: %" PRIu64 " ticks/ms\n", tsc_ticks_per_ms);
+    } else {
+        printf("Could not find TSC frequency: Calibrating TSC with %s\n",
+               clock_name[calibration_clock]);
 
-    TRACEF("Could not find TSC frequency! Calibrating TSC with %s\n",
-           clock_name[calibration_clock]);
+        uint64_t best_time[2] = {UINT64_MAX, UINT64_MAX};
+        const uint16_t duration_ms[2] = { 1, 2 };
+        for (int trial = 0; trial < 2; ++trial) {
+            for (int tries = 0; tries < 3; ++tries) {
+                switch (calibration_clock) {
+                    case CLOCK_HPET:
+                        hpet_calibration_cycle_preamble();
+                        break;
+                    case CLOCK_PIT:
+                        pit_calibration_cycle_preamble(duration_ms[trial]);
+                        break;
+                    default: PANIC_UNIMPLEMENTED;
+                }
 
-    uint64_t best_time[2] = {UINT64_MAX, UINT64_MAX};
-    const uint16_t duration_ms[2] = { 1, 2 };
-    for (int trial = 0; trial < 2; ++trial) {
-        for (int tries = 0; tries < 3; ++tries) {
-            switch (calibration_clock) {
-                case CLOCK_HPET:
-                    hpet_calibration_cycle_preamble();
-                    break;
-                case CLOCK_PIT:
-                    pit_calibration_cycle_preamble(duration_ms[trial]);
-                    break;
-                default: PANIC_UNIMPLEMENTED;
-            }
+                // Use CPUID to serialize the instruction stream
+                uint32_t _ignored;
+                cpuid(0, &_ignored, &_ignored, &_ignored, &_ignored);
+                uint64_t start = rdtsc();
+                cpuid(0, &_ignored, &_ignored, &_ignored, &_ignored);
 
-            // Use CPUID to serialize the instruction stream
-            uint32_t _ignored;
-            cpuid(0, &_ignored, &_ignored, &_ignored, &_ignored);
-            uint64_t start = rdtsc();
-            cpuid(0, &_ignored, &_ignored, &_ignored, &_ignored);
+                switch (calibration_clock) {
+                    case CLOCK_HPET:
+                        hpet_calibration_cycle(duration_ms[trial]);
+                        break;
+                    case CLOCK_PIT:
+                        pit_calibration_cycle(duration_ms[trial]);
+                        break;
+                    default: PANIC_UNIMPLEMENTED;
+                }
 
-            switch (calibration_clock) {
-                case CLOCK_HPET:
-                    hpet_calibration_cycle(duration_ms[trial]);
-                    break;
-                case CLOCK_PIT:
-                    pit_calibration_cycle(duration_ms[trial]);
-                    break;
-                default: PANIC_UNIMPLEMENTED;
-            }
+                cpuid(0, &_ignored, &_ignored, &_ignored, &_ignored);
+                uint64_t end = rdtsc();
+                cpuid(0, &_ignored, &_ignored, &_ignored, &_ignored);
 
-            cpuid(0, &_ignored, &_ignored, &_ignored, &_ignored);
-            uint64_t end = rdtsc();
-            cpuid(0, &_ignored, &_ignored, &_ignored, &_ignored);
-
-            uint64_t tsc_ticks = end - start;
-            if (tsc_ticks < best_time[trial]) {
-                best_time[trial] = tsc_ticks;
-            }
-            LTRACEF("Calibration trial %d found %" PRIu64 " ticks/ms\n",
-                    tries, tsc_ticks);
-            switch (calibration_clock) {
-                case CLOCK_HPET:
-                    hpet_calibration_cycle_cleanup();
-                    break;
-                case CLOCK_PIT:
-                    pit_calibration_cycle_cleanup();
-                    break;
-                default: PANIC_UNIMPLEMENTED;
+                uint64_t tsc_ticks = end - start;
+                if (tsc_ticks < best_time[trial]) {
+                    best_time[trial] = tsc_ticks;
+                }
+                LTRACEF("Calibration trial %d found %" PRIu64 " ticks/ms\n",
+                        tries, tsc_ticks);
+                switch (calibration_clock) {
+                    case CLOCK_HPET:
+                        hpet_calibration_cycle_cleanup();
+                        break;
+                    case CLOCK_PIT:
+                        pit_calibration_cycle_cleanup();
+                        break;
+                    default: PANIC_UNIMPLEMENTED;
+                }
             }
         }
+
+        tsc_ticks_per_ms = (best_time[1] - best_time[0]) / (duration_ms[1] - duration_ms[0]);
+
+        printf("TSC calibrated: %" PRIu64 " ticks/ms\n", tsc_ticks_per_ms);
     }
-
-    tsc_ticks_per_ms = (best_time[1] - best_time[0]) / (duration_ms[1] - duration_ms[0]);
-
-    LTRACEF("TSC calibrated: %" PRIu64 " ticks/ms\n", tsc_ticks_per_ms);
 
     ASSERT(tsc_ticks_per_ms <= UINT32_MAX);
     fp_32_64_div_32_32(&ns_per_tsc, 1000 * 1000, static_cast<uint32_t>(tsc_ticks_per_ms));
     fp_32_64_div_32_32(&tsc_per_ns, static_cast<uint32_t>(tsc_ticks_per_ms), 1000 * 1000);
+    // Add 1ns to conservatively deal with rounding
+    ns_per_tsc_rounded_up = u32_mul_u64_fp32_64(1, ns_per_tsc) + 1;
+
     LTRACEF("ns_per_tsc: %08x.%08x%08x\n", ns_per_tsc.l0, ns_per_tsc.l32, ns_per_tsc.l64);
 }
 
@@ -516,12 +466,15 @@ static void platform_init_timer(uint level)
         calibration_clock = CLOCK_HPET;
         const uint64_t hpet_ms_rate = hpet_ticks_per_ms();
         ASSERT(hpet_ms_rate <= UINT32_MAX);
+        printf("HPET frequency: %" PRIu64 " ticks/ms\n", hpet_ms_rate);
         fp_32_64_div_32_32(&ns_per_hpet, 1000 * 1000, static_cast<uint32_t>(hpet_ms_rate));
+        // Add 1ns to conservatively deal with rounding
+        ns_per_hpet_rounded_up = u32_mul_u64_fp32_64(1, ns_per_hpet) + 1;
     } else {
         calibration_clock = CLOCK_PIT;
     }
 
-    const char *force_wallclock = cmdline_get("timer.wallclock");
+    const char *force_wallclock = cmdline_get("kernel.wallclock");
     bool use_invariant_tsc = invariant_tsc && (!force_wallclock || !strcmp(force_wallclock, "tsc"));
 
     use_tsc_deadline = use_invariant_tsc &&
@@ -550,7 +503,7 @@ static void platform_init_timer(uint level)
             hpet_enable();
         } else {
             if (force_wallclock && strcmp(force_wallclock, "pit")) {
-                panic("Could not satisfy timer.wallclock choice\n");
+                panic("Could not satisfy kernel.wallclock choice\n");
             }
 
             wall_clock = CLOCK_PIT;
@@ -563,33 +516,28 @@ static void platform_init_timer(uint level)
         }
     }
 
-    TRACEF("timer features: constant_tsc %d invariant_tsc %d tsc_deadline %d\n",
+    printf("timer features: constant_tsc %d invariant_tsc %d tsc_deadline %d\n",
             constant_tsc, invariant_tsc, use_tsc_deadline);
-    TRACEF("Using %s as wallclock\n", clock_name[wall_clock]);
+    printf("Using %s as wallclock\n", clock_name[wall_clock]);
 }
 LK_INIT_HOOK(timer, &platform_init_timer, LK_INIT_LEVEL_VM + 3);
 
-status_t platform_set_oneshot_timer(platform_timer_callback callback,
-                                    void *arg, lk_time_t deadline)
+status_t platform_set_oneshot_timer(lk_time_t deadline)
 {
     DEBUG_ASSERT(arch_ints_disabled());
-    uint cpu = arch_curr_cpu_num();
-
-    t_callback[cpu] = callback;
-    callback_arg[cpu] = arg;
 
     deadline = discrete_time_roundup(deadline);
 
     if (use_tsc_deadline) {
         if (UINT64_MAX / deadline < (tsc_ticks_per_ms / LK_MSEC(1))) {
-            return ERR_INVALID_ARGS;
+            return MX_ERR_INVALID_ARGS;
         }
 
         // We rounded up to the tick after above.
         const uint64_t tsc_deadline = u64_mul_u64_fp32_64(deadline, tsc_per_ns);
         LTRACEF("Scheduling oneshot timer: %" PRIu64 " deadline\n", tsc_deadline);
         apic_timer_set_tsc_deadline(tsc_deadline, false /* unmasked */);
-        return NO_ERROR;
+        return MX_OK;
     }
 
     const lk_time_t now = current_time();
@@ -649,7 +597,7 @@ status_t platform_configure_watchdog(uint32_t frequency) {
         case CLOCK_TSC: {
             /* Use the PIT IRQ number since the PIT isn't running */
             uint32_t irq = apic_io_isa_to_global(ISA_IRQ_PIT);
-            if (hpet_timer_configure_irq(0, irq) == NO_ERROR) {
+            if (hpet_timer_configure_irq(0, irq) == MX_OK) {
                 apic_io_configure_isa_irq(
                         ISA_IRQ_PIT,
                         DELIVERY_MODE_NMI,
@@ -661,12 +609,12 @@ status_t platform_configure_watchdog(uint32_t frequency) {
                 uint64_t hpet_rate_ms = hpet_ticks_per_ms();
                 hpet_disable();
                 __UNUSED status_t status = hpet_set_value(0);
-                DEBUG_ASSERT(status == NO_ERROR);
+                DEBUG_ASSERT(status == MX_OK);
                 status = hpet_timer_set_periodic(0, hpet_rate_ms * frequency / 1000);
-                DEBUG_ASSERT(status == NO_ERROR);
+                DEBUG_ASSERT(status == MX_OK);
                 hpet_enable();
 
-                return NO_ERROR;
+                return MX_OK;
             }
             /* Fallthrough and use the PIT instead */
         }
@@ -684,8 +632,8 @@ status_t platform_configure_watchdog(uint32_t frequency) {
                     0,
                     0);
             printf("CONFIGURED WATCHDOG\n");
-            return NO_ERROR;
+            return MX_OK;
         }
-        default: return ERR_NOT_SUPPORTED;
+        default: return MX_ERR_NOT_SUPPORTED;
     }
 }

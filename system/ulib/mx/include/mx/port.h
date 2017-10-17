@@ -11,9 +11,9 @@ namespace mx {
 
 class port : public object<port> {
 public:
-    static constexpr mx_obj_type_t TYPE = MX_OBJ_TYPE_IOPORT;
+    static constexpr mx_obj_type_t TYPE = MX_OBJ_TYPE_PORT;
 
-    port() = default;
+    constexpr port() = default;
 
     explicit port(mx_handle_t value) : object(value) {}
 
@@ -36,14 +36,11 @@ public:
         return mx_port_wait(get(), deadline, packet, size);
     }
 
-    mx_status_t bind(uint64_t key, mx_handle_t source,
-                     mx_signals_t signals) const {
-        return mx_port_bind(get(), key, source, signals);
-    }
-
     mx_status_t cancel(mx_handle_t source, uint64_t key) const {
         return mx_port_cancel(get(), source, key);
     }
 };
+
+using unowned_port = const unowned<port>;
 
 } // namespace mx

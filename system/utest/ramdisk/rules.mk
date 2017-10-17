@@ -17,12 +17,12 @@ MODULE_NAME := ramdisk-test
 MODULE_STATIC_LIBS := \
     system/ulib/block-client \
     system/ulib/sync \
-    system/ulib/mxalloc \
     system/ulib/mxcpp \
-    system/ulib/mxtl \
+    system/ulib/fbl \
 
 MODULE_LIBS := \
     system/ulib/c \
+    system/ulib/fs-management \
     system/ulib/magenta \
     system/ulib/mxio \
     system/ulib/unittest \

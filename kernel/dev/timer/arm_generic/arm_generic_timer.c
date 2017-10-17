@@ -46,7 +46,6 @@
 #define TIMER_REG_CNTV_TVAL cntv_tval_el0
 #define TIMER_REG_CNTVCT    cntvct_el0
 
-static platform_timer_callback t_callback;
 static int timer_irq;
 
 struct fp_32_64 cntpct_per_ns;
@@ -210,14 +209,10 @@ static uint64_t read_ct(void)
 static enum handler_return platform_tick(void *arg)
 {
     write_ctl(0);
-    if (t_callback) {
-        return t_callback(arg, current_time());
-    } else {
-        return INT_NO_RESCHEDULE;
-    }
+    return timer_tick(current_time());
 }
 
-status_t platform_set_oneshot_timer(platform_timer_callback callback, void *arg, lk_time_t deadline)
+status_t platform_set_oneshot_timer(lk_time_t deadline)
 {
     DEBUG_ASSERT(arch_ints_disabled());
 
@@ -225,9 +220,6 @@ status_t platform_set_oneshot_timer(platform_timer_callback callback, void *arg,
     // straddles a counter tick.
     const uint64_t cntpct_deadline = lk_time_to_cntpct(deadline) + 1;
 
-    ASSERT(arg == NULL);
-
-    t_callback = callback;
     // Even if the deadline has already passed, the ARMv8-A timer will fire the
     // interrupt.
     write_cval(cntpct_deadline);
@@ -318,8 +310,8 @@ static void arm_generic_timer_init_conversion_factors(uint32_t cntfrq)
 {
     fp_32_64_div_32_32(&cntpct_per_ns, cntfrq, LK_SEC(1));
     fp_32_64_div_32_32(&ns_per_cntpct, LK_SEC(1), cntfrq);
-    LTRACEF("cntpct_per_ns: %08x.%08x%08x\n", cntpct_per_ns.l0, cntpct_per_ns.l32, cntpct_per_ns.l64);
-    LTRACEF("ns_per_cntpct: %08x.%08x%08x\n", ns_per_cntpct.l0, ns_per_cntpct.l32, ns_per_cntpct.l64);
+    dprintf(SPEW, "cntpct_per_ns: %08x.%08x%08x\n", cntpct_per_ns.l0, cntpct_per_ns.l32, cntpct_per_ns.l64);
+    dprintf(SPEW, "ns_per_cntpct: %08x.%08x%08x\n", ns_per_cntpct.l0, ns_per_cntpct.l32, ns_per_cntpct.l64);
 }
 
 void arm_generic_timer_init(int irq, uint32_t freq_override)
@@ -336,6 +328,8 @@ void arm_generic_timer_init(int irq, uint32_t freq_override)
     } else {
         cntfrq = freq_override;
     }
+
+    dprintf(INFO, "arm generic timer freq %u Hz\n", cntfrq);
 
 #if LOCAL_TRACE
     LTRACEF("Test min cntfrq\n");
@@ -388,16 +382,16 @@ static void arm_generic_timer_pdev_init(mdi_node_ref_t* node, uint level) {
     mdi_node_ref_t child;
     mdi_each_child(node, &child) {
         switch (mdi_id(&child)) {
-        case MDI_KERNEL_DRIVERS_ARM_GENERIC_TIMER_IRQ_PHYS:
+        case MDI_ARM_TIMER_IRQ_PHYS:
             got_irq_phys = !mdi_node_uint32(&child, &irq);
             break;
-        case MDI_KERNEL_DRIVERS_ARM_GENERIC_TIMER_IRQ_VIRT:
+        case MDI_ARM_TIMER_IRQ_VIRT:
             got_irq_virt = !mdi_node_uint32(&child, &irq);
             break;
-        case MDI_KERNEL_DRIVERS_ARM_GENERIC_TIMER_IRQ_SPHYS:
+        case MDI_ARM_TIMER_IRQ_SPHYS:
             got_irq_sphys = !mdi_node_uint32(&child, &irq);
             break;
-        case MDI_KERNEL_DRIVERS_ARM_GENERIC_TIMER_FREQ_OVERRIDE:
+        case MDI_ARM_TIMER_FREQ_OVERRIDE:
             // freq_override is optional
             mdi_node_uint32(&child, &freq_override);
             break;
@@ -421,5 +415,5 @@ static void arm_generic_timer_pdev_init(mdi_node_ref_t* node, uint level) {
     arm_generic_timer_init(irq, freq_override);
 }
 
-LK_PDEV_INIT(arm_generic_timer_pdev_init, MDI_KERNEL_DRIVERS_ARM_GENERIC_TIMER, arm_generic_timer_pdev_init, LK_INIT_LEVEL_PLATFORM_EARLY);
+LK_PDEV_INIT(arm_generic_timer_pdev_init, MDI_ARM_TIMER, arm_generic_timer_pdev_init, LK_INIT_LEVEL_PLATFORM_EARLY);
 #endif // WITH_DEV_PDEV

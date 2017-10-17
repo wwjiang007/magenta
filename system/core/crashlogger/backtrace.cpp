@@ -20,9 +20,8 @@
 #include <magenta/syscalls.h>
 #include <magenta/syscalls/object.h>
 
-#include <mxalloc/new.h>
-
-#include <mxtl/array.h>
+#include <fbl/alloc_checker.h>
+#include <fbl/array.h>
 
 #include "backtrace.h"
 #include "dso-list.h"
@@ -78,14 +77,14 @@ class DebugInfoCache {
         backtrace_state* bt_state = nullptr;
     };
 
-    mxtl::Array<way> ways_;
+    fbl::Array<way> ways_;
 };
 
 // Note: We take ownership of |dso_list|.
 
 DebugInfoCache::DebugInfoCache(dsoinfo_t* dso_list, size_t nr_ways)
     : dso_list_(dso_list) {
-    AllocChecker ac;
+    fbl::AllocChecker ac;
     auto ways = new (&ac) way[nr_ways];
     if (!ac.check()) {
         debugf(1, "unable to initialize debug info cache\n");
@@ -106,11 +105,11 @@ DebugInfoCache::~DebugInfoCache() {
 }
 
 // Find the DSO and debug info (backtrace_state) for PC.
-// Returns ERR_NOT_FOUND if |pc| is not in any DSO.
-// Otherwise the result is NO_ERROR, even if there is no extended debug
+// Returns MX_ERR_NOT_FOUND if |pc| is not in any DSO.
+// Otherwise the result is MX_OK, even if there is no extended debug
 // info for libbacktrace (e.g., -g1 info).
-// If the result is NO_ERROR then |*out_dso| is set.
-// If the result is NO_ERROR then |*out_bt_state| is set to the
+// If the result is MX_OK then |*out_dso| is set.
+// If the result is MX_OK then |*out_bt_state| is set to the
 // accompanying libbacktrace state if available or nullptr if not.
 
 mx_status_t DebugInfoCache::GetDebugInfo(uintptr_t pc,
@@ -119,13 +118,13 @@ mx_status_t DebugInfoCache::GetDebugInfo(uintptr_t pc,
     dsoinfo_t* dso = dso_lookup(dso_list_, pc);
     if (dso == nullptr) {
         debugf(1, "No DSO found for pc %p\n", (void*) pc);
-        return ERR_NOT_FOUND;
+        return MX_ERR_NOT_FOUND;
     }
 
-#if 1 // Skip using libbacktrace until leaks are fixed.
+#if 1 // Skip using libbacktrace until leaks are fixed. MG-351
     *out_dso = dso;
     *out_bt_state = nullptr;
-    return NO_ERROR;
+    return MX_OK;
 #endif
 
     // If we failed to initialize the cache (OOM) we can still report the
@@ -133,7 +132,7 @@ mx_status_t DebugInfoCache::GetDebugInfo(uintptr_t pc,
     if (!cache_avail_) {
         *out_dso = dso;
         *out_bt_state = nullptr;
-        return NO_ERROR;
+        return MX_OK;
     }
 
     const size_t nr_ways = ways_.size();
@@ -143,12 +142,12 @@ mx_status_t DebugInfoCache::GetDebugInfo(uintptr_t pc,
             debugf(1, "using cached debug info entry for pc %p\n", (void*) pc);
             *out_dso = dso;
             *out_bt_state = ways_[i].bt_state;
-            return NO_ERROR;
+            return MX_OK;
         }
     }
 
     // PC is in a DSO, but not found in the cache.
-    // N.B. From this point on the result is NO_ERROR.
+    // N.B. From this point on the result is MX_OK.
     // If there is an "error" the user can still print something (and there's
     // no point in having error messages pollute the backtrace, at least by
     // default).
@@ -158,9 +157,9 @@ mx_status_t DebugInfoCache::GetDebugInfo(uintptr_t pc,
 
     const char* debug_file = nullptr;
     auto status = dso_find_debug_file(dso, &debug_file);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         // There's no additional debug file available, but we did find the DSO.
-        return NO_ERROR;
+        return MX_OK;
     }
 
     struct backtrace_state* bt_state =
@@ -168,7 +167,7 @@ mx_status_t DebugInfoCache::GetDebugInfo(uintptr_t pc,
                                bt_error_callback, nullptr);
     if (bt_state == nullptr) {
         debugf(1, "backtrace_create_state failed (OOM)\n");
-        return NO_ERROR;
+        return MX_OK;
     }
 
     // last_used_+1: KISS until there's data warranting something better
@@ -189,7 +188,7 @@ mx_status_t DebugInfoCache::GetDebugInfo(uintptr_t pc,
     ways_[way].bt_state = bt_state;
     *out_bt_state = bt_state;
     last_used_ = way;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 // Data to pass back from backtrace_pcinfo.
@@ -222,7 +221,7 @@ static void btprint(DebugInfoCache* di_cache, int n, uintptr_t pc, uintptr_t sp)
     backtrace_state* bt_state;
     auto status = di_cache->GetDebugInfo(pc, &dso, &bt_state);
 
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         // The pc is not in any DSO.
         printf("bt#%02d: pc %p sp %p\n",
                n, (void*) pc, (void*) sp);
@@ -279,7 +278,7 @@ void backtrace(mx_handle_t process, mx_handle_t thread,
     strcpy(name, PROCESS_NAME_PREFIX);
     auto status = mx_object_get_property(process, MX_PROP_NAME, name + PROCESS_NAME_PREFIX_LEN,
                                          sizeof(name) - PROCESS_NAME_PREFIX_LEN);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         print_mx_error("mx_object_get_property, falling back to \"app\" for program name", status);
         strlcpy(name, "app", sizeof(name));
     }

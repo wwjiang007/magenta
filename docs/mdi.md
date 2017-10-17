@@ -27,15 +27,24 @@ MDI node values can be one of the following:
 
 MDI has a very simple syntax with a small number of tokens and reserved words.
 The syntax is so simple that no extra symbols are needed to determine the boundary between
-top-level statements or elements within lists and arrays.
-For this reason, there are no commas semicolons or other separator symbols in the syntax.
+top-level statements or elements within lists.
+The only exception is that commas are needed between elements in arrays.
 
 MDI supports C/C++ style comments. Whitespace is not significant,
 other than the fact that comments beginning with `//` are terminated by the end of the line.
 
+Integers can be expressed as literal values, either in decimal, octal or hexadecimal form.
+Octal integer literals start with a leading `0` and hexadecimal literals start with a leading
+`0x` or `0X`
+
+MDI also supports integer expressions. The arithmetic operators `+`, `-`, `*`, `/`, `%` are supported,
+as well as the bitwise operators `~`, `|`, `&`, `^`, `<<` and `>>`.
+The syntax and precedence rules are the same as in C.
+
 MDI source files can contain three types of top-level statements:
  * Includes
  * ID Definitions
+ * Constant Definitions
  * Node Definitions
 
 ### Includes
@@ -53,7 +62,7 @@ At this point the mdigen will process the MDI source code in the file
 ### ID Definitions
 
 ID definitions define the IDs that can be used for nodes in the tree.
-ID definitions consist of a type, one or more dot-separated identifiers, and an integer value.
+ID definitions consist of a type, one or more dot-separated identifiers, a C symbol name and an integer value.
 When the MDI binary is generated, the IDs are written as 32-bit integers containing both the
 ID definition's type and integer value.
 The dot-separated list of identifiers are used to match a paths to nodes in the MDI source file.
@@ -61,9 +70,9 @@ The dot-separated list of identifiers are used to match a paths to nodes in the 
 For example, the following are ID definitions:
 
 ```
-int32  foo          1
-list   bar          2
-string bar.baz      3
+int32  foo      MDI_FOO     1
+list   bar      MDI_BAR     2
+string bar.baz  MDI_BAR_BAZ 3
 ```
 
 IDs of type array must also specify the array element type for the ID:
@@ -72,13 +81,30 @@ IDs of type array must also specify the array element type for the ID:
 array[boolean]  boolean-array   4
 ```
 
-Identifiers can contain alphanumeric characters and the `'-'` character,
-and must start with a letter. Since the MDI tool converts dashes to underscores when generating
-the C header file, underscores are not allowed in identifiers.
+Identifiers can contain alphanumeric characters and the `'-'` and `'_'` characters,
+and must start with a letter.
+
+The mdigen uses the C symbol names to generate a C header file to be included by C/C++ code that
+uses the MDI. The example above will result in the following code in the C header file:
+
+```
+#define MDI_FOO                                            0x00800001
+#define MDI_BAR                                            0x08000002
+#define MDI_BAR_BAZ                                        0x09000003
+```
 
 The purpose of using integer IDs rather than arbitrary string names for nodes is to:
  1. provide build time error checking when compiling MDI files, and
  2. provide better efficiency when traversing the MDI binary at runtime
+
+### Constant Definitions
+
+Integer constants can be defined for integer literals or expressions. For example:
+
+```
+const ONE = 1
+const THREE = 1 + 2
+```
 
 ### Node Definitions
 
@@ -86,7 +112,7 @@ Node definitions define a top-level node in the MDI node tree.
 All top-level nodes are implicitly added to the MDI root node,
 which is an unnamed list that does not actually appear in the MDI source code.
 Node definitions are of the form `<identifier> = <value>`,
-where value can be an integer, boolean or string literal, a list or an array.
+where value can be an integer literal, expression, constant, a boolean or string literal, a list or an array.
 List values begin and end with `'{' and '}'`, while array values begin and end with `'[' and ']'`
 
 For example, the following MDI node definitions can be written using the ID definitions
@@ -99,7 +125,7 @@ bar = {
     baz = "Hi there"
 }
 
-boolean-array = [ true false true ]
+boolean-array = [ true, false, true ]
 ```
 
 Compiling this code will generate an MDI binary a root node with three children: `foo`, `bar`
@@ -136,11 +162,8 @@ mdigen can also take the following additional options:
 
  * `-o <path to output MDI binary>`
  * `-h <path to output C header file containing MDI ID definitions>`
- * `-p <prefix>` - prefix for symbols in C header file
- * `-u` - convert symbols in C header file to upper case
 
 When invoking mdigen, you must specify either a `-o` or `-h` option, or both.
-The `-p` and `-u` options are optional.
 
 ## MDI Library
 

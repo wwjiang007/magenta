@@ -17,12 +17,12 @@
 #include <dev/pcie_irqs.h>
 #include <dev/pcie_ref_counted.h>
 #include <dev/pci_config.h>
-#include <kernel/mutex.h>
 #include <kernel/spinlock.h>
-#include <kernel/vm/vm_object.h>
-#include <mxtl/macros.h>
-#include <mxtl/ref_ptr.h>
-#include <mxtl/unique_ptr.h>
+#include <fbl/algorithm.h>
+#include <fbl/macros.h>
+#include <fbl/mutex.h>
+#include <fbl/ref_ptr.h>
+#include <fbl/unique_ptr.h>
 #include <sys/types.h>
 
 /* Fwd decls */
@@ -36,7 +36,6 @@ struct pci_config_info_t {
     uint64_t size = 0;
     uint64_t base_addr = 0;
     bool     is_mmio;
-    mxtl::RefPtr<VmObject> vmo;
 };
 
 /*
@@ -49,7 +48,6 @@ struct pcie_bar_info_t {
     bool     is_64bit;
     bool     is_prefetchable;
     uint     first_bar_reg;
-    mxtl::RefPtr<VmObject> vmo;
     RegionAllocator::Region::UPtr allocation;
 };
 
@@ -62,8 +60,8 @@ struct pcie_bar_info_t {
  */
 class PcieDevice {
 public:
-    using CapabilityList = mxtl::SinglyLinkedList<mxtl::unique_ptr<PciStdCapability>>;
-    static mxtl::RefPtr<PcieDevice> Create(PcieUpstreamNode& upstream, uint dev_id, uint func_id);
+    using CapabilityList = fbl::SinglyLinkedList<fbl::unique_ptr<PciStdCapability>>;
+    static fbl::RefPtr<PcieDevice> Create(PcieUpstreamNode& upstream, uint dev_id, uint func_id);
     virtual ~PcieDevice();
 
     // Disallow copying, assigning and moving.
@@ -72,7 +70,7 @@ public:
     // Require that derived classes implement ref counting.
     PCIE_REQUIRE_REFCOUNTED;
 
-    mxtl::RefPtr<PcieUpstreamNode> GetUpstream();
+    fbl::RefPtr<PcieUpstreamNode> GetUpstream();
 
     status_t     Claim();
     void         Unclaim();
@@ -105,7 +103,7 @@ public:
      */
     inline status_t EnableBusMaster(bool enabled) {
         if (enabled && disabled_)
-            return ERR_BAD_STATE;
+            return MX_ERR_BAD_STATE;
 
         return ModifyCmd(enabled ? 0 : PCI_COMMAND_BUS_MASTER_EN,
                          enabled ? PCI_COMMAND_BUS_MASTER_EN : 0);
@@ -119,7 +117,7 @@ public:
      */
     inline status_t EnablePio(bool enabled) {
         if (enabled && disabled_)
-            return ERR_BAD_STATE;
+            return MX_ERR_BAD_STATE;
 
         return ModifyCmd(enabled ? 0 : PCI_COMMAND_IO_EN,
                          enabled ? PCI_COMMAND_IO_EN : 0);
@@ -133,7 +131,7 @@ public:
      */
     inline status_t EnableMmio(bool enabled) {
         if (enabled && disabled_)
-            return ERR_BAD_STATE;
+            return MX_ERR_BAD_STATE;
 
         return ModifyCmd(enabled ? 0 : PCI_COMMAND_MEM_EN,
                          enabled ? PCI_COMMAND_MEM_EN : 0);
@@ -154,7 +152,7 @@ public:
         if (bar_ndx >= bar_count_)
             return nullptr;
 
-        DEBUG_ASSERT(bar_ndx < countof(bars_));
+        DEBUG_ASSERT(bar_ndx < fbl::count_of(bars_));
 
         const pcie_bar_info_t* ret = &bars_[bar_ndx];
         return (!disabled_ && (ret->allocation != nullptr)) ? ret : nullptr;
@@ -183,7 +181,7 @@ public:
      * @return A status_t indicating the success or failure of the operation.
      * Status codes may include (but are not limited to)...
      *
-     * ++ ERR_UNAVAILABLE
+     * ++ MX_ERR_UNAVAILABLE
      *    The device has become unplugged and is waiting to be released.
      */
     status_t GetIrqMode(pcie_irq_mode_info_t* out_info) const;
@@ -209,16 +207,16 @@ public:
      * @return A status_t indicating the success or failure of the operation.
      * Status codes may include (but are not limited to)...
      *
-     * ++ ERR_UNAVAILABLE
+     * ++ MX_ERR_UNAVAILABLE
      *    The device has become unplugged and is waiting to be released.
-     * ++ ERR_BAD_STATE
+     * ++ MX_ERR_BAD_STATE
      *    The device cannot transition into the selected mode at this point in time
      *    due to the mode it is currently in.
-     * ++ ERR_NOT_SUPPORTED
+     * ++ MX_ERR_NOT_SUPPORTED
      *    ++ The chosen mode is not supported by the device
      *    ++ The device supports the chosen mode, but does not support the number of
      *       IRQs requested.
-     * ++ ERR_NO_RESOURCES
+     * ++ MX_ERR_NO_RESOURCES
      *    The system is unable to allocate sufficient system IRQs to satisfy the
      *    number of IRQs and exclusivity mode requested the device driver.
      */
@@ -236,7 +234,7 @@ public:
 
         result = SetIrqMode(PCIE_IRQ_MODE_DISABLED, 0);
 
-        DEBUG_ASSERT(result == NO_ERROR);
+        DEBUG_ASSERT(result == MX_OK);
     }
 
     /**
@@ -251,11 +249,11 @@ public:
      * @return A status_t indicating the success or failure of the operation.
      * Status codes may include (but are not limited to)...
      *
-     * ++ ERR_UNAVAILABLE
+     * ++ MX_ERR_UNAVAILABLE
      *    The device has become unplugged and is waiting to be released.
-     * ++ ERR_BAD_STATE
+     * ++ MX_ERR_BAD_STATE
      *    The device is in DISABLED IRQ mode.
-     * ++ ERR_INVALID_ARGS
+     * ++ MX_ERR_INVALID_ARGS
      *    The irq_id parameter is out of range for the currently configured mode.
      */
     status_t RegisterIrqHandler(uint irq_id, pcie_irq_handler_fn_t handler, void* ctx);
@@ -269,14 +267,14 @@ public:
      * @return A status_t indicating the success or failure of the operation.
      * Status codes may include (but are not limited to)...
      *
-     * ++ ERR_UNAVAILABLE
+     * ++ MX_ERR_UNAVAILABLE
      *    The device has become unplugged and is waiting to be released.
-     * ++ ERR_BAD_STATE
+     * ++ MX_ERR_BAD_STATE
      *    Attempting to mask or unmask an IRQ while in the DISABLED mode or with no
      *    handler registered.
-     * ++ ERR_INVALID_ARGS
+     * ++ MX_ERR_INVALID_ARGS
      *    The irq_id parameter is out of range for the currently configured mode.
-     * ++ ERR_NOT_SUPPORTED
+     * ++ MX_ERR_NOT_SUPPORTED
      *    The device is operating in MSI mode, but neither the PCI device nor the
      *    platform interrupt controller support masking the MSI vector.
      */
@@ -292,12 +290,10 @@ public:
 
     const PciConfig*     config()      const { return cfg_; }
     paddr_t              config_phys() const { return cfg_phys_; }
-    mxtl::RefPtr<VmObject> config_vmo() const { return cfg_vmo_; }
     PcieBusDriver&       driver()            { return bus_drv_; }
 
     bool     plugged_in()     const { return plugged_in_; }
     bool     disabled()       const { return disabled_; }
-    bool     claimed()        const { return claimed_; }
     bool     quirks_done()    const { return quirks_done_; }
 
     bool     is_bridge()      const { return is_bridge_; }
@@ -326,7 +322,7 @@ public:
 
     // TODO(johngro) : make these protected.  They are currently only visibile
     // because of debug code.
-    Mutex* dev_lock() { return &dev_lock_; }
+    fbl::Mutex* dev_lock() { return &dev_lock_; }
 
 protected:
     friend class PcieUpstreamNode;
@@ -344,7 +340,7 @@ protected:
     status_t ProbeCapabilitiesLocked();
     status_t ParseStdCapabilitiesLocked();
     status_t ParseExtCapabilitiesLocked();
-    status_t MapPinToIrqLocked(mxtl::RefPtr<PcieUpstreamNode>&& upstream);
+    status_t MapPinToIrqLocked(fbl::RefPtr<PcieUpstreamNode>&& upstream);
     status_t InitLegacyIrqStateLocked(PcieUpstreamNode& upstream);
 
     // BAR allocation
@@ -362,7 +358,6 @@ protected:
     PcieBusDriver& bus_drv_;        // Reference to our bus driver state.
     const PciConfig*         cfg_ = nullptr;  // Pointer to the memory mapped ECAM (kernel vaddr)
     paddr_t        cfg_phys_ = 0;   // The physical address of the device's ECAM
-    mxtl::RefPtr<VmObject> cfg_vmo_ = nullptr;
     SpinLock       cmd_reg_lock_;   // Protection for access to the command register.
     const bool     is_bridge_;      // True if this device is also a bridge
     const uint     bus_id_;         // The bus ID this bridge/device exists on
@@ -375,13 +370,12 @@ protected:
     uint8_t        prog_if_;        // The device's programming interface (from cfg)
     uint8_t        rev_id_;         // The device's revision ID (from cfg)
 
-    mxtl::RefPtr<PcieUpstreamNode> upstream_;  // The upstream node in the device graph.
+    fbl::RefPtr<PcieUpstreamNode> upstream_;  // The upstream node in the device graph.
 
     /* State related to lifetime management */
-    mutable Mutex dev_lock_;
+    mutable fbl::Mutex dev_lock_;
     bool          plugged_in_  = false;
     bool          disabled_    = false;
-    bool          claimed_     = false;
     bool          quirks_done_ = false;
 
     /* Info about the BARs computed and cached during the initial setup/probe,
@@ -451,11 +445,11 @@ private:
         /* Legacy IRQ state */
         struct {
             // TODO(johngro): clean up the messy list_node initialization below
-            // by converting to mxtl intrusive lists.
+            // by converting to fbl intrusive lists.
             uint8_t pin = 0;
             uint    irq_id = static_cast<uint>(-1);
             struct list_node shared_handler_node = { nullptr, nullptr};
-            mxtl::RefPtr<SharedLegacyIrqHandler> shared_handler;
+            fbl::RefPtr<SharedLegacyIrqHandler> shared_handler;
         } legacy;
 
         PciCapMsi* msi = nullptr;

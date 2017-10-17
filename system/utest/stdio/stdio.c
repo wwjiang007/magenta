@@ -40,6 +40,12 @@ static bool stdio_pipe_test(void)
 
     ASSERT_EQ(strncmp(buffer, "hello", 5), 0, "Incorrect buffer read from pipe");
 
+    ASSERT_EQ(lseek(fds[0], 0, SEEK_SET), -1, "lseek should have failed");
+    ASSERT_EQ(errno, ESPIPE, "lseek error should have been pipe-related");
+
+    ASSERT_EQ(close(fds[0]), 0, "");
+    ASSERT_EQ(close(fds[1]), 0, "");
+
     END_TEST;
 }
 
@@ -53,27 +59,29 @@ static bool stdio_launchpad_pipe_test(void)
     launchpad_t* lp = NULL;
 
     mx_handle_t mxio_job = mx_job_default();
-    ASSERT_GT(mxio_job, 0, "no mxio job object");
+    ASSERT_NE(mxio_job, MX_HANDLE_INVALID, "no mxio job object");
 
     mx_handle_t job_copy = MX_HANDLE_INVALID;
     ASSERT_EQ(mx_handle_duplicate(mxio_job, MX_RIGHT_SAME_RIGHTS, &job_copy),
-              NO_ERROR, "mx_handle_duplicate failed");
+              MX_OK, "mx_handle_duplicate failed");
 
     ASSERT_EQ(launchpad_create(job_copy,
                                "launchpad_pipe_stdio_test", &lp),
-              NO_ERROR, "launchpad_create failed");
+              MX_OK, "launchpad_create failed");
     ASSERT_EQ(launchpad_set_args(lp, 1, &file),
-              NO_ERROR, "launchpad_arguments failed");
-    ASSERT_EQ(launchpad_add_vdso_vmo(lp), NO_ERROR,
+              MX_OK, "launchpad_arguments failed");
+    ASSERT_EQ(launchpad_add_vdso_vmo(lp), MX_OK,
               "launchpad_add_vdso_vmo failed");
-    ASSERT_EQ(launchpad_clone(lp, LP_CLONE_MXIO_ROOT | LP_CLONE_MXIO_CWD), NO_ERROR,
-              "launchpad_clone failed");
+    ASSERT_EQ(launchpad_clone(lp, LP_CLONE_MXIO_NAMESPACE | LP_CLONE_MXIO_CWD),
+              MX_OK, "launchpad_clone failed");
 
-    ASSERT_EQ(launchpad_elf_load(lp, launchpad_vmo_from_file(file)),
-              NO_ERROR, "launchpad_elf_load failed");
+    mx_handle_t vmo;
+    ASSERT_EQ(launchpad_vmo_from_file(file, &vmo), MX_OK, "");
+    ASSERT_EQ(launchpad_elf_load(lp, vmo),
+              MX_OK, "launchpad_elf_load failed");
 
     ASSERT_EQ(launchpad_load_vdso(lp, MX_HANDLE_INVALID),
-              NO_ERROR, "launchpad_load_vdso failed");
+              MX_OK, "launchpad_load_vdso failed");
 
     // stdio pipe fds [ours, theirs]
     int stdin_fds[2];
@@ -85,16 +93,18 @@ static bool stdio_launchpad_pipe_test(void)
     ASSERT_EQ(stdio_pipe(stderr_fds, false), 0, "stderr pipe creation failed");
 
     // Transfer the child's stdio pipes
-    ASSERT_EQ(launchpad_transfer_fd(lp, stdin_fds[1], 0), NO_ERROR,
+    ASSERT_EQ(launchpad_transfer_fd(lp, stdin_fds[1], 0), MX_OK,
               "failed to transfer stdin pipe to child process");
-    ASSERT_EQ(launchpad_transfer_fd(lp, stdout_fds[1], 1), NO_ERROR,
+    ASSERT_EQ(launchpad_transfer_fd(lp, stdout_fds[1], 1), MX_OK,
               "failed to transfer stdout pipe to child process");
-    ASSERT_EQ(launchpad_transfer_fd(lp, stderr_fds[1], 2), NO_ERROR,
+    ASSERT_EQ(launchpad_transfer_fd(lp, stderr_fds[1], 2), MX_OK,
               "failed to transfer stderr pipe to child process");
 
     // Start the process
-    mx_handle_t p = launchpad_start(lp);
-    ASSERT_GT(p, 0, "process handle > 0");
+    mx_handle_t p = MX_HANDLE_INVALID;
+    mx_status_t status = launchpad_go(lp, &p, NULL);
+    ASSERT_EQ(status, MX_OK, "");
+    ASSERT_NE(p, MX_HANDLE_INVALID, "process handle != 0");
 
     // Read the stdio
     uint8_t* out = NULL;
@@ -120,7 +130,7 @@ static bool stdio_launchpad_pipe_test(void)
 
     r = mx_object_wait_one(p, MX_PROCESS_TERMINATED,
                            MX_TIME_INFINITE, NULL);
-    ASSERT_EQ(r, NO_ERROR, "mx_object_wait_one failed");
+    ASSERT_EQ(r, MX_OK, "mx_object_wait_one failed");
 
     // read the return code
     mx_info_process_t proc_info;
@@ -131,7 +141,6 @@ static bool stdio_launchpad_pipe_test(void)
     ASSERT_EQ(proc_info.return_code, 0, "lsusb must return 0");
 
     mx_handle_close(p);
-    launchpad_destroy(lp);
 
     END_TEST;
 }
